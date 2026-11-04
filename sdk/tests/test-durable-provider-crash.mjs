@@ -1,10 +1,9 @@
 #!/usr/bin/env node
-// A durable session on a provider the host authorizes (Codex on a ChatGPT plan,
-// Grok on a Grok plan, or a custom provider with an API key) survives a
-// SIGKILL. A child process runs a turn on a local() durability and is killed
-// during the model's reply or during a tool call; a fresh agent here resumes
-// the turn on the credentials its own credentials() supplies. No credential
-// reaches the saved session. No network.
+// A durable session on a provider the host authorizes (a custom provider with
+// an API key) survives a SIGKILL. A child process runs a turn on a local()
+// durability and is killed during the model's reply or during a tool call; a
+// fresh agent here resumes the turn on the credentials its own credentials()
+// supplies. No credential reaches the saved session. No network.
 //
 //   node test-durable-provider-crash.mjs [native|wasm]
 import { strict as assert } from "node:assert";
@@ -32,27 +31,9 @@ const backendOptions = {
   ...(backend === "wasm" ? { wasm: await readFile(resolve(scriptDir, "../../zig-out/bin/fx-core.wasm")) } : {}),
 };
 
-const accountId = "acct-crash";
-function codexJwt(label) {
-  const part = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");
-  return `${part({ alg: "none" })}.${part({ exp: Math.floor(Date.now() / 1000) + 864000, "https://api.openai.com/auth": { chatgpt_account_id: accountId }, label })}.sig`;
-}
-
 const event = (value) => `data: ${JSON.stringify(value)}\n\n`;
-// The wire formats: how a text reply and a lookup call stream, and where a
+// The wire format: how a text reply and a lookup call stream, and where a
 // request carries the conversation.
-const responsesProtocol = {
-  history: (payload) => payload.input,
-  sawToolOutput: (payload) => JSON.stringify(payload.input).includes("function_call_output"),
-  textReply: (text) =>
-    event({ type: "response.output_item.added", output_index: 0, item: { type: "message" } }) +
-    event({ type: "response.output_text.delta", output_index: 0, delta: text }) +
-    event({ type: "response.completed", response: { status: "completed", usage: { input_tokens: 5, output_tokens: 2 } } }),
-  lookupCall:
-    event({ type: "response.output_item.added", output_index: 0, item: { type: "function_call", call_id: "call_lookup", name: "lookup" } }) +
-    event({ type: "response.function_call_arguments.delta", output_index: 0, delta: JSON.stringify({ key: "order-7" }) }) +
-    event({ type: "response.completed", response: { status: "completed", usage: { input_tokens: 5, output_tokens: 2 } } }),
-};
 const chatProtocol = {
   history: (payload) => payload.messages,
   sawToolOutput: (payload) => payload.messages.some((message) => message.role === "tool"),
@@ -70,46 +51,6 @@ const chatProtocol = {
 // besides the reply, the credentials, and the headers that carry session and
 // account, if any.
 const providers = {
-  codex: {
-    label: "Codex",
-    provider: "codex",
-    protocol: responsesProtocol,
-    model: "gpt-6.1-sol",
-    token: codexJwt,
-    credentials: (token) => ({ accessToken: token, refreshToken: "rt-crash" }),
-    replyUrl: "https://chatgpt.com/backend-api/codex/responses",
-    sessionHeader: "session-id",
-    accountHeader: "chatgpt-account-id",
-    serve(url) {
-      if (url === "https://registry.npmjs.org/@openai/codex/latest") return Response.json({ version: "0.162.1" });
-      if (url.startsWith("https://chatgpt.com/backend-api/codex/models")) {
-        return Response.json({ models: [
-          { slug: "gpt-6.1-sol", visibility: "list", supported_in_api: true, priority: 1, supported_reasoning_levels: [{ effort: "low" }], additional_speed_tiers: [], input_modalities: ["text"], context_window: 272000 },
-          { slug: "gpt-5.6-luna", visibility: "list", supported_in_api: true, priority: 2, supported_reasoning_levels: [{ effort: "low" }], additional_speed_tiers: [], input_modalities: ["text"], context_window: 272000 },
-        ] });
-      }
-      return null;
-    },
-  },
-  grok: {
-    label: "Grok",
-    provider: "grok",
-    protocol: responsesProtocol,
-    model: "grok-4.5",
-    token: (label) => `at-${label}`,
-    credentials: (token) => ({ accessToken: token, refreshToken: "rt-crash", accountId, expiresAt: Date.now() + 6 * 3600 * 1000 }),
-    replyUrl: "https://cli-chat-proxy.grok.com/v1/responses",
-    sessionHeader: "x-grok-conv-id",
-    accountHeader: "x-grok-user-id",
-    serve(url) {
-      if (url === "https://x.ai/cli/stable") return new Response("1.0.50\n");
-      if (url === "https://cli-chat-proxy.grok.com/v1/models") {
-        return Response.json({ data: [{ id: "grok-4.5", model: "grok-4.5", api_backend: "responses", context_window: 500000, supports_reasoning_effort: true, reasoning_efforts: [{ value: "low" }] }] });
-      }
-      if (url === "https://api.x.ai/v1/language-models") return Response.json({ models: [] });
-      return null;
-    },
-  },
   // The session reaches credentials() from the agent, not from a header.
   custom: {
     label: "custom provider",
@@ -277,8 +218,6 @@ async function crashAndResume(provider, phase) {
     assert.ok(replies.length >= 1, `the resumed turn called ${spec.label}`);
     for (const reply of replies) {
       assert.equal(reply.headers.get("authorization"), `Bearer ${tokens.parent}`, "the resuming process authorizes with its own credentials");
-      if (spec.accountHeader) assert.equal(reply.headers.get(spec.accountHeader), accountId);
-      if (spec.sessionHeader) assert.equal(reply.headers.get(spec.sessionHeader), sessionId, "the resumed requests belong to the crashed session");
     }
     assert.ok(asked.includes(sessionId), "credentials() is asked for the crashed session's credentials");
     assert.equal(fake.log.some((entry) => entry.url.includes("ai-gateway.vercel.sh")), false);

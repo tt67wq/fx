@@ -9,6 +9,7 @@ const compactor = @import("../compactor/compactor.zig");
 const context_limits = @import("context_limits.zig");
 const project_config = @import("../mcp/project_config.zig");
 const model_provider = @import("model_provider.zig");
+const configured_provider = @import("configured_provider.zig");
 const workspace_access = @import("../workspace/workspace_access.zig");
 const sort_utils = @import("../shared/sort_utils.zig");
 const update_target = @import("../upgrade/update_target.zig");
@@ -1175,15 +1176,14 @@ test "provider patch writes one bounded provider model collection" {
         .{},
     );
     const application = try applyUserPatchToRoot(arena.allocator(), &root, .{
-        .provider = .codex,
-        .model_preference = .{ .provider = .codex, .model = "gpt-5.4-mini" },
+        .provider = model_provider.parse("local").?,
+        .model_preference = .{ .provider = model_provider.parse("local").?, .model = "gpt-5.4-mini" },
     });
     try std.testing.expect(application.changed);
     try std.testing.expectEqualStrings("gateway/model", root.object.get("model").?.string);
-    try std.testing.expectEqualStrings("codex", root.object.get("provider").?.string);
-    try std.testing.expectEqualStrings("gpt-5.4-mini", root.object.get("models").?.object.get("codex").?.string);
-    try std.testing.expect(!root.object.contains("codex_model"));
-    try std.testing.expectEqual(model_provider.ProviderId.codex, model_provider.parse(root.object.get("provider").?.string).?);
+    try std.testing.expectEqualStrings("local", root.object.get("provider").?.string);
+    try std.testing.expectEqualStrings("gpt-5.4-mini", root.object.get("models").?.object.get("local").?.string);
+    try std.testing.expect(model_provider.parse(root.object.get("provider").?.string).?.eql(model_provider.parse("local").?));
 }
 
 test "model and fast patch binds the fast preference atomically" {
@@ -1908,8 +1908,6 @@ fn putModelPreference(
     changed = try putString(arena, models, provider_key, preference.model) or changed;
     const legacy_key = switch (preference.provider) {
         .gateway => "model",
-        .codex => "codex_model",
-        .grok => "grok_model",
         .configured => return changed,
     };
     if (root.contains(legacy_key)) {
@@ -2176,22 +2174,19 @@ fn validateKnownSettingsObject(
         try validateModel(value.string);
     }
     if (object.get("provider")) |value| {
-        if (value != .string or model_provider.parse(value.string) == null) {
+        if (value != .string) return error.InvalidSettingsFormat;
+        // A retired provider name is ignored, not a reason to refuse the file.
+        if (!configured_provider.is_retired_name(value.string) and
+            model_provider.parse(value.string) == null)
+        {
             return error.InvalidSettingsFormat;
         }
-    }
-    if (object.get("codex_model")) |value| {
-        if (value != .string) return error.InvalidSettingsFormat;
-        try validateModel(value.string);
-    }
-    if (object.get("grok_model")) |value| {
-        if (value != .string) return error.InvalidSettingsFormat;
-        try validateModel(value.string);
     }
     if (object.get("models")) |value| {
         if (value != .object) return error.InvalidSettingsFormat;
         var iterator = value.object.iterator();
         while (iterator.next()) |entry| {
+            if (configured_provider.is_retired_name(entry.key_ptr.*)) continue;
             const provider = model_provider.parse(entry.key_ptr.*) orelse
                 return error.InvalidSettingsFormat;
             if (!std.mem.eql(u8, entry.key_ptr.*, provider.label()) or

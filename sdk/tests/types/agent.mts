@@ -386,10 +386,3 @@ assertType<Equal<typeof support.name, string>>();
 export const wakeAll: (request: Request) => Promise<Response> = wakeHandler();
 // @ts-expect-error a name is text
 createFxAgent({ name: 7 });
-
-// A durable Codex agent: each process asks the host for the session's credentials.
-export const codexAgent: FxAgent = createFxAgent({
-  provider: "codex",
-  model: "gpt-6.1-sol",
-  credentials: async ({ sessionId }) => ({ accessToken: sessionId ?? "token", refreshToken: "refresh" }),
-});

@@ -6092,13 +6092,10 @@ test "recovery checkpoint round trips while legacy state stays absent" {
         .action = .continuing_response,
         .tool_state = .confirmed,
         .authority = .{
-            .provider = .codex,
+            .provider = .gateway,
             .model = @constCast("gpt-5.4-mini"),
-            .credential_source = .chatgpt_subscription,
-            .credential_identity = credential_authority.derive(
-                .chatgpt_subscription,
-                "acct_1",
-            ),
+            .credential_source = .stored_key,
+            .credential_identity = credential_authority.derive(.stored_key),
         },
         .requested_fast_mode = true,
         .fast_mode = true,
@@ -6116,7 +6113,7 @@ test "recovery checkpoint round trips while legacy state stays absent" {
         .updated_at_ms = 2,
         .conversation_language = session.ConversationLanguage.literal("en"),
         .preferences = .{
-            .provider = .codex,
+            .provider = .gateway,
             .model = @constCast("gpt-5.4-mini"),
             .effort = .auto,
             .fast_mode = false,
@@ -6144,11 +6141,11 @@ test "recovery checkpoint round trips while legacy state stays absent" {
     try std.testing.expectEqual(types.ModelRecoveryCause.response_interrupted, restored.cause);
     try std.testing.expectEqual(types.ModelRecoveryAction.continuing_response, restored.action);
     try std.testing.expectEqual(RecoveryToolState.confirmed, restored.tool_state);
-    try std.testing.expectEqual(model_provider.ProviderId.codex, restored.authority.provider);
+    try std.testing.expectEqual(model_provider.ProviderId.gateway, restored.authority.provider);
     try std.testing.expectEqualStrings("gpt-5.4-mini", restored.authority.model);
-    try std.testing.expectEqual(types.CredentialSource.chatgpt_subscription, restored.authority.credential_source.?);
+    try std.testing.expectEqual(types.CredentialSource.stored_key, restored.authority.credential_source.?);
     try std.testing.expect(restored.authority.credential_identity != null);
-    try std.testing.expectEqual(model_provider.ProviderId.codex, decoded.preferences.provider);
+    try std.testing.expectEqual(model_provider.ProviderId.gateway, decoded.preferences.provider);
     try std.testing.expect(restored.requested_fast_mode);
     try std.testing.expect(restored.fast_mode);
     try std.testing.expect(restored.requested_ultrafast_mode);

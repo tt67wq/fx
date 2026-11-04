@@ -21,6 +21,7 @@ const profiles = @import("../profiles/profiles.zig");
 const mcp_access = @import("../mcp/access_policy.zig");
 const mode_registry = @import("../modes/mode_registry.zig");
 const model_provider = @import("../config/model_provider.zig");
+const configured_provider = @import("../config/configured_provider.zig");
 const permissions = @import("../permissions/permissions.zig");
 const session = @import("../session/session.zig");
 const session_codec = @import("../session/session_codec.zig");
@@ -2644,12 +2645,18 @@ test "model override passes through for non-gateway providers" {
     const runtime = try overrideResolverFixtureRuntime(alloc, &fixture, &parent);
     defer runtime.deinit();
 
+    // A configured provider reaches a child's session, which stores its
+    // binding, so the test's provider is bound to a real definition.
+    var registry = try configured_provider.Registry.parse_json(alloc, "{\"local\":{\"protocol\":\"openai-chat-completions\",\"base_url\":\"http://localhost:11434/v1\",\"auth\":{\"type\":\"none\"}}}");
+    defer registry.deinit(alloc);
+    const provider = try model_provider.parse("local").?.bind(registry);
+
     var request = try model_contract.validateRequest(alloc, .{ .message = .{ .agent = "probe", .message = "probe", .model = "unknown-model" } });
     defer request.deinit(alloc);
     const result = try runtime.executeManaged(arena, &request, .{
         .caller_id = parent.parent.id(),
         .invocation_id = "override-non-gateway",
-        .defaults = .{ .provider = .codex, .model = "parent-model", .effort = .auto, .conversation_language = session.ConversationLanguage.literal("en") },
+        .defaults = .{ .provider = provider, .model = "parent-model", .effort = .auto, .conversation_language = session.ConversationLanguage.literal("en") },
         .max_result_bytes = 4096,
         .timestamp_ms = 1,
         .model_override_resolver = .{ .context = &fixture, .resolve_fn = OverrideResolverFixture.resolveModel },

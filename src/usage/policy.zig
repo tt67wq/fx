@@ -77,13 +77,12 @@ pub const Plan = struct {
     }
 };
 
-/// A provider plan (Codex, Grok) is read whole on every fetch: no finished
-/// days and no budget.
+/// What one fetch of the AI Gateway reports covers.
 pub fn plan(scope: report.Scope, cached_finished_day: ?i64, now_ms: i64) Plan {
     const day = report.utcDay(now_ms);
     return .{
         .day = day,
-        .finished = scope.readsReports() and (cached_finished_day == null or cached_finished_day.? != day),
+        .finished = cached_finished_day == null or cached_finished_day.? != day,
         .budget = scope == .member,
     };
 }
@@ -141,8 +140,4 @@ test "finished days are read once per UTC day" {
     try testing.expect(!plan(.member, today, now).finished);
     try testing.expect(plan(.api_key, today - 1, now).finished);
     try testing.expect(!plan(.api_key, today, now).budget);
-    const codex_plan = plan(.codex, null, now);
-    try testing.expect(!codex_plan.finished and !codex_plan.budget);
-    const grok_plan = plan(.grok, null, now);
-    try testing.expect(!grok_plan.finished and !grok_plan.budget);
 }

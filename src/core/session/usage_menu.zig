@@ -35,14 +35,12 @@ pub const State = struct {
         const models = snapshot.of(self.period).models;
         const found = findModel(models, old_selected);
         const selected = found orelse @min(self.selected_model, models.len -| 1);
-        // Codex has no selection; its list keeps its scroll position.
-        const keeps_scroll = snapshot.scope == .codex;
         // Look the name up before the old snapshot is freed.
         if (self.snapshot) |*old| old.deinit();
         self.snapshot = snapshot;
         self.generation = generation;
         self.selected_model = selected;
-        if (!keeps_scroll) self.model_window_start = @min(self.model_window_start, selected);
+        self.model_window_start = @min(self.model_window_start, selected);
         // A detail screen whose model left the list goes back to the table.
         if (found == null) self.detail = false;
     }
@@ -63,10 +61,8 @@ pub const State = struct {
     }
 
     /// ↑↓ in the table or on a detail screen (the next model's details).
-    /// The Codex list has no selection, so ↑↓ scrolls it.
     pub fn moveModel(self: *State, delta: i32, visible_model_rows: usize) bool {
         if (!self.active or delta == 0) return false;
-        if (self.snapshot) |*s| if (s.scope == .codex) return self.scrollCodex(s, delta, visible_model_rows);
         const models = self.listedModels();
         if (models.len == 0) return false;
         const next = if (delta > 0)
@@ -100,17 +96,6 @@ pub const State = struct {
     pub fn selectedModelName(self: *const State) ?[]const u8 {
         const list = self.listedModels();
         return if (self.selected_model < list.len) list[self.selected_model].model else null;
-    }
-
-    fn scrollCodex(self: *State, snapshot: *const usage.Snapshot, delta: i32, visible_model_rows: usize) bool {
-        var buf: [usage.codex.max_shares]usage.codex.Share = undefined;
-        const total = snapshot.codexModelShares(self.period, &buf).len;
-        const last_start = total -| @max(visible_model_rows, 1);
-        const start = @min(self.model_window_start, last_start);
-        const next = if (delta > 0) @min(start +| 1, last_start) else start -| 1;
-        if (next == self.model_window_start) return false;
-        self.model_window_start = next;
-        return true;
     }
 
     fn keepSelectionVisible(self: *State, visible_model_rows: usize) void {
@@ -193,41 +178,6 @@ test "Tab changes the listed period only from the table" {
     // The period survives closing and reopening.
     state.open(try testSnapshot(&.{"a"}), 2);
     try std.testing.expectEqual(usage.Period.today, state.period);
-}
-
-/// A Codex snapshot whose month lists five models, largest first.
-fn codexTestSnapshot() !usage.Snapshot {
-    var snapshot = try testSnapshot(&.{});
-    snapshot.scope = .codex;
-    snapshot.codex_usage = .{ .plan = "plus", .breakdown = .{ .days = &.{.{ .day = 0, .models = &.{
-        .{ .model = "a", .speed = "fast", .value = 5 },
-        .{ .model = "b", .speed = "fast", .value = 4 },
-        .{ .model = "c", .speed = "fast", .value = 3 },
-        .{ .model = "d", .speed = "fast", .value = 2 },
-        .{ .model = "e", .speed = "fast", .value = 1 },
-    } }} } };
-    return snapshot;
-}
-
-test "the Codex model list scrolls with ↑↓ and keeps its place on refresh" {
-    var state: State = .{};
-    defer state.close();
-    state.open(try codexTestSnapshot(), 1);
-    // Three of five rows fit: the window moves down twice, then stops.
-    try std.testing.expect(state.moveModel(1, 3));
-    try std.testing.expect(state.moveModel(1, 3));
-    try std.testing.expect(!state.moveModel(1, 3));
-    try std.testing.expectEqual(@as(usize, 2), state.model_window_start);
-    try std.testing.expectEqual(@as(usize, 0), state.selected_model);
-    // A refresh keeps the scroll position.
-    state.replace(try codexTestSnapshot(), 2);
-    try std.testing.expectEqual(@as(usize, 2), state.model_window_start);
-    try std.testing.expect(state.moveModel(-1, 3));
-    try std.testing.expect(state.moveModel(-1, 3));
-    try std.testing.expect(!state.moveModel(-1, 3));
-    // A list that fits does not scroll, and Enter opens nothing.
-    try std.testing.expect(!state.moveModel(1, 5));
-    try std.testing.expect(!state.openDetail());
 }
 
 test "selection stays inside the visible model rows" {

@@ -3698,23 +3698,18 @@ fn recoverySelectionChanged(
 fn recoveryCredentialAuthorityMatches(
     checkpoint: session_codec.RecoveryCheckpoint,
     source: ?types.CredentialSource,
-    account_id: ?[]const u8,
 ) bool {
     const expected_source = checkpoint.authority.credential_source orelse return false;
     const expected_identity = checkpoint.authority.credential_identity orelse return false;
     const current_source = source orelse return false;
     if (current_source != expected_source) return false;
-    const current_identity = credential_authority.derive(
-        current_source,
-        account_id,
-    ) orelse return false;
+    const current_identity = credential_authority.derive(current_source) orelse return false;
     return expected_identity.eql(current_identity);
 }
 
 fn shouldRejectRecoveryAuthority(
     checkpoint: session_codec.RecoveryCheckpoint,
     source: ?types.CredentialSource,
-    account_id: ?[]const u8,
 ) bool {
     if (checkpoint.disposition == .history_only) return true;
     const provider_may_have_received_request = checkpoint.outstanding_reservation or
@@ -3722,15 +3717,11 @@ fn shouldRejectRecoveryAuthority(
     return provider_may_have_received_request and !recoveryCredentialAuthorityMatches(
         checkpoint,
         source,
-        account_id,
     );
 }
 
 test "potentially sent recovery rejects missing or changed credential authority" {
-    const identity = credential_authority.derive(
-        .chatgpt_subscription,
-        "acct_1",
-    ).?;
+    const identity = credential_authority.derive(.stored_key).?;
     const checkpoint = session_codec.RecoveryCheckpoint{
         .turn_id = 1,
         .user = .{ .text = @constCast("continue") },
@@ -3738,9 +3729,9 @@ test "potentially sent recovery rejects missing or changed credential authority"
         .cause = .response_interrupted,
         .action = .continuing_response,
         .authority = .{
-            .provider = .codex,
+            .provider = .gateway,
             .model = @constCast("gpt-5.4"),
-            .credential_source = .chatgpt_subscription,
+            .credential_source = .stored_key,
             .credential_identity = identity,
         },
         .requested_fast_mode = false,
@@ -3748,51 +3739,24 @@ test "potentially sent recovery rejects missing or changed credential authority"
         .max_provider_attempts = 3,
         .consumed_provider_attempts = 1,
     };
-    try std.testing.expect(!shouldRejectRecoveryAuthority(
-        checkpoint,
-        .chatgpt_subscription,
-        "acct_1",
-    ));
-    try std.testing.expect(shouldRejectRecoveryAuthority(
-        checkpoint,
-        .chatgpt_subscription,
-        "acct_2",
-    ));
+    try std.testing.expect(!shouldRejectRecoveryAuthority(checkpoint, .stored_key));
+    try std.testing.expect(shouldRejectRecoveryAuthority(checkpoint, .ai_gateway_api_key));
 
     var legacy = checkpoint;
     legacy.authority.credential_source = null;
     legacy.authority.credential_identity = null;
-    try std.testing.expect(shouldRejectRecoveryAuthority(
-        legacy,
-        .chatgpt_subscription,
-        "acct_1",
-    ));
+    try std.testing.expect(shouldRejectRecoveryAuthority(legacy, .stored_key));
     legacy.authority.credential_source = .ai_gateway_api_key;
-    legacy.authority.credential_identity = credential_authority.derive(
-        .ai_gateway_api_key,
-        null,
-    );
-    try std.testing.expect(!shouldRejectRecoveryAuthority(
-        legacy,
-        .ai_gateway_api_key,
-        null,
-    ));
-    try std.testing.expect(shouldRejectRecoveryAuthority(
-        legacy,
-        .stored_key,
-        null,
-    ));
+    legacy.authority.credential_identity = credential_authority.derive(.ai_gateway_api_key);
+    try std.testing.expect(!shouldRejectRecoveryAuthority(legacy, .ai_gateway_api_key));
+    try std.testing.expect(shouldRejectRecoveryAuthority(legacy, .stored_key));
     legacy.authority.credential_source = null;
     legacy.authority.credential_identity = null;
     legacy.consumed_provider_attempts = 0;
-    try std.testing.expect(!shouldRejectRecoveryAuthority(
-        legacy,
-        .chatgpt_subscription,
-        "acct_1",
-    ));
+    try std.testing.expect(!shouldRejectRecoveryAuthority(legacy, .stored_key));
     legacy.disposition = .history_only;
-    try std.testing.expect(shouldRejectRecoveryAuthority(legacy, .chatgpt_subscription, "acct_1"));
-    try std.testing.expect(shouldRejectRecoveryAuthority(legacy, null, null));
+    try std.testing.expect(shouldRejectRecoveryAuthority(legacy, .stored_key));
+    try std.testing.expect(shouldRejectRecoveryAuthority(legacy, null));
 }
 
 /// Saved as `max_provider_attempts` in the recovery checkpoint. Attempts no
@@ -4020,10 +3984,7 @@ fn persistRecoveryCheckpointWithAction(
             .model = @constCast(route_model),
             .credential_source = job.credential_source,
             .credential_identity = if (job.credential_source) |source|
-                credential_authority.derive(
-                    source,
-                    job.account_id,
-                )
+                credential_authority.derive(source)
             else
                 null,
         },
@@ -4134,7 +4095,7 @@ const CompactionSource = struct {
                 .provider = job.provider,
                 .model = @constCast(self.route_model),
                 .credential_source = job.credential_source,
-                .credential_identity = if (job.credential_source) |source| credential_authority.derive(source, job.account_id) else null,
+                .credential_identity = if (job.credential_source) |source| credential_authority.derive(source) else null,
             },
             .requested_fast_mode = self.requested_fast_mode,
             .fast_mode = self.fast_mode,
@@ -4550,7 +4511,7 @@ fn needsUserFailureKind(
 fn signInRepairs(credential_source: ?types.CredentialSource) bool {
     const source = credential_source orelse return false;
     return switch (source) {
-        .fx_login, .chatgpt_subscription, .grok_subscription => true,
+        .fx_login => true,
         .vercel_oidc_token, .ai_gateway_api_key, .stored_key, .host_managed, .configured => false,
     };
 }
@@ -7053,11 +7014,7 @@ fn processQueuedPromptLoop(
     else
         false;
     if (job.recovery_checkpoint) |checkpoint| {
-        if (shouldRejectRecoveryAuthority(
-            checkpoint,
-            job.credential_source,
-            job.account_id,
-        )) {
+        if (shouldRejectRecoveryAuthority(checkpoint, job.credential_source)) {
             return error.RecoveryCredentialAuthorityChanged;
         }
     }
@@ -9115,7 +9072,6 @@ fn processQueuedPromptLoop(
             agent_steps.allowsStep(config.agent_step_limit, step + 1);
         const raised_limit: ?u32 = if (may_resend and
             length_retry_output_tokens == null and
-            config.provider_capabilities.sends_output_limit and
             model_capabilities.requestOutputTokens(request_capabilities) == null)
             model_capabilities.emptyLengthRetryOutputTokens(request_capabilities)
         else

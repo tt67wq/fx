@@ -25,7 +25,7 @@ for await (const event of turn) {
 await agent.close();
 ```
 
-Set `AI_GATEWAY_API_KEY` and run it with Node.js 20.19, 22.12, or newer. Model calls go through [AI Gateway](https://vercel.com/docs/ai-gateway), so any model it lists works, and on Vercel libfx uses the deployment's OIDC token instead of a key. libfx can also run on a user's own ChatGPT or Grok plan, or on another server through the OpenAI Chat Completions API. See [Providers](#providers).
+Set `AI_GATEWAY_API_KEY` and run it with Node.js 20.19, 22.12, or newer. Model calls go through [AI Gateway](https://vercel.com/docs/ai-gateway), so any model it lists works, and on Vercel libfx uses the deployment's OIDC token instead of a key. libfx can also run on another server through the OpenAI Chat Completions API. See [Providers](#providers).
 
 Importing libfx and calling `createFxAgent()` touch no network, files or processes. The engine loads when a session runs its first turn.
 
@@ -314,67 +314,6 @@ createFxAgent({ model: { id: "anthropic/claude-opus-5.5", effort: "high", fast: 
 
 AI Gateway is the default. libfx uses the first credential it finds: the `apiKey` option, then `AI_GATEWAY_API_KEY`, then on Vercel the deployment's OIDC token.
 
-### ChatGPT plans
-
-An agent can run on a user's ChatGPT plan through Codex. Set `provider: "codex"` and give libfx the user's credentials:
-
-```js
-const agent = createFxAgent({
-  provider: "codex",
-  model: "gpt-6.1-sol",
-  credentials: ({ provider, sessionId }) => tokens.load(provider, sessionId),
-  onCredentials: (credentials, { provider, sessionId }) => tokens.save(provider, sessionId, credentials),
-});
-```
-
-Name a model the plan serves, here or in `agent.session(id, { model })`. fx's default model is an AI Gateway id, so libfx refuses a Codex engine or session without one.
-
-libfx calls `credentials()` in whichever process runs the turn. It refreshes the credentials shortly before they expire and once after a rejected request, then passes the new ones to `onCredentials` for you to save. Codex doesn't accept requests from web pages, so these turns run on your server.
-
-To sign a user in, use `libfx/chatgpt`:
-
-```js
-import { startSignIn, finishSignIn } from "libfx/chatgpt";
-
-// One request: send the user to signIn.url and keep signIn on the server.
-const signIn = await startSignIn();
-
-// A later request: the user pastes back the address OpenAI opened.
-const credentials = await finishSignIn(signIn, pastedAddress);
-```
-
-After the user signs in, OpenAI opens a page at `localhost:1455` that doesn't load. That's expected: ask the user to copy the page's whole address and paste it back. If their account or ChatGPT workspace allows device code sign-in, `startDeviceSignIn()` returns a short code to enter on OpenAI's site instead, and `pollDeviceSignIn()` or `completeDeviceSignIn()` waits for it. Each step returns plain data, so a later request or function can finish it.
-
-The sign-in uses the same OpenAI client as the Codex CLI, and the user's ChatGPT plan and OpenAI's terms apply to the turns.
-
-### Grok plans
-
-`provider: "grok"` runs on a user's Grok plan, with the same `credentials` and `onCredentials` callbacks, called with `provider: "grok"`. It needs a Grok model too, such as `model: "grok-4.7"`; the AI Gateway id `spacexai/grok-4.7` doesn't work on a Grok plan. libfx also checks that refreshed credentials still belong to the same xAI account. These turns run on your server too.
-
-To sign a user in, use `libfx/grok`. Device code is the simplest:
-
-```js
-import { startDeviceSignIn, completeDeviceSignIn } from "libfx/grok";
-
-// Show device.userCode and a link to device.verificationUrl.
-const device = await startDeviceSignIn();
-
-// Waits until the user enters the code. pollDeviceSignIn() checks once, for a later request.
-const credentials = await completeDeviceSignIn(device);
-```
-
-`startSignIn()` and `finishSignIn()` work as for ChatGPT, except that xAI opens a page at `127.0.0.1`. The sign-in uses the same xAI client as the fx CLI, and the user's Grok plan and xAI's terms apply to the turns.
-
-### Several servers, one account
-
-The sessions in one process share each refresh. Across servers, two can notice the same expiring credentials at once, and the provider accepts only the first refresh. Pass `refreshLock` so they take turns:
-
-```js
-refreshLock: ({ provider, sessionId }, refresh) => locks.withLock(`${provider}:${accountOf(sessionId)}`, refresh),
-```
-
-libfx calls it with a function to run while you hold a lock on that user's account, for example in Redis. Inside it, libfx calls `credentials()` again and uses what another server already saved.
-
 ### Custom providers
 
 An agent can run on a server that speaks the OpenAI Chat Completions API, such as a local model server or a router:
@@ -399,7 +338,7 @@ Saved sessions follow the agent's provider: point an agent at another base URL a
 
 ### Where credentials go
 
-libfx adds ChatGPT, Grok and custom-provider credentials to each request in JavaScript, just before it's sent, and sends them only to that provider. They never reach the engine. No credential is written to a saved session or passed to `onEvent`, and if a server quotes a key or token back in an error, libfx masks it before the error reaches the turn.
+libfx adds custom-provider credentials to each request in JavaScript, just before it's sent, and sends them only to that provider. They never reach the engine. No credential is written to a saved session or passed to `onEvent`, and if a server quotes a key or token back in an error, libfx masks it before the error reaches the turn.
 
 ## Images
 
@@ -551,7 +490,6 @@ This is the fx CLI's interface compiled to WebAssembly. Your page supplies stora
 | `libfx/node`, `libfx/browser` | The same, for Node.js or browsers explicitly |
 | `libfx/wasm` | The WebAssembly SDK without packaged asset paths, so you pass `wasm` yourself |
 | `libfx/durable-local`, `libfx/durable-vercel`, `libfx/durable-world` | `local()`, `vercel()` and `world()` |
-| `libfx/chatgpt`, `libfx/grok` | Sign-in for ChatGPT and Grok plans, and `refreshCredentials` |
 | `libfx/mcp` | `createMcpAdapter` |
 | `libfx/skills`, `libfx/skills/node` | `createSkillsAdapter`, and `loadSkillFile` for Node.js and Bun |
 
@@ -565,7 +503,7 @@ Every entry point ships TypeScript types, and the package has no runtime depende
 - **Side effects:** every tool sets `idempotent`. Set it to `true` only on tools that are safe to run twice, and pass `executionId` to services that take an idempotency key.
 - **Deployments:** on Vercel, the `wakeHandler()` route and its `vercel.json` trigger are both required, or prompts are stored and never run. The route must import the module that creates the agents.
 - **Several agents:** give each durable agent its own `name`, and never rename one that has sessions.
-- **Credentials:** keep keys and ChatGPT or Grok credentials on the server, and the object `startSignIn()` returns too.
+- **Credentials:** keep provider keys on the server.
 - **Checking a setup:** `getBackendInfo()` reports which backend would load without creating anything or making requests.
 - **Changing libfx:** the source is in the [fx repository](https://github.com/vercel-labs/fx) under `sdk/`. Its `AGENTS.md` files name the tests each change needs.
 

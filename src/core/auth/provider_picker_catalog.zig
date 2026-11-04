@@ -6,7 +6,6 @@
 //! a masked entry field and never reaches the composer.
 
 const std = @import("std");
-const host_target = @import("../hosts/target.zig");
 const model_provider = @import("../config/model_provider.zig");
 const provider_catalog = @import("provider_catalog.zig");
 const types = @import("../shared/types.zig");
@@ -109,16 +108,10 @@ pub fn parseMethod(value: []const u8) ?Method {
     return null;
 }
 
-fn providerVisible(id: model_provider.ProviderId) bool {
-    if (comptime host_target.is_wasm) return id != .grok;
-    return true;
-}
-
 /// Writes the visible provider slugs into `out` and returns how many landed.
 pub fn providerOptions(out: *[max_provider_options][]const u8) usize {
     var count: usize = 0;
     for (&provider_catalog.entries) |*entry| {
-        if (!providerVisible(entry.id)) continue;
         out[count] = entry.slug;
         count += 1;
     }
@@ -128,7 +121,7 @@ pub fn providerOptions(out: *[max_provider_options][]const u8) usize {
 pub fn providerMethods(id: model_provider.ProviderId) []const Method {
     return switch (id) {
         .gateway => &.{ .oauth, .api_key },
-        .codex, .grok, .configured => &.{},
+        .configured => &.{},
     };
 }
 
@@ -145,7 +138,7 @@ test "provider options expose the catalog slugs the composer accepts" {
     var buf: [max_provider_options][]const u8 = undefined;
     const count = providerOptions(&buf);
 
-    try std.testing.expect(count >= 2);
+    try std.testing.expect(count >= 1);
     try std.testing.expectEqualStrings("vercel", buf[0]);
     for (buf[0..count]) |slug| {
         try std.testing.expect(provider_catalog.parse(slug) != null);
@@ -155,8 +148,7 @@ test "provider options expose the catalog slugs the composer accepts" {
 
 test "only the gateway offers a method column" {
     try std.testing.expectEqual(@as(usize, 2), providerMethods(.gateway).len);
-    try std.testing.expectEqual(@as(usize, 0), providerMethods(.codex).len);
-    try std.testing.expectEqual(@as(usize, 0), providerMethods(.grok).len);
+    try std.testing.expectEqual(@as(usize, 0), providerMethods(model_provider.parse("local").?).len);
 }
 
 test "method slugs round trip and stay single tokens" {

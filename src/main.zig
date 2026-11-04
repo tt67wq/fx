@@ -1226,8 +1226,8 @@ const App = struct {
         try AuthAppRuntime.runLoginCommand(self, agent);
     }
 
-    pub fn runLogoutCommand(self: *App, agent: *agents.Agent, target: []const u8) !void {
-        try AuthAppRuntime.runLogoutCommand(self, agent, target);
+    pub fn runLogoutCommand(self: *App, target: []const u8) !void {
+        try AuthAppRuntime.runLogoutCommand(self, target);
     }
 
     pub fn applyAuthPickerChoice(self: *App, agent: *agents.Agent, choice: auth_runtime.Choice) !void {
@@ -2217,7 +2217,7 @@ const App = struct {
     }
 
     pub fn providerSet(self: *const App) provider_set.Set {
-        if (self.provider_selection.model_requests_blocked) return .{ .gateway = .{}, .codex = .{}, .grok = .{} };
+        if (self.provider_selection.model_requests_blocked) return .{ .gateway = .{} };
         if (comptime host_target.is_wasm) {
             return provider_set.gateway_only(.{
                 .capabilities = .{
@@ -2225,7 +2225,6 @@ const App = struct {
                     .vision_fallback = host_profile.tools,
                 },
                 .presentation = provider_catalog.find(.gateway),
-                .auth_strategy = .vercel,
                 .fallback_model_capabilities_fn = vercel_model_policy.capabilitiesForModel,
                 .agent_stream = js_host_stream_provider.provider(),
                 .model_catalog = js_host_model_catalog.provider,
@@ -2248,8 +2247,6 @@ const App = struct {
         }
         if (comptime !host_profile.tools) {
             providers.gateway.permission_reviewer = null;
-            providers.codex.permission_reviewer = null;
-            providers.grok.permission_reviewer = null;
         }
         return providers;
     }
@@ -4226,11 +4223,11 @@ test "early threaded io is resolved after global launch args" {
     }));
     try std.testing.expect(needsEarlyThreadedIo(&.{
         @as([:0]const u8, "--provider"),
-        @as([:0]const u8, "grok"),
+        @as([:0]const u8, "local"),
         @as([:0]const u8, "login"),
     }));
     try std.testing.expect(needsFullEntryConfig(&.{
-        @as([:0]const u8, "--provider=grok"),
+        @as([:0]const u8, "--provider=local"),
         @as([:0]const u8, "ask"),
     }));
     try std.testing.expect(needsFullEntryConfig(&.{
@@ -5374,17 +5371,7 @@ test {
     _ = @import("core/shared/gateway_error_format.zig");
     _ = @import("core/cli/doctor_runtime.zig");
     _ = @import("core/auth/login_flow.zig");
-    _ = @import("core/auth/chatgpt_oauth.zig");
     _ = @import("core/auth/provider_catalog.zig");
-    _ = @import("gateway/openai_codex_models.zig");
-    _ = @import("gateway/openai_codex.zig");
-    _ = @import("gateway/responses_protocol.zig");
-    _ = @import("gateway/openai_codex_permission_reviewer.zig");
-    _ = @import("core/auth/grok_session.zig");
-    _ = @import("core/auth/grok_oauth.zig");
-    _ = @import("gateway/xai_grok_models.zig");
-    _ = @import("gateway/xai_grok.zig");
-    _ = @import("gateway/xai_grok_permission_reviewer.zig");
     _ = credentials;
     _ = @import("core/auth/oauth.zig");
     _ = @import("core/auth/oauth_session.zig");
@@ -5532,8 +5519,6 @@ test {
     _ = @import("gateway/host_stream_provider.zig");
     _ = @import("gateway/vercel_failure_diagnostics.zig");
     _ = @import("gateway/host_model_catalog.zig");
-    _ = @import("gateway/host_openai_codex.zig");
-    _ = @import("gateway/host_xai_grok.zig");
     _ = @import("gateway/host_chat_completions.zig");
 }
 

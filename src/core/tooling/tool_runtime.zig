@@ -7657,7 +7657,7 @@ fn executeVisionPathTargetsForTest(
     });
 }
 
-test "Codex vision calls fail before provider access" {
+test "vision calls fail before provider access without vision fallback" {
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -7669,7 +7669,7 @@ test "Codex vision calls fail before provider access" {
     var fixture = VisionGatewayFixture{ .alloc = alloc, .responses = &responses };
     defer fixture.deinit();
     var rt = TestRuntime{
-        .provider = .codex,
+        .provider = model_provider.parse("local").?,
         .provider_capabilities = .{},
         .agent_stream_provider = fixture.provider(),
         .tool_registry = .{ .tools = vision_test_registry_tools[0..] },

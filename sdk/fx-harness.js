@@ -2,7 +2,6 @@
 // core running fx engines. Everything the core needs to know about fx is
 // here; the core itself knows only the harness contract.
 import { checkPromptInput, coreAnswered, engineInternals, journalMarksWanted, normalizeInstructions, normalizeModelChoice, resumeOutputShown } from "./engine.js";
-import { createCredentialMemory, credentialMemory } from "./subscription.js";
 
 const encoder = new TextEncoder();
 // Every worker reads each record since the session's last checkpoint, so a
@@ -23,8 +22,6 @@ export function fxHarness({ createEngine, defaultApiKey = async () => undefined 
       if (Object.hasOwn(engineOptions, name)) throw new TypeError(`createFxAgent() does not accept ${name}`);
     }
     const idempotent = idempotentTools(engineOptions.tools);
-    // One for all of this agent's sessions, so they refresh an account once.
-    const credentials = createCredentialMemory();
     return {
       ...(checkpoint === undefined ? {} : { seed: snapshotOf(checkpointBytesOf(checkpoint)) }),
       settings: sessionSettings,
@@ -40,7 +37,6 @@ export function fxHarness({ createEngine, defaultApiKey = async () => undefined 
           ...(apiKey === undefined ? {} : { apiKey }),
           ...(ready === undefined || engineOptions.tools === undefined ? {} : { tools: claimedTools(engineOptions.tools, ready) }),
           sessionId,
-          [credentialMemory]: credentials,
           // The core folds the session from the marks on each record.
           persistence: { ...store, [journalMarksWanted]: true },
           inputsDurable: true,

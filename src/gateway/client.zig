@@ -264,24 +264,13 @@ pub const ProviderAttemptOwner = enum {
 const usage_response_max_bytes: usize = 1024 * 1024;
 const usage_request_timeout_ms: i64 = 15_000;
 
-/// The provider account a usage GET names, with the headers that provider
-/// expects.
-pub const UsageAccount = union(enum) {
-    none,
-    /// ChatGPT, for Codex: `chatgpt-account-id`.
-    chatgpt: []const u8,
-    /// The Grok CLI proxy: `x-userid`.
-    grok: []const u8,
-};
-
 /// One bounded GET for usage. `gateway_team` sends the AI Gateway team
-/// header; `account` sends a provider's account headers. Redirects are
-/// refused, so the bearer never leaves the URL's origin.
+/// header. Redirects are refused, so the bearer never leaves the URL's
+/// origin.
 pub fn fetchUsageGet(
     alloc: std.mem.Allocator,
     bearer: []const u8,
     gateway_team: ?[]const u8,
-    account: UsageAccount,
     url: []const u8,
     cancel_flag: *std.atomic.Value(bool),
 ) !GetResult {
@@ -289,7 +278,6 @@ pub fn fetchUsageGet(
         .alloc = alloc,
         .bearer = bearer,
         .gateway_team = gateway_team,
-        .account = account,
         .url = url,
     };
     return runBoundedHttpOperation(
@@ -314,7 +302,6 @@ pub fn fetchUsageGetThroughHost(
     transport: host_stream_provider.Transport,
     bearer: []const u8,
     gateway_team: ?[]const u8,
-    account: UsageAccount,
     url: []const u8,
     cancel_flag: *std.atomic.Value(bool),
     cooperative_pulse: ?agent_stream_provider.CooperativePulse,
@@ -323,7 +310,7 @@ pub fn fetchUsageGetThroughHost(
     defer secret.zeroAndFree(alloc, authorization);
     var headers_buf: [5]std.http.Header = undefined;
     headers_buf[0] = .{ .name = "authorization", .value = authorization };
-    const extra = usageExtraHeaders(headers_buf[1..5], gateway_team, account);
+    const extra = usageExtraHeaders(headers_buf[1..5], gateway_team);
     const response = try host_stream_provider.get(
         alloc,
         transport,
@@ -341,57 +328,27 @@ pub fn fetchUsageGetThroughHost(
 }
 
 /// The headers a usage GET sends besides `authorization`: the AI Gateway
-/// team, or the provider account. Borrows from the arguments.
-fn usageExtraHeaders(buf: *[4]std.http.Header, gateway_team: ?[]const u8, account: UsageAccount) []const std.http.Header {
-    var count = gatewayModelCatalogExtraHeaders(buf, gateway_team).len;
-    switch (account) {
-        .none => {},
-        .chatgpt => |id| {
-            buf[count] = .{ .name = "chatgpt-account-id", .value = id };
-            buf[count + 1] = .{ .name = "originator", .value = "fx" };
-            count += 2;
-        },
-        // The proxy reads a subscription token only with the Grok CLI's
-        // token-auth marker, the same one fx's Grok requests send.
-        .grok => |id| {
-            buf[count] = .{ .name = "X-XAI-Token-Auth", .value = "xai-grok-cli" };
-            buf[count + 1] = .{ .name = "x-userid", .value = id };
-            buf[count + 2] = .{ .name = "x-grok-client-identifier", .value = "fx" };
-            count += 3;
-        },
-    }
+/// team. Borrows from the arguments.
+fn usageExtraHeaders(buf: *[4]std.http.Header, gateway_team: ?[]const u8) []const std.http.Header {
+    const count = gatewayModelCatalogExtraHeaders(buf, gateway_team).len;
     return buf[0..count];
 }
 
-test "usage GETs send the team or provider account headers, whichever transport carries them" {
+test "usage GETs send the AI Gateway team header" {
     var buf: [4]std.http.Header = undefined;
-    try std.testing.expectEqual(@as(usize, 0), usageExtraHeaders(&buf, null, .none).len);
-    try std.testing.expectEqual(@as(usize, 0), usageExtraHeaders(&buf, "", .none).len);
+    try std.testing.expectEqual(@as(usize, 0), usageExtraHeaders(&buf, null).len);
+    try std.testing.expectEqual(@as(usize, 0), usageExtraHeaders(&buf, "").len);
 
-    const team = usageExtraHeaders(&buf, "team_example", .none);
+    const team = usageExtraHeaders(&buf, "team_example");
     try std.testing.expectEqual(@as(usize, 1), team.len);
     try std.testing.expectEqualStrings(vercel_ai_gateway_team_header, team[0].name);
     try std.testing.expectEqualStrings("team_example", team[0].value);
-
-    const chatgpt = usageExtraHeaders(&buf, null, .{ .chatgpt = "account-example" });
-    try std.testing.expectEqual(@as(usize, 2), chatgpt.len);
-    try std.testing.expectEqualStrings("chatgpt-account-id", chatgpt[0].name);
-    try std.testing.expectEqualStrings("account-example", chatgpt[0].value);
-    try std.testing.expectEqualStrings("originator", chatgpt[1].name);
-
-    const grok = usageExtraHeaders(&buf, null, .{ .grok = "user-example" });
-    try std.testing.expectEqual(@as(usize, 3), grok.len);
-    try std.testing.expectEqualStrings("X-XAI-Token-Auth", grok[0].name);
-    try std.testing.expectEqualStrings("x-userid", grok[1].name);
-    try std.testing.expectEqualStrings("user-example", grok[1].value);
-    try std.testing.expectEqualStrings("x-grok-client-identifier", grok[2].name);
 }
 
 const UsageGetOperation = struct {
     alloc: std.mem.Allocator,
     bearer: []const u8,
     gateway_team: ?[]const u8,
-    account: UsageAccount,
     url: []const u8,
 
     fn run(self: *@This()) !GetResult {
@@ -410,7 +367,7 @@ const UsageGetOperation = struct {
                 .user_agent = .{ .override = user_agent },
                 .authorization = .{ .override = auth_header },
             },
-            .extra_headers = usageExtraHeaders(&extra_headers_buf, self.gateway_team, self.account),
+            .extra_headers = usageExtraHeaders(&extra_headers_buf, self.gateway_team),
             .redirect_behavior = .unhandled,
         });
         defer req.deinit();
@@ -10471,7 +10428,6 @@ test "usage GET cancellation interrupts TLS setup" {
         std.testing.allocator,
         "test-key",
         null,
-        .none,
         url,
         &cancel_flag,
     );

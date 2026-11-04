@@ -19,16 +19,6 @@ pub const Scope = enum {
     member,
     /// AI Gateway API key: that key only (`api_key_id=self`).
     api_key,
-    /// A ChatGPT plan through Codex: its limits, not AI Gateway reports.
-    codex,
-    /// A Grok plan: its allowance and credits, not AI Gateway reports.
-    grok,
-
-    /// Whether usage comes from AI Gateway reports rather than a provider's
-    /// plan.
-    pub fn readsReports(self: Scope) bool {
-        return self == .member or self == .api_key;
-    }
 };
 
 pub const Totals = struct {
@@ -201,7 +191,6 @@ pub fn reportPath(buf: []u8, scope: Scope, first: i64, last: i64) ![]const u8 {
     const filter = switch (scope) {
         .member => "metered_scope=user",
         .api_key => "api_key_id=self",
-        .codex, .grok => return error.NotAiGateway,
     };
     return std.mem.print(buf, "/v1/report?start_date={s}&end_date={s}&group_by=model&{s}", .{
         formatDay(&a, first),
@@ -365,7 +354,6 @@ test "paths pick the filter for how fx is signed in" {
         "/ai-gateway/usage-report?teamId=team_1&scope=user&start=2026-10-11&end=2026-10-11",
         try budgetPath(&buf, "team_1", day),
     );
-    try testing.expectError(error.NotAiGateway, reportPath(&buf, .codex, day, day));
 }
 
 test "model rows parse, merge duplicates and sort by cost" {

@@ -1,9 +1,9 @@
-// Subscription credentials for libfx agents: Codex on a ChatGPT plan, Grok on
-// a Grok plan. The engine sends these providers' requests without credentials;
-// this module adds them at the fetch edge, from the host's `credentials`
-// callback, refreshing near expiry and once after a rejection. Credentials
-// never enter the engine or a session's saved records, and are masked in the
-// body of a failed response.
+// Provider credentials for libfx agents: the host's own key for a custom
+// provider. The engine sends the provider's requests without credentials; this
+// module adds them at the fetch edge, from the host's `credentials` callback,
+// refreshing near expiry and once after a rejection. Credentials never enter
+// the engine or a session's saved records, and are masked in the body of a
+// failed response.
 //
 // A provider spec supplies what differs: which requests it authorizes, how its
 // credentials are checked and refreshed, and which headers carry them.
@@ -120,9 +120,6 @@ export function needsRefresh(credentials, nowMs) {
     credentials.expiresAt !== undefined &&
     credentials.expiresAt - refreshSkewMs <= nowMs;
 }
-
-/** The engine option that carries an agent's `createCredentialMemory()`. */
-export const credentialMemory = Symbol.for("libfx.credentialMemory");
 
 /**
  * Refresh state for `createSubscriptionAuthorizer()`. An agent gives the same

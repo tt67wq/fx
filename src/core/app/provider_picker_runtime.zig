@@ -638,11 +638,11 @@ fn exactLabel(raw_query: []const u8, column: *const ColumnBuffer) ?[]const u8 {
 test "exact label matching ignores case and surrounding spaces" {
     var column: ColumnBuffer = .{};
     column.labels[0] = "vercel";
-    column.labels[1] = "codex";
+    column.labels[1] = "local";
     column.count = 2;
 
-    try std.testing.expectEqualStrings("codex", exactLabel(" CODEX ", &column).?);
-    try std.testing.expect(exactLabel("cod", &column) == null);
+    try std.testing.expectEqualStrings("local", exactLabel(" LOCAL ", &column).?);
+    try std.testing.expect(exactLabel("loc", &column) == null);
     try std.testing.expect(exactLabel("", &column) == null);
 }
 
@@ -737,7 +737,7 @@ test "provider column lists every provider and marks the active one" {
     app.auth.source = .ai_gateway_api_key;
 
     const column = columnFor(&app, .provider, "");
-    try std.testing.expect(column.count >= 2);
+    try std.testing.expect(column.count >= 1);
     try std.testing.expectEqualStrings("vercel", column.labels[0]);
     try std.testing.expectEqualStrings("current", column.annotations[0]);
     for (column.annotations[1..column.count]) |annotation| {
@@ -748,7 +748,9 @@ test "provider column lists every provider and marks the active one" {
 test "provider column requires matching authentication for a current annotation" {
     var app = ColumnTestApp.init(std.testing.allocator);
     defer app.deinit();
-    for ([_]?credentials.Source{ null, .chatgpt_subscription }) |source| {
+    // A configured credential does not authorize the gateway, so no
+    // provider is marked current.
+    for ([_]?credentials.Source{ null, .configured }) |source| {
         app.auth.source = source;
         const column = columnFor(&app, .provider, "");
         for (column.annotations[0..column.count]) |annotation| {
@@ -764,9 +766,9 @@ test "provider column narrows to what was typed" {
     var app = ColumnTestApp.init(alloc);
     defer app.deinit();
 
-    const column = columnFor(&app, .provider, "gro");
+    const column = columnFor(&app, .provider, "ver");
     try std.testing.expectEqual(@as(usize, 1), column.count);
-    try std.testing.expectEqualStrings("grok", column.labels[0]);
+    try std.testing.expectEqualStrings("vercel", column.labels[0]);
 }
 
 test "provider picker loading preserves query and selection instead of exposing cached options" {
@@ -774,23 +776,23 @@ test "provider picker loading preserves query and selection instead of exposing 
     var app = ColumnTestApp.init(alloc);
     defer app.deinit();
     app.auth.inventory_refresh_active = true;
-    try app.input_runtime.textReplacementState().replace(alloc, "/provider co");
+    try app.input_runtime.textReplacementState().replace(alloc, "/provider ver");
     app.input_runtime.picker.provider_column_index = 2;
 
-    const pending = columnFor(&app, .provider, "co");
+    const pending = columnFor(&app, .provider, "ver");
     try std.testing.expectEqual(@as(usize, 1), pending.count);
     try std.testing.expectEqualStrings("checking credentials...", pending.labels[0]);
     try Runtime(ColumnTestApp).autocomplete(&app);
     Runtime(ColumnTestApp).navigate(&app, 1);
-    try std.testing.expectEqualStrings("/provider co", app.input_runtime.edit_state.input.items);
+    try std.testing.expectEqualStrings("/provider ver", app.input_runtime.edit_state.input.items);
     try std.testing.expectEqual(@as(usize, 2), app.input_runtime.picker.provider_column_index);
 
     app.auth.inventory_refresh_active = false;
-    const ready = columnFor(&app, .provider, "co");
+    const ready = columnFor(&app, .provider, "ver");
     try std.testing.expectEqual(@as(usize, 1), ready.count);
-    try std.testing.expectEqualStrings("codex", ready.labels[0]);
+    try std.testing.expectEqualStrings("vercel", ready.labels[0]);
     try Runtime(ColumnTestApp).autocomplete(&app);
-    try std.testing.expectEqualStrings("/provider codex", app.input_runtime.edit_state.input.items);
+    try std.testing.expectEqualStrings("/provider vercel", app.input_runtime.edit_state.input.items);
 }
 
 test "method column marks the credential the active provider is using" {
@@ -808,11 +810,11 @@ test "method column marks the credential the active provider is using" {
     try std.testing.expectEqualStrings("current", column.annotations[1]);
 }
 
-test "a subscription provider has no method column to open" {
+test "a configured provider has no method column to open" {
     const alloc = std.testing.allocator;
     var app = ColumnTestApp.init(alloc);
     defer app.deinit();
-    try app.input_runtime.picker.beginProviderPickerFlow(alloc, "codex", "", .method);
+    try app.input_runtime.picker.beginProviderPickerFlow(alloc, "local", "", .method);
 
     try std.testing.expectEqual(@as(usize, 0), columnFor(&app, .method, "").count);
 }

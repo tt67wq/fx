@@ -634,8 +634,6 @@ pub fn loadStartupStatusWithAuthMode(
         auth_runtime.StatusSnapshot{
             .active_source = .host_managed,
             .gateway_connected = true,
-            .chatgpt_connected = true,
-            .grok_connected = true,
         }
     else
         try auth_runtime.loadStatusSnapshotForProvider(
@@ -707,7 +705,7 @@ fn keychainReadDeferrable(
     const source = preferred orelse return !env_credential_present;
     return switch (source) {
         .fx_login, .stored_key => true,
-        .vercel_oidc_token, .ai_gateway_api_key, .chatgpt_subscription, .grok_subscription, .host_managed, .configured => false,
+        .vercel_oidc_token, .ai_gateway_api_key, .host_managed, .configured => false,
     };
 }
 
@@ -1721,7 +1719,10 @@ fn initialModelId(default_model: []const u8, configured: ?[]const u8) []const u8
     return config_runtime.modelEnvOverride() orelse configured orelse default_model;
 }
 
-test "loadStartupState starts Codex from FX_PROVIDER and FX_MODEL without a saved model" {
+const configuredProviderSettings =
+    "{\"providers\":{\"local\":{\"protocol\":\"openai-chat-completions\",\"base_url\":\"http://localhost:11434/v1/\",\"auth\":{\"type\":\"none\"}}}}\n";
+
+test "loadStartupState starts a configured provider from FX_PROVIDER and FX_MODEL without a saved model" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try tmp.dir.createDirPath(io_mod.getIo(), "home/.fx");
@@ -1730,17 +1731,18 @@ test "loadStartupState starts Codex from FX_PROVIDER and FX_MODEL without a save
     defer std.testing.allocator.free(home_root);
     const workspace_root = try io_mod.dirRealpathAlloc(std.testing.allocator, tmp.dir, "workspace");
     defer std.testing.allocator.free(workspace_root);
+    try writeFixtureFile(tmp.dir, "home/.fx/settings.json", configuredProviderSettings);
 
     var env = try TestEnv.install(std.testing.allocator, &.{
         .{ .key = "HOME", .value = home_root },
-        .{ .key = "FX_PROVIDER", .value = "codex" },
+        .{ .key = "FX_PROVIDER", .value = "local" },
         .{ .key = "FX_MODEL", .value = "  gpt-env  " },
     });
     defer env.deinit();
 
     var state = try loadStartupStateForWorkspace(std.testing.allocator, workspace_root, "default/model", 25);
     defer state.deinit(std.testing.allocator);
-    try std.testing.expectEqual(model_provider.ProviderId.codex, state.provider);
+    try std.testing.expectEqualStrings("local", state.provider.label());
     try std.testing.expectEqualStrings("gpt-env", state.selected_model);
     try std.testing.expectEqualStrings("gpt-env", state.configured_model);
     try std.testing.expectEqual(config_runtime.ModelSource.process_override, state.model_source);
@@ -1748,12 +1750,12 @@ test "loadStartupState starts Codex from FX_PROVIDER and FX_MODEL without a save
     // A blank FX_MODEL is no model at all, so the setup error still surfaces.
     var blank_env = try TestEnv.install(std.testing.allocator, &.{
         .{ .key = "HOME", .value = home_root },
-        .{ .key = "FX_PROVIDER", .value = "codex" },
+        .{ .key = "FX_PROVIDER", .value = "local" },
         .{ .key = "FX_MODEL", .value = " \t " },
     });
     defer blank_env.deinit();
     try std.testing.expectError(
-        error.CodexModelNotSelected,
+        error.ConfiguredModelNotSelected,
         loadStartupStateForWorkspace(std.testing.allocator, workspace_root, "default/model", 25),
     );
 }
@@ -1774,8 +1776,9 @@ test "loadStartupState seeds a provider without a saved model from the launch --
         .{ .key = "FX_MODEL", .value = "gpt-env" },
     });
     defer env.deinit();
+    try writeFixtureFile(tmp.dir, "home/.fx/settings.json", configuredProviderSettings);
 
-    // fx --provider codex --model gpt-flag from a Gateway-only profile: the
+    // fx --provider local --model gpt-flag from a Gateway-only profile: the
     // flag outranks FX_MODEL as the seeded preference; callers apply it last.
     var state = try loadStartupStateFromOwnedWorkspace(
         alloc,
@@ -1787,11 +1790,11 @@ test "loadStartupState seeds a provider without a saved model from the launch --
         .local,
         null,
         null,
-        .codex,
+        model_provider.parse("local").?,
         "gpt-flag",
     );
     defer state.deinit(alloc);
-    try std.testing.expectEqual(model_provider.ProviderId.codex, state.provider);
+    try std.testing.expectEqualStrings("local", state.provider.label());
     try std.testing.expectEqualStrings("gpt-flag", state.configured_model);
 }
 
@@ -1803,27 +1806,28 @@ test "loadStartupStatus reports where the selected model came from" {
     const home_root = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "home");
     defer alloc.free(home_root);
 
+    try writeFixtureFile(tmp.dir, "home/.fx/settings.json", configuredProviderSettings);
     {
         var env = try TestEnv.install(alloc, &.{
             .{ .key = "HOME", .value = home_root },
-            .{ .key = "FX_PROVIDER", .value = "codex" },
+            .{ .key = "FX_PROVIDER", .value = "local" },
             .{ .key = "FX_MODEL", .value = "gpt-env" },
         });
         defer env.deinit();
         var status = try loadStartupStatusWithAuthMode(alloc, host.unavailable_secret_store, "default/model", 25, .host_managed);
         defer status.deinit(alloc);
-        try std.testing.expectEqual(model_provider.ProviderId.codex, status.provider);
+        try std.testing.expectEqualStrings("local", status.provider.label());
         try std.testing.expectEqualStrings("gpt-env", status.selected_model);
         try std.testing.expectEqual(ModelOrigin.env, status.model_origin);
     }
     {
         var env = try TestEnv.install(alloc, &.{
             .{ .key = "HOME", .value = home_root },
-            .{ .key = "FX_PROVIDER", .value = "codex" },
+            .{ .key = "FX_PROVIDER", .value = "local" },
         });
         defer env.deinit();
         try std.testing.expectError(
-            error.CodexModelNotSelected,
+            error.ConfiguredModelNotSelected,
             loadStartupStatusWithAuthMode(alloc, host.unavailable_secret_store, "default/model", 25, .host_managed),
         );
     }
@@ -1835,7 +1839,7 @@ test "loadStartupStatus reports where the selected model came from" {
         try std.testing.expectEqualStrings("default/model", status.selected_model);
         try std.testing.expectEqual(ModelOrigin.default, status.model_origin);
     }
-    try writeFixtureFile(tmp.dir, "home/.fx/settings.json", "{\"provider\":\"codex\",\"models\":{\"codex\":\"gpt-saved\"}}\n");
+    try writeFixtureFile(tmp.dir, "home/.fx/settings.json", "{\"providers\":{\"local\":{\"protocol\":\"openai-chat-completions\",\"base_url\":\"http://localhost:11434/v1/\",\"auth\":{\"type\":\"none\"}}},\"provider\":\"local\",\"models\":{\"local\":\"gpt-saved\"}}\n");
     {
         var env = try TestEnv.install(alloc, &.{.{ .key = "HOME", .value = home_root }});
         defer env.deinit();
@@ -2711,7 +2715,7 @@ test "loadStartupState defaults fast mode off and requires bound explicit prefer
     defer std.testing.allocator.free(codex_root);
 
     const fixture = try std.testing.allocator.print(
-        "{{\"workspaces\":{{\"{s}\":{{\"model\":\"openai/gpt-5\"}},\"{s}\":{{\"fast_mode\":false}},\"{s}\":{{\"model\":\"zai/glm-5.3\",\"fast_mode\":true}},\"{s}\":{{\"model\":\"provider/fast-toggle\",\"fast_mode\":true,\"fast_mode_model_bound\":true}},\"{s}\":{{\"provider\":\"codex\",\"codex_model\":\"gpt-5.4-mini\"}}}}}}\n",
+        "{{\"providers\":{{\"local\":{{\"protocol\":\"openai-chat-completions\",\"base_url\":\"http://localhost:11434/v1/\",\"auth\":{{\"type\":\"none\"}}}}}},\"workspaces\":{{\"{s}\":{{\"model\":\"openai/gpt-5\"}},\"{s}\":{{\"fast_mode\":false}},\"{s}\":{{\"model\":\"zai/glm-5.3\",\"fast_mode\":true}},\"{s}\":{{\"model\":\"provider/fast-toggle\",\"fast_mode\":true,\"fast_mode_model_bound\":true}},\"{s}\":{{\"provider\":\"local\",\"models\":{{\"local\":\"gpt-5.4-mini\"}}}}}}}}\n",
         .{ configured_root, disabled_root, legacy_fast_root, bound_fast_root, codex_root },
     );
     defer std.testing.allocator.free(fixture);
@@ -2753,7 +2757,7 @@ test "loadStartupState defaults fast mode off and requires bound explicit prefer
 
     var codex = try loadStartupStateForWorkspace(std.testing.allocator, codex_root, "zai/glm-5.2", 25);
     defer codex.deinit(std.testing.allocator);
-    try std.testing.expectEqual(model_provider.ProviderId.codex, codex.provider);
+    try std.testing.expectEqualStrings("local", codex.provider.label());
     try std.testing.expectEqualStrings("gpt-5.4-mini", codex.selected_model);
     try std.testing.expect(!codex.fast_mode);
 }
@@ -2935,7 +2939,7 @@ test "only a Keychain-backed Gateway credential is deferred past the first frame
     try std.testing.expect(!keychainReadDeferrable(true, false, .gateway, null, true));
     try std.testing.expect(!keychainReadDeferrable(true, false, .gateway, .ai_gateway_api_key, false));
     try std.testing.expect(!keychainReadDeferrable(true, false, .gateway, .vercel_oidc_token, false));
-    try std.testing.expect(!keychainReadDeferrable(true, false, .codex, .fx_login, false));
+    try std.testing.expect(!keychainReadDeferrable(true, false, model_provider.parse("local").?, .fx_login, false));
     try std.testing.expect(!keychainReadDeferrable(true, true, .gateway, .fx_login, false));
     try std.testing.expect(!keychainReadDeferrable(false, false, .gateway, .fx_login, false));
 }

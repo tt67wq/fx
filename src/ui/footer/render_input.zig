@@ -249,8 +249,6 @@ pub fn statuslineMenuProjection(
 
 pub const UsageMenuProjection = usage_presentation.Projection;
 pub const usageShowsTables = usage_presentation.showsTables;
-pub const usageIsPlan = usage_presentation.isPlan;
-pub const usageCodexHasPeriods = usage_presentation.codexHasPeriods;
 
 pub fn usageMenuProjection(
     menu: *const usage_menu.State,

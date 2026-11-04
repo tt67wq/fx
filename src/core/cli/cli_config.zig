@@ -266,7 +266,7 @@ pub fn settable(key: []const u8) bool {
 fn ownerHint(key: []const u8) []const u8 {
     const head = key[0 .. std.mem.findScalar(u8, key, '.') orelse key.len];
     const hints = [_]struct { keys: []const []const u8, hint: []const u8 }{
-        .{ .keys = &.{ "model", "models", "codex_model", "grok_model" }, .hint = "use /model in a session" },
+        .{ .keys = &.{ "model", "models" }, .hint = "use /model in a session" },
         .{ .keys = &.{"provider"}, .hint = "use fx provider <name>" },
         .{ .keys = &.{"permission_mode"}, .hint = "use /permissions in a session, or --permission-mode for one run" },
         .{ .keys = &.{"permission"}, .hint = "use /permissions in a session" },
@@ -453,12 +453,14 @@ pub const resolved_keys = [_][]const u8{
 /// Keys `fx config` shows as the files set them: objects fx checks with its
 /// own rules, model choices, editor hints, and values fx manages itself.
 const files_only_keys = [_][]const u8{
-    "$schema",                    "additional_directories", "codex_model",
-    "context_limits",             "credential_source",      "disabledMcpjsonServers",
-    "enableAllProjectMcpServers", "enabledMcpjsonServers",  "fast_mode_model_bound",
-    "grok_model",                 "model",                  "models",
-    "permission",                 "providers",              "skill_symlink_authorities",
-    "workspaces",                 "yolo_acknowledged",
+    "$schema",                   "additional_directories",
+    "context_limits",            "credential_source",
+    "disabledMcpjsonServers",    "enableAllProjectMcpServers",
+    "enabledMcpjsonServers",     "fast_mode_model_bound",
+    "model",                     "models",
+    "permission",                "providers",
+    "skill_symlink_authorities", "workspaces",
+    "yolo_acknowledged",
 };
 
 /// The value a run uses for `key`, read from a state that
@@ -623,7 +625,11 @@ fn savedProvider(entries: []const settings_entries.Entry) model_provider.Provide
     while (index > 0) {
         index -= 1;
         if (!std.mem.eql(u8, entries[index].key, "provider")) continue;
-        return model_provider.parse_saved(entries[index].value) catch .gateway;
+        const value = entries[index].value;
+        // A settings file names a configured provider; its binding lives in the
+        // session, so the name alone decides which model `FX_MODEL` replaces.
+        if (value == .string) return model_provider.parse(value.string) orelse .gateway;
+        return model_provider.parse_saved(value) catch .gateway;
     }
     return .gateway;
 }
@@ -852,7 +858,7 @@ test "load ends with the FX_* overrides fx applies, only without a scope" {
     const io_mod = @import("../shared/io.zig");
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "settings.json", .data = "{\"provider\":\"codex\",\"max_agent_steps\":3}" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "settings.json", .data = "{\"provider\":\"local\",\"max_agent_steps\":3}" });
     const dir = try io_mod.dirRealpathAlloc(alloc, tmp.dir, ".");
     defer alloc.free(dir);
     var paths: config_runtime.Paths = .{
@@ -879,7 +885,7 @@ test "load ends with the FX_* overrides fx applies, only without a scope" {
     try std.testing.expectEqualStrings("FX_MAX_AGENT_STEPS", steps[0].variable.?);
     try std.testing.expectEqual(@as(i64, 9), steps[0].value.integer);
     // The saved provider decides which model FX_MODEL replaces.
-    const models = try settings_entries.lookup(alloc, all.entries.items, "models.codex");
+    const models = try settings_entries.lookup(alloc, all.entries.items, "models.local");
     defer alloc.free(models);
     try std.testing.expectEqualStrings("gpt-env", models[0].value.string);
 

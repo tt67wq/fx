@@ -535,7 +535,7 @@ pub fn Handlers(comptime App: type) type {
         fn commandLogout(ctx: *anyopaque, rest: []const u8) !void {
             const app: *App = @ptrCast(@alignCast(ctx));
             if (comptime @hasDecl(App, "runLogoutCommand")) {
-                try app.runLogoutCommand(agents.screenAgentOf(app), rest);
+                try app.runLogoutCommand(rest);
             } else {
                 try app.writeDomainNotice(.{
                     .topic = "auth",

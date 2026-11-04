@@ -1,9 +1,5 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const chatgpt_oauth = @import("chatgpt_oauth.zig");
-const chatgpt_session = @import("chatgpt_session.zig");
-const grok_oauth = @import("grok_oauth.zig");
-const grok_session = @import("grok_session.zig");
 const debug_trace = @import("../shared/debug_trace.zig");
 const host = @import("../hosts/host.zig");
 const io_mod = @import("../shared/io.zig");
@@ -39,8 +35,6 @@ pub const CatalogPublicOnly = union(enum) {
     credential_refresh_required: Source,
     credential_refresh_failed: Source,
     authenticated_credential_rejected: Source,
-    chatgpt_subscription,
-    grok_subscription,
 
     fn credentialSource(self: CatalogPublicOnly) ?Source {
         return switch (self) {
@@ -49,8 +43,6 @@ pub const CatalogPublicOnly = union(enum) {
             .credential_refresh_required => |source| source,
             .credential_refresh_failed => |source| source,
             .authenticated_credential_rejected => |source| source,
-            .chatgpt_subscription => .chatgpt_subscription,
-            .grok_subscription => .grok_subscription,
         };
     }
 };
@@ -62,8 +54,6 @@ pub const CatalogAuthenticatedSource = enum {
     ai_gateway_api_key,
     fx_login,
     stored_key,
-    chatgpt_subscription,
-    grok_subscription,
 
     fn credentialSource(self: CatalogAuthenticatedSource) Source {
         return switch (self) {
@@ -71,8 +61,6 @@ pub const CatalogAuthenticatedSource = enum {
             .ai_gateway_api_key => .ai_gateway_api_key,
             .fx_login => .fx_login,
             .stored_key => .stored_key,
-            .chatgpt_subscription => .chatgpt_subscription,
-            .grok_subscription => .grok_subscription,
         };
     }
 };
@@ -119,16 +107,11 @@ pub const CatalogAccess = union(enum) {
     pub fn publicFallbackAfterRejection(self: CatalogAccess) ?CatalogAccess {
         return switch (self) {
             .public_only => null,
-            .authenticated => |access| if (access.authority == .explicit or
-                access.source == .chatgpt_subscription or
-                access.source == .grok_subscription)
-                null
-            else
-                .{
-                    .public_only = .{
-                        .authenticated_credential_rejected = access.source.credentialSource(),
-                    },
+            .authenticated => |access| if (access.authority == .explicit) null else .{
+                .public_only = .{
+                    .authenticated_credential_rejected = access.source.credentialSource(),
                 },
+            },
             .host_managed => null,
         };
     }
@@ -218,8 +201,6 @@ pub fn catalogAccessForCredentialAndAccount(
         .vercel_oidc_token => .vercel_oidc_token,
         .ai_gateway_api_key => .ai_gateway_api_key,
         .stored_key => .stored_key,
-        .chatgpt_subscription => .chatgpt_subscription,
-        .grok_subscription => .grok_subscription,
         .host_managed => unreachable,
         .configured => return .{ .public_only = .no_credential },
         .fx_login => blk: {
@@ -234,8 +215,8 @@ pub fn catalogAccessForCredentialAndAccount(
         .authenticated = .{
             .source = authenticated_source,
             .credential = credential,
-            .team_context = if (authenticated_source == .chatgpt_subscription or authenticated_source == .grok_subscription) null else team_context,
-            .account_id = if (authenticated_source == .grok_subscription) account_id else null,
+            .team_context = team_context,
+            .account_id = account_id,
         },
     };
 }
@@ -252,10 +233,6 @@ const FxLoginRefreshMode = enum { if_needed, force };
 
 pub const missing_credential_message = "fx needs access to Vercel AI Gateway. Run fx login to sign in, fx login vercel --api-key to use an API key, or set AI_GATEWAY_API_KEY.";
 pub const missing_interactive_credential_message = "fx needs access to Vercel AI Gateway. Run /login to sign in, /provider to use an API key, or set AI_GATEWAY_API_KEY.";
-pub const missing_chatgpt_credential_message = "fx needs a Codex subscription login for this model. Run fx login codex.";
-pub const missing_chatgpt_interactive_credential_message = "Codex needs a subscription login. Run /login, open Connections, then choose Codex subscription.";
-pub const missing_grok_credential_message = "fx needs a Grok subscription login for this model. Run fx login grok.";
-pub const missing_grok_interactive_credential_message = "Grok needs a subscription login. Run /login, open Connections, then choose Grok subscription.";
 pub const unreadable_store_message = "fx could not read the stored API key from " ++ stored_key_backend_label ++ ". A key may be saved but unreadable. Set FX_TRACE_LOG for the failing step, or set AI_GATEWAY_API_KEY.";
 pub const host_managed_auth_message = "Authentication is managed by the host.";
 
@@ -390,22 +367,7 @@ pub fn resolveForProvider(
             .bearer => |env| .{ .credential = try loadEnvCredential(alloc, env, .configured) },
         };
     }
-    if (provider != .gateway) {
-        const source = provider_catalog.find(provider).login_source;
-        const credential = loadPreferredSource(alloc, transport, secret_store, mode, source) catch |err| {
-            if (err == error.OutOfMemory) return err;
-            debug_trace.logf("auth", "provider source load failed source={t} err={s}", .{ source, @errorName(err) });
-            return .{ .failure = .{ .source = source, .err = err } };
-        };
-        return .{ .credential = credential };
-    }
-    return resolvePreferring(
-        alloc,
-        transport,
-        secret_store,
-        mode,
-        if (preferred == .chatgpt_subscription or preferred == .grok_subscription) null else preferred,
-    );
+    return resolvePreferring(alloc, transport, secret_store, mode, preferred);
 }
 
 /// `preferred` is the source the user last chose in the hub. It is an exact
@@ -511,14 +473,6 @@ fn loadPreferredSource(
             .stored => loadStoredFxLoginCredential(alloc),
             .refresh_if_needed => loadFxLoginCredential(alloc, transport),
         },
-        .chatgpt_subscription => switch (mode) {
-            .stored => loadStoredChatGptCredential(alloc),
-            .refresh_if_needed => loadChatGptCredential(alloc, transport, .if_needed),
-        },
-        .grok_subscription => switch (mode) {
-            .stored => loadStoredGrokCredential(alloc),
-            .refresh_if_needed => loadGrokCredential(alloc, transport, .if_needed),
-        },
         else => loadSource(alloc, transport, secret_store, source),
     };
 }
@@ -534,8 +488,6 @@ pub fn loadSource(
         .ai_gateway_api_key => loadEnvCredential(alloc, "AI_GATEWAY_API_KEY", source),
         .fx_login => loadFxLoginCredential(alloc, transport),
         .stored_key => loadStoredKeyCredential(alloc, secret_store),
-        .chatgpt_subscription => loadChatGptCredential(alloc, transport, .if_needed),
-        .grok_subscription => loadGrokCredential(alloc, transport, .if_needed),
         .host_managed, .configured => null,
     };
 }
@@ -560,20 +512,6 @@ pub fn sourceExists(
             var session = loaded orelse break :blk false;
             defer session.deinit(alloc);
             break :blk true;
-        },
-        .chatgpt_subscription => chatgpt_oauth.sourceExists(alloc) catch |err| switch (err) {
-            error.OutOfMemory => return err,
-            else => blk: {
-                debug_trace.logf("auth", "source probe failed source=chatgpt err={s}", .{@errorName(err)});
-                break :blk false;
-            },
-        },
-        .grok_subscription => grok_oauth.sourceExists(alloc) catch |err| switch (err) {
-            error.OutOfMemory => return err,
-            else => blk: {
-                debug_trace.logf("auth", "source probe failed source=grok err={s}", .{@errorName(err)});
-                break :blk false;
-            },
         },
         .stored_key => blk: {
             if (secret_store.isDisabled()) break :blk false;
@@ -612,8 +550,6 @@ pub fn sourcePresence(
             .missing
         else
             secret_store.presence(),
-        .chatgpt_subscription => chatgpt_session.presence(),
-        .grok_subscription => grok_session.presence(),
         .host_managed, .configured => .missing,
     };
 }
@@ -630,8 +566,6 @@ pub fn requireSourceStorage(source: Source) error{CredentialStorageUnavailable}!
 pub fn requireSignInStorage(source: Source) error{CredentialStorageUnavailable}!void {
     switch (source) {
         .fx_login => try oauth_session.requireSignInStorage(),
-        .chatgpt_subscription => try chatgpt_session.requireSignInStorage(),
-        .grok_subscription => try grok_session.requireSignInStorage(),
         else => {},
     }
 }
@@ -655,54 +589,6 @@ fn loadStoredKeyCredential(
     if (secret_store.isDisabled()) return null;
     const value = (try secret_store.load(alloc)) orelse return null;
     return .{ .token = value, .source = .stored_key };
-}
-
-fn loadChatGptCredential(
-    alloc: std.mem.Allocator,
-    transport: oauth_transport.Provider,
-    mode: chatgpt_oauth.RefreshMode,
-) !?Credential {
-    try requireSourceStorage(.chatgpt_subscription);
-    var access = (try chatgpt_oauth.loadAccess(alloc, transport, mode)) orelse return null;
-    defer access.deinit(alloc);
-    const token = access.access_token;
-    access.access_token = &.{};
-    const account_id = access.account_id;
-    access.account_id = &.{};
-    return .{
-        .token = token,
-        .source = .chatgpt_subscription,
-        .account_id = account_id,
-        .refresh_after_ms = access.refresh_after_ms,
-    };
-}
-
-fn loadStoredChatGptCredential(alloc: std.mem.Allocator) !?Credential {
-    return loadChatGptCredential(alloc, oauth_transport.unavailable_provider, .stored);
-}
-
-fn loadGrokCredential(
-    alloc: std.mem.Allocator,
-    transport: oauth_transport.Provider,
-    mode: grok_oauth.RefreshMode,
-) !?Credential {
-    try requireSourceStorage(.grok_subscription);
-    var access = (try grok_oauth.loadAccess(alloc, transport, mode)) orelse return null;
-    defer access.deinit(alloc);
-    const token = access.access_token;
-    access.access_token = &.{};
-    const account_id = access.account_id;
-    access.account_id = &.{};
-    return .{
-        .token = token,
-        .source = .grok_subscription,
-        .account_id = account_id,
-        .refresh_after_ms = access.refresh_after_ms,
-    };
-}
-
-fn loadStoredGrokCredential(alloc: std.mem.Allocator) !?Credential {
-    return loadGrokCredential(alloc, oauth_transport.unavailable_provider, .stored);
 }
 
 fn nonEmptyEnvValue(name: []const u8) ?[]const u8 {
@@ -742,20 +628,6 @@ pub fn refreshFxLoginCredential(
     transport: oauth_transport.Provider,
 ) !?Credential {
     return refreshFxLoginCredentialLocked(alloc, transport, .force);
-}
-
-pub fn refreshChatGptCredential(
-    alloc: std.mem.Allocator,
-    transport: oauth_transport.Provider,
-) !?Credential {
-    return loadChatGptCredential(alloc, transport, .force);
-}
-
-pub fn refreshGrokCredential(
-    alloc: std.mem.Allocator,
-    transport: oauth_transport.Provider,
-) !?Credential {
-    return loadGrokCredential(alloc, transport, .force);
 }
 
 fn refreshFxLoginCredentialLocked(
@@ -910,15 +782,13 @@ pub fn sourceLabel(source: Source) []const u8 {
         .ai_gateway_api_key => "AI_GATEWAY_API_KEY",
         .fx_login => "fx login",
         .stored_key => "stored API key (" ++ stored_key_backend_label ++ ")",
-        .chatgpt_subscription => "Codex subscription",
-        .grok_subscription => "Grok subscription",
         .host_managed => "host managed",
         .configured => "configured provider",
     };
 }
 
 pub fn sourceRefreshable(source: Source) bool {
-    return source == .fx_login or source == .chatgpt_subscription or source == .grok_subscription;
+    return source == .fx_login;
 }
 
 test "stored key label discloses the backend that answered" {
@@ -969,26 +839,6 @@ test "catalog access isolates public and authenticated provider credentials" {
     try std.testing.expectEqual(CatalogPublicOnlyReason.credential_refresh_failed, refresh_failed.publicOnlyReason().?);
     try std.testing.expectEqual(Source.fx_login, refresh_failed.credentialSource().?);
 
-    const chatgpt = catalogAccessForCredential(
-        .chatgpt_subscription,
-        "chatgpt-secret",
-        "chatgpt-account",
-    );
-    try std.testing.expectEqual(Source.chatgpt_subscription, chatgpt.credentialSource().?);
-    try std.testing.expectEqualStrings("chatgpt-secret", chatgpt.authorizationCredential().?);
-    try std.testing.expect(chatgpt.teamContext() == null);
-    try std.testing.expect(chatgpt.publicFallbackAfterRejection() == null);
-
-    var grok_credential = Credential{
-        .token = try std.testing.allocator.dupe(u8, "grok-secret"),
-        .source = .grok_subscription,
-        .account_id = try std.testing.allocator.dupe(u8, "acct_grok"),
-    };
-    defer grok_credential.deinit(std.testing.allocator);
-    const grok = catalogAccessAt(grok_credential, 0);
-    try std.testing.expectEqualStrings("acct_grok", grok.accountId().?);
-    try std.testing.expect(grok.teamContext() == null);
-
     const rejected: CatalogAccess = .{ .public_only = .{ .authenticated_credential_rejected = .stored_key } };
     try std.testing.expectEqual(CatalogPublicOnlyReason.authenticated_credential_rejected, rejected.publicOnlyReason().?);
     try std.testing.expectEqual(Source.stored_key, rejected.credentialSource().?);
@@ -1029,27 +879,6 @@ test "fx login catalog access requires a fresh credential and selected team" {
     try std.testing.expectEqual(CatalogPublicOnlyReason.fx_login_team_required, missing_team.publicOnlyReason().?);
     try std.testing.expect(missing_team.authorizationCredential() == null);
     try std.testing.expect(missing_team.teamContext() == null);
-}
-
-test "subscription catalog access never sends refresh-due credentials" {
-    for ([_]Source{ .chatgpt_subscription, .grok_subscription }) |source| {
-        var credential = Credential{
-            .token = try std.testing.allocator.dupe(u8, "expired-subscription-token"),
-            .source = source,
-            .account_id = try std.testing.allocator.dupe(u8, "acct_123"),
-            .refresh_after_ms = 10,
-        };
-        defer credential.deinit(std.testing.allocator);
-
-        const access = catalogAccessAt(credential, 10);
-        try std.testing.expectEqual(
-            CatalogPublicOnlyReason.credential_refresh_required,
-            access.publicOnlyReason().?,
-        );
-        try std.testing.expectEqual(source, access.credentialSource().?);
-        try std.testing.expect(access.authorizationCredential() == null);
-        try std.testing.expect(access.accountId() == null);
-    }
 }
 
 test "authenticated catalog access carries source and permitted request context" {
@@ -1355,8 +1184,6 @@ test "credential source presence reads metadata without parsing session secrets"
         file_name: []const u8,
     }{
         .{ .source = .fx_login, .file_name = profile_paths.auth_file_name },
-        .{ .source = .chatgpt_subscription, .file_name = profile_paths.chatgpt_auth_file_name },
-        .{ .source = .grok_subscription, .file_name = profile_paths.grok_auth_file_name },
     };
     for (cases) |case| {
         var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;

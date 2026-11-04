@@ -2513,17 +2513,17 @@ test "app prompt projection configures web search then blocks native execution" 
     try std.testing.expectEqual(@as(usize, 0), provider_state.calls);
 }
 
-test "app ChatGPT route removes Gateway-backed auxiliary capabilities" {
+test "app configured route removes Gateway-backed web search" {
     const alloc = std.testing.allocator;
     var app = try FakeApp.init(alloc);
     defer app.deinit();
     var credential = credentials.Credential{
-        .token = try alloc.dupe(u8, "chatgpt-secret"),
-        .source = .chatgpt_subscription,
+        .token = try alloc.dupe(u8, "configured-secret"),
+        .source = .configured,
     };
     defer credential.deinit(alloc);
     _ = app.auth.adoptCredential(alloc, &credential);
-    app.selected_provider = .codex;
+    app.selected_provider = model_provider.parse("local").?;
 
     const ctx = Runtime(FakeApp).toolContext(
         &app,

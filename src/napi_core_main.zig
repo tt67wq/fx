@@ -14,8 +14,6 @@ const io_mod = @import("core/shared/io.zig");
 const fetch_state = @import("napi_fetch_state.zig");
 const http_config = @import("core/mcp/http_config.zig");
 const host_stream_provider = @import("gateway/host_stream_provider.zig");
-const host_openai_codex = @import("gateway/host_openai_codex.zig");
-const host_xai_grok = @import("gateway/host_xai_grok.zig");
 const host_chat_completions = @import("gateway/host_chat_completions.zig");
 const configured_provider = @import("core/config/configured_provider.zig");
 const provider_catalog = @import("core/auth/provider_catalog.zig");
@@ -655,8 +653,6 @@ const Runtime = struct {
     fetch: FetchBridge = .{},
     attachments: AttachmentTable = .{},
     stream_context: host_stream_provider.ProviderContext = undefined,
-    codex_context: host_openai_codex.Context = undefined,
-    grok_context: host_xai_grok.Context = undefined,
     /// The app's configured provider, when `provider` names one.
     custom_context: ?host_chat_completions.Context = null,
     input: InputQueue = .{},
@@ -703,23 +699,10 @@ const Runtime = struct {
         };
         var providers = provider_set.gateway_only(.{
             .presentation = builtin_gateway.provider_bundle.presentation,
-            .auth_strategy = .vercel,
             .fallback_model_capabilities_fn = builtin_gateway.provider_bundle.fallback_model_capabilities_fn,
             .agent_stream = bridgeBound(host_stream_provider.provider(&self.stream_context)),
             .model_catalog = @import("gateway/host_model_catalog.zig").provider(&self.stream_context.transport),
         });
-        providers.codex = .{
-            .presentation = provider_catalog.find(.codex),
-            .auth_strategy = .chatgpt,
-            .agent_stream = bridgeBound(host_openai_codex.provider(&self.codex_context)),
-            .model_catalog = host_openai_codex.modelCatalogProvider(&self.codex_context),
-        };
-        providers.grok = .{
-            .presentation = provider_catalog.find(.grok),
-            .auth_strategy = .grok,
-            .agent_stream = bridgeBound(host_xai_grok.provider(&self.grok_context)),
-            .model_catalog = host_xai_grok.modelCatalogProvider(&self.grok_context),
-        };
         if (self.custom_context) |*context| {
             providers.configured_fn = configuredBridgeBundle;
             providers.configured_context = context;
@@ -969,8 +952,8 @@ const CreateError = error{
 const max_provider_bytes = configured_provider.max_id_bytes;
 const max_configured_providers_bytes = 1024 * 1024;
 
-/// Reads the optional `provider` option: "gateway", "codex", "grok", or the name
-/// of the provider that the `configuredProviders` option defines.
+/// Reads the optional `provider` option: "gateway", or the name of the
+/// provider that the `configuredProviders` option defines.
 fn getProvider(env: c.napi_env, options: c.napi_value) CreateError!?model_provider.ProviderId {
     const alloc = std.heap.c_allocator;
     const raw = (getNamedString(env, options, "provider", alloc, max_provider_bytes) catch |err| switch (err) {
@@ -980,8 +963,6 @@ fn getProvider(env: c.napi_env, options: c.napi_value) CreateError!?model_provid
     }) orelse return null;
     defer alloc.free(raw);
     if (std.mem.eql(u8, raw, "gateway")) return .gateway;
-    if (std.mem.eql(u8, raw, "codex")) return .codex;
-    if (std.mem.eql(u8, raw, "grok")) return .grok;
     const configured = model_provider.parse(raw) orelse return error.InvalidProvider;
     if (configured != .configured) return error.InvalidProvider;
     return configured;
@@ -1082,8 +1063,6 @@ fn createRuntime(env: c.napi_env, options: c.napi_value) CreateError!*Runtime {
         .close_fn = FetchBridge.close,
         .consumed_fn = FetchBridge.markConsumed,
     });
-    runtime.codex_context = .{ .transport = runtime.stream_context.transport };
-    runtime.grok_context = .{ .transport = runtime.stream_context.transport };
     if (configured_providers) |json| {
         var context = host_chat_completions.Context.init(alloc, runtime.stream_context.transport, json) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
@@ -1104,7 +1083,7 @@ fn throwCreateError(env: c.napi_env, err: CreateError) c.napi_value {
         error.JavaScriptException => null,
         error.TooManyRuntimes => throw(env, "LIBFX_NATIVE_LIMIT", "too many active native runtimes"),
         error.InvalidApiKey => throw(env, "LIBFX_INVALID_ARGUMENT", "apiKey is required and must be a bounded string"),
-        error.InvalidProvider => throw(env, "LIBFX_INVALID_ARGUMENT", "provider must be \"gateway\", \"codex\", \"grok\" or a configured provider's name"),
+        error.InvalidProvider => throw(env, "LIBFX_INVALID_ARGUMENT", "provider must be \"gateway\" or a configured provider's name"),
         error.InvalidConfiguredProvider => throw(env, "LIBFX_INVALID_ARGUMENT", "configuredProviders must validly define the selected provider, without credentials"),
         error.InvalidModel => throw(env, "LIBFX_INVALID_ARGUMENT", "model must be a bounded string"),
         error.InvalidEffort => throw(env, "LIBFX_INVALID_ARGUMENT", "effort must be a bounded string"),
@@ -1495,12 +1474,6 @@ export fn napi_register_module_v1(env: c.napi_env, exports: c.napi_value) callco
     var supports_ultrafast: c.napi_value = undefined;
     if (!statusOk(env, c.napi_get_boolean(env, true, &supports_ultrafast), "could not create ultrafast capability")) return null;
     if (!statusOk(env, c.napi_set_named_property(env, exports, "supportsUltrafast", supports_ultrafast), "could not export ultrafast capability")) return null;
-    var supports_codex: c.napi_value = undefined;
-    if (!statusOk(env, c.napi_get_boolean(env, true, &supports_codex), "could not create Codex capability")) return null;
-    if (!statusOk(env, c.napi_set_named_property(env, exports, "supportsCodex", supports_codex), "could not export Codex capability")) return null;
-    var supports_grok: c.napi_value = undefined;
-    if (!statusOk(env, c.napi_get_boolean(env, true, &supports_grok), "could not create Grok capability")) return null;
-    if (!statusOk(env, c.napi_set_named_property(env, exports, "supportsGrok", supports_grok), "could not export Grok capability")) return null;
     var supports_configured: c.napi_value = undefined;
     if (!statusOk(env, c.napi_get_boolean(env, true, &supports_configured), "could not create configured provider capability")) return null;
     if (!statusOk(env, c.napi_set_named_property(env, exports, "supportsConfiguredProvider", supports_configured), "could not export configured provider capability")) return null;

@@ -44,8 +44,6 @@ const entries = [
   { specifier: "libfx/durable-local", resolution: "node16", mode: "import", types: "types/durable-local.d.ts", runtime: "durable/local.mjs" },
   { specifier: "libfx/durable-vercel", resolution: "node16", mode: "import", types: "types/durable-vercel.d.ts", runtime: "durable/vercel.mjs" },
   { specifier: "libfx/durable-world", resolution: "node16", mode: "import", types: "types/durable-world.d.ts", runtime: "durable/world.mjs" },
-  { specifier: "libfx/chatgpt", resolution: "node16", mode: "import", types: "types/chatgpt.d.ts", runtime: "chatgpt-sign-in.js" },
-  { specifier: "libfx/grok", resolution: "node16", mode: "import", types: "types/grok.d.ts", runtime: "grok-sign-in.js" },
   { specifier: "libfx/mcp", resolution: "node16", mode: "import", types: "types/mcp.d.ts", runtime: "mcp.js" },
   { specifier: "libfx/skills", resolution: "node16", mode: "import", types: "types/skills.d.ts", runtime: "skills.js" },
   { specifier: "libfx/skills/node", resolution: "node16", mode: "import", types: "types/skills-node.d.ts", runtime: "skills-node.js" },

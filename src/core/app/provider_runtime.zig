@@ -209,9 +209,10 @@ test "provider runtime adopts an owned selection without a fallible publication"
     try std.testing.expectEqual(model_provider.ProviderId.gateway, runtime.selection().provider);
     try std.testing.expectEqualStrings("gateway/model", runtime.selection().model);
 
-    var codex_model = try alloc.dupe(u8, "gpt-model");
-    runtime.adoptOwned(.codex, &codex_model);
-    try std.testing.expectEqual(@as(usize, 0), codex_model.len);
-    try std.testing.expectEqual(model_provider.ProviderId.codex, runtime.selection().provider);
+    var local_model = try alloc.dupe(u8, "gpt-model");
+    const local = model_provider.parse("local").?;
+    runtime.adoptOwned(local, &local_model);
+    try std.testing.expectEqual(@as(usize, 0), local_model.len);
+    try std.testing.expect(runtime.selection().provider.eql(local));
     try std.testing.expectEqualStrings("gpt-model", runtime.selection().model);
 }

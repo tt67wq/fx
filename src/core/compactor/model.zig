@@ -227,7 +227,7 @@ test "a failed or empty summary falls back to another family at its lowest reaso
     // Only the gateway can reach another family.
     var direct: ScriptedCaller = .{ .replies = &.{null} };
     defer direct.calls.deinit(std.testing.allocator);
-    var summarizer: Summarizer = .{ .caller = direct.caller(.codex), .cancel_flag = &cancel, .trace_ctx = .{} };
+    var summarizer: Summarizer = .{ .caller = direct.caller(model_provider.parse("local").?), .cancel_flag = &cancel, .trace_ctx = .{} };
     const summary_model = summarizer.model();
     try std.testing.expectError(error.ModelFailed, summary_model.summarize_fn(summary_model.context, std.testing.allocator, prompt));
     try std.testing.expectEqual(@as(usize, 1), direct.calls.items.len);

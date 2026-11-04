@@ -2641,7 +2641,7 @@ test "processQueuedPrompt keeps native image parts for vision route model" {
     try std.testing.expectEqualStrings("Native image answer", hooks.finish_assistant_text.?);
 }
 
-test "processQueuedPrompt never uses the vision fallback for Codex" {
+test "processQueuedPrompt never uses the vision fallback without native vision" {
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -2662,7 +2662,7 @@ test "processQueuedPrompt never uses the vision fallback for Codex" {
     defer hooks.deinit();
     var fixture = PromptFixture{};
     var job = fixture.job();
-    job.provider = .codex;
+    job.provider = model_provider.parse("local").?;
     job.model = @constCast("gpt-5.6-sol");
     job.prompt = @constCast("Describe the attached image.");
     job.images = &images;
@@ -3070,14 +3070,14 @@ test "processQueuedPrompt compacts with the selected working model" {
         working_model: []const u8,
     }{
         .{
-            .provider = .codex,
-            .credential_source = .chatgpt_subscription,
+            .provider = model_provider.parse("local").?,
+            .credential_source = .configured,
             .working_model = "gpt-5.6-sol",
         },
         .{
-            .provider = .grok,
-            .credential_source = .grok_subscription,
-            .working_model = "grok-4.6",
+            .provider = model_provider.parse("remote").?,
+            .credential_source = .configured,
+            .working_model = "qwen/qwen3-max",
         },
         .{
             .provider = .gateway,
@@ -3130,7 +3130,7 @@ test "processQueuedPrompt compacts with the selected working model" {
     defer unavailable_hooks.deinit();
     var unavailable_fixture = PromptFixture{};
     var unavailable_job = unavailable_fixture.job();
-    unavailable_job.provider = .codex;
+    unavailable_job.provider = model_provider.parse("local").?;
     unavailable_job.credential_source = .ai_gateway_api_key;
     unavailable_job.history = &history;
 
@@ -5923,7 +5923,7 @@ test "processQueuedPrompt empty history recovery preserves validation and source
         .{ .content = " ", .state = "[{\"type\":\"text\",\"offset\":0,\"length\":42}]" },
         .{ .content = "kept", .state = "[{\"type\":\"text\",\"offset\":0,\"length\":4}]", .failure = false },
         .{ .state = "[{\"type\":\"reasoning\",\"text\":\"kept\"}]", .failure = false },
-        .{ .state = "not-json", .provider = .codex, .failure = false },
+        .{ .state = "not-json", .provider = model_provider.parse("local").?, .failure = false },
         .{ .state = "not-json", .model = "other-model", .failure = false },
     };
     const alloc = std.testing.allocator;
@@ -7439,10 +7439,7 @@ test "processQueuedPrompt preserves the fallback route until selection changes a
             .provider = .gateway,
             .model = @constCast("zai/glm-5.2"),
             .credential_source = .fx_login,
-            .credential_identity = @import("../../../auth/credential_authority.zig").derive(
-                .fx_login,
-                "acct_1",
-            ),
+            .credential_identity = @import("../../../auth/credential_authority.zig").derive(.fx_login),
         },
         .requested_fast_mode = true,
         .fast_mode = false,
@@ -9303,7 +9300,7 @@ test "processQueuedPrompt does not retry a second fx login 401" {
     try std.testing.expectEqual(types.TurnPresentationOutcome.failed, hooks.finalized_outcome.?);
 }
 
-test "Codex 401 replay keeps payload and semantic recovery unchanged for the captured account" {
+test "a 401 replay keeps payload and semantic recovery unchanged for the captured account" {
     const alloc = std.testing.allocator;
     const completions = [_]FakeCompletion{
         .{ .status = .unauthorized, .err_body = "expired" },
@@ -9320,8 +9317,8 @@ test "Codex 401 replay keeps payload and semantic recovery unchanged for the cap
     defer hooks.deinit();
     var fixture = PromptFixture{};
     var job = fixture.job();
-    job.provider = .codex;
-    job.credential_source = .chatgpt_subscription;
+    job.provider = model_provider.parse("local").?;
+    job.credential_source = .fx_login;
     job.account_id = @constCast("acct-a");
 
     try runFakePrompt(&gateway, &hooks, fixture.config(), job);
@@ -9372,7 +9369,7 @@ test "a session writer check that fails for another reason does not stop the tur
     try std.testing.expectEqual(@as(usize, 2), gateway.request_bodies.items.len);
 }
 
-test "Codex 401 account change makes no second provider request" {
+test "a 401 account change makes no second provider request" {
     const alloc = std.testing.allocator;
     const completions = [_]FakeCompletion{
         .{ .status = .unauthorized, .err_body = "expired" },
@@ -9381,12 +9378,12 @@ test "Codex 401 account change makes no second provider request" {
     var gateway = FakeGateway.init(alloc, &completions);
     defer gateway.deinit();
     var hooks = FakeAgentRuntimeDeps.init(alloc);
-    hooks.credential_refresh_error = error.ChatGptAccountChanged;
+    hooks.credential_refresh_error = error.CredentialAuthorityChanged;
     defer hooks.deinit();
     var fixture = PromptFixture{};
     var job = fixture.job();
-    job.provider = .codex;
-    job.credential_source = .chatgpt_subscription;
+    job.provider = model_provider.parse("local").?;
+    job.credential_source = .fx_login;
     job.account_id = @constCast("acct-a");
 
     try runFakePrompt(&gateway, &hooks, fixture.config(), job);

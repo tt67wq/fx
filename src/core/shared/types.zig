@@ -110,8 +110,6 @@ pub const CredentialSource = enum {
     ai_gateway_api_key,
     fx_login,
     stored_key,
-    chatgpt_subscription,
-    grok_subscription,
     host_managed,
     configured,
 };
@@ -422,7 +420,6 @@ pub fn plainErrorText(raw: []const u8, buf: []u8) []const u8 {
         .{ "InvalidGatewaySseEvent", "unreadable reply" },
         .{ "InvalidProviderFinishReason", "unreadable reply" },
         .{ "GatewaySseEventTooLarge", "reply too large to read" },
-        .{ "XaiGrokSseEventTooLarge", "reply too large to read" },
         // Storage faults read as fx says them on startup and in ACP.
         .{ "AccessDenied", "permission denied" },
         .{ "ReadOnlyFileSystem", "the disk is read-only" },
@@ -1705,8 +1702,6 @@ test "provider replay projection preserves matching origin and excludes other ro
     const messages = [_]ChatMessage{.{ .role = .assistant, .content = "answer", .provider_replay = .{ .source = source, .parts_json = "[]" } }};
     try std.testing.expect(try projectProviderReplay(alloc, &messages, source) == null);
     for ([_]@import("../config/model_provider.zig").ProviderSelection{
-        .{ .provider = .codex, .model = "model" },
-        .{ .provider = .grok, .model = "model" },
         .{ .provider = .gateway, .model = "different" },
     }) |other| {
         const projected = (try projectProviderReplay(alloc, &messages, other)).?;
@@ -1719,7 +1714,7 @@ test "provider replay projection preserves matching origin and excludes other ro
     try std.testing.checkAllAllocationFailures(testing_allocator.no_resize, struct {
         fn check(a: std.mem.Allocator) !void {
             const input = [_]ChatMessage{.{ .role = .assistant, .provider_replay = .{ .source = .{ .provider = .gateway, .model = "model" }, .parts_json = "[]" } }};
-            const projected = (try projectProviderReplay(a, &input, .{ .provider = .codex, .model = "model" })).?;
+            const projected = (try projectProviderReplay(a, &input, .{ .provider = .gateway, .model = "different" })).?;
             defer a.free(projected);
             const copy = try dupeProviderReplay(a, input[0].provider_replay.?);
             defer freeProviderReplay(a, copy);

@@ -1778,12 +1778,12 @@ test "model cache access copies clean up every induced allocation failure" {
     }
 }
 
-test "model cache access owns Grok account identity with its credential" {
+test "model cache access owns account identity with its credential" {
     const access = credentials.catalogAccessForCredentialAndAccount(
-        .grok_subscription,
+        .stored_key,
         "copied-secret",
         null,
-        "acct_grok",
+        "acct",
     );
     for (0..2) |fail_index| {
         var failing = std.testing.FailingAllocator.init(
@@ -1800,7 +1800,7 @@ test "model cache access owns Grok account identity with its credential" {
 
     var owned = try OwnedCatalogAccess.init(std.testing.allocator, access);
     defer owned.deinit(std.testing.allocator);
-    try std.testing.expectEqualStrings("acct_grok", owned.access.accountId().?);
+    try std.testing.expectEqualStrings("acct", owned.access.accountId().?);
 }
 
 fn runRepeatedAuthChangeCycle(iteration: usize) !void {

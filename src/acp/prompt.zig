@@ -229,7 +229,7 @@ fn ultrafastCapabilityAllowed(
 
 test "ultrafastPromptAllowed requires a verified Gateway capability" {
     try std.testing.expect(ultrafastCapabilityAllowed(.gateway, true, true));
-    try std.testing.expect(!ultrafastCapabilityAllowed(.codex, true, true));
+    try std.testing.expect(!ultrafastCapabilityAllowed(model_provider.parse("local").?, true, true));
     try std.testing.expect(!ultrafastCapabilityAllowed(.gateway, false, true));
     try std.testing.expect(!ultrafastCapabilityAllowed(.gateway, true, false));
 }
@@ -876,10 +876,8 @@ pub fn handlePrompt(
     if (!try server.selectCredentialForProvider(state, session.provider)) {
         return .{ .rpc_error = .{
             .code = ErrorCode.invalid_request,
-            .message = if (session.provider == .codex)
-                credentials.missing_chatgpt_credential_message
-            else if (session.provider == .grok)
-                credentials.missing_grok_credential_message
+            .message = if (session.provider == .configured)
+                "Configured provider authentication is unavailable"
             else
                 credentials.missing_credential_message,
         } };
@@ -5428,21 +5426,6 @@ test "ACP prompt projection configures web search then blocks native execution" 
     try std.testing.expectEqualStrings(state.cfg.gateway_chat_url, state.web_search_runtime.gateway_chat_url);
     try std.testing.expectEqual(.failure, execution.status);
     try std.testing.expectEqual(@as(usize, 0), provider_state.calls);
-}
-
-test "ACP ChatGPT route removes Gateway-backed auxiliary capabilities" {
-    const alloc = std.testing.allocator;
-    var state = try initTestAcpState(alloc, "/tmp/workspace", .auto);
-    defer state.deinit();
-    state.active_session.?.credential_source = .chatgpt_subscription;
-    state.active_session.?.provider = .codex;
-    state.active_session.?.api_key = "chatgpt-secret";
-    var ctx = AcpContext{ .alloc = alloc, .state = &state, .session_id = "session_1" };
-
-    const tool_ctx = ctx.toolContext();
-    try std.testing.expect(tool_ctx.web_search_backend == null);
-    try std.testing.expect(tool_ctx.permission_reviewer_provider == null);
-    try std.testing.expect(!tool_ctx.auto_classifier.enabled());
 }
 
 test "ACP default user commands require configured authority or review" {

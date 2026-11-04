@@ -2559,13 +2559,13 @@ test "session_commands handleModel resolves fuzzy cached model and syncs queued 
     var app = try FakeApp.init(alloc, "/tmp/workspace", "openai/gpt-4o");
     defer app.deinit();
     app.cached_ids = &ids;
-    app.selected_provider = .codex;
+    app.selected_provider = model_provider.parse("local").?;
 
     try Commands(FakeApp).handleModel(&app, (&app).agent(), "claude sonnet");
 
     try std.testing.expectEqualStrings("anthropic/claude-sonnet-4-20250514", app.selected_model.items);
     try std.testing.expectEqualStrings("anthropic/claude-sonnet-4-20250514", app.agent().worker.synced_model.?);
-    try std.testing.expectEqual(model_provider.ProviderId.codex, app.last_preference_provider.?);
+    try std.testing.expect(app.last_preference_provider.?.eql(model_provider.parse("local").?));
     try std.testing.expectEqualStrings(
         "fx v" ++ build_options.app_version ++ " | workspace",
         app.terminalTitleLabelText(),
@@ -3321,7 +3321,7 @@ test "session_commands model picker emits one combined preference transaction" {
         "anthropic/claude-opus-4.7",
     );
     defer app.deinit();
-    app.selected_provider = .codex;
+    app.selected_provider = model_provider.parse("local").?;
     const efforts = [_]types.ReasoningEffort{types.ReasoningEffort.literal("high")};
     app.setGatewayControls("anthropic/claude-opus-4.7", &efforts, true);
 
@@ -3335,7 +3335,7 @@ test "session_commands model picker emits one combined preference transaction" {
     );
 
     try std.testing.expectEqual(@as(usize, 1), app.preference_commit_count);
-    try std.testing.expectEqual(model_provider.ProviderId.codex, app.last_preference_provider.?);
+    try std.testing.expect(app.last_preference_provider.?.eql(model_provider.parse("local").?));
     try std.testing.expectEqualStrings(
         "anthropic/claude-opus-4.7",
         app.last_preference_model.items,

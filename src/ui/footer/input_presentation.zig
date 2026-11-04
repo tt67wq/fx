@@ -445,37 +445,12 @@ fn authPickerInteractionHint(view: auth_runtime.PickerView, width: u16) ?[]const
         "↑↓ move  enter  esc",
         "enter esc",
     };
-    const codex_sign_in_variants = [_][]const u8{
-        "enter reopens browser · esc cancels",
-        "enter reopens  esc cancels",
-        "enter  esc",
-        "enter esc",
-    };
-    const grok_browser_variants = [_][]const u8{
-        "enter reopens browser · tab enters code · esc cancels",
-        "enter reopens  tab code  esc cancels",
-        "enter  tab  esc",
-        "enter tab esc",
-    };
-    const grok_manual_variants = [_][]const u8{
-        "enter submits code · tab returns to browser · esc cancels",
-        "enter submits  tab browser  esc cancels",
-        "enter  tab  esc",
-        "enter tab esc",
-    };
     const variants = switch (view.stage) {
         .root => root_variants,
         .connections => connections_variants,
         .provider, .switch_credential => selection_variants,
         .change_team => team_variants,
-        .sign_in => switch (view.sign_in_source) {
-            .chatgpt_subscription => codex_sign_in_variants,
-            .grok_subscription => if (view.sign_in_code_visible)
-                grok_manual_variants
-            else
-                grok_browser_variants,
-            else => return null,
-        },
+        .sign_in => return null,
         .api_key => return null,
     };
     for (variants) |candidate| {
@@ -818,14 +793,6 @@ pub fn composeCompactCommandMenuHintRow(
             "esc close",
             "esc close",
             "esc",
-        } else if (render_input.usageCodexHasPeriods(usage_menu)) [_][]const u8{
-            "tab period     r refresh     esc close",
-            "tab period  r refresh  esc",
-            "tab  r  esc",
-        } else if (render_input.usageIsPlan(usage_menu)) [_][]const u8{
-            "r refresh     esc close",
-            "r refresh  esc",
-            "r  esc",
         } else if (usage_menu.detail) [_][]const u8{
             "↑↓ next model     esc back     r refresh",
             "↑↓ model  esc back  r refresh",
@@ -1730,53 +1697,6 @@ test "compose hint row replaces model status with setup navigation" {
     var child = try composeHintRow(std.testing.allocator, false, ctx, 96);
     defer child.deinit(std.testing.allocator);
     try std.testing.expect(std.mem.find(u8, child.items, "esc back") != null);
-}
-
-test "compose hint row replaces model status with subscription sign-in controls" {
-    const alloc = std.testing.allocator;
-    const cases = [_]struct {
-        source: credentials.Source,
-        manual_code_visible: bool,
-        expected: []const u8,
-    }{
-        .{
-            .source = .chatgpt_subscription,
-            .manual_code_visible = false,
-            .expected = "enter reopens browser · esc cancels",
-        },
-        .{
-            .source = .grok_subscription,
-            .manual_code_visible = false,
-            .expected = "enter reopens browser · tab enters code · esc cancels",
-        },
-        .{
-            .source = .grok_subscription,
-            .manual_code_visible = true,
-            .expected = "enter submits code · tab returns to browser · esc cancels",
-        },
-    };
-
-    for (cases) |case| {
-        var input = InputRuntime{};
-        defer input.deinit(alloc);
-        var ctx = testRenderContext(&input);
-        ctx.model = "model-status-sentinel";
-        ctx.auth_picker = .{
-            .active = true,
-            .available_sources = .empty,
-            .selected_choice = null,
-            .active_source = null,
-            .include_skip = false,
-            .stage = .sign_in,
-            .sign_in_source = case.source,
-            .sign_in_code_visible = case.manual_code_visible,
-        };
-
-        var row = try composeHintRow(alloc, false, ctx, 80);
-        defer row.deinit(alloc);
-        try std.testing.expect(std.mem.find(u8, row.items, case.expected) != null);
-        try std.testing.expect(std.mem.find(u8, row.items, "model-status-sentinel") == null);
-    }
 }
 
 test "compose hint row keeps configured fast mode visible" {

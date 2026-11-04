@@ -595,12 +595,12 @@ test "ACP provider routes are host-managed only when configured and never leak i
     state.account_id = null;
     state.gateway_team = null;
 
-    // A Codex turn leaves the process host-managed with no token.
-    var codex = (try prepareCredentialForProvider(&state, .codex)).?;
-    try std.testing.expectEqual(types.CredentialSource.host_managed, codex.source);
-    try std.testing.expectEqual(@as(usize, 0), codex.token.len);
-    adoptServerCredential(&state, &codex);
-    codex.deinit(alloc);
+    // A configured turn leaves the process host-managed with no token.
+    var host_configured = (try prepareCredentialForProvider(&state, model_provider.parse("local").?)).?;
+    try std.testing.expectEqual(types.CredentialSource.host_managed, host_configured.source);
+    try std.testing.expectEqual(@as(usize, 0), host_configured.token.len);
+    adoptServerCredential(&state, &host_configured);
+    host_configured.deinit(alloc);
     try std.testing.expectEqual(types.CredentialSource.host_managed, state.credential_source.?);
 
     // The next Gateway turn gets its own key, not the host-managed source.
@@ -609,13 +609,7 @@ test "ACP provider routes are host-managed only when configured and never leak i
     try std.testing.expectEqual(types.CredentialSource.ai_gateway_api_key, gateway.source);
     try std.testing.expectEqualStrings("gateway-key", gateway.token);
 
-    // A Grok turn is host-managed the same way.
-    var grok = (try prepareCredentialForProvider(&state, .grok)).?;
-    defer grok.deinit(alloc);
-    try std.testing.expectEqual(types.CredentialSource.host_managed, grok.source);
-    try std.testing.expectEqual(@as(usize, 0), grok.token.len);
-
-    // So is a configured provider: the host adds its API key, if any.
+    // A configured provider is host-managed the same way.
     const configured = model_provider.parse("local").?;
     var custom = (try prepareCredentialForProvider(&state, configured)).?;
     defer custom.deinit(alloc);
@@ -624,8 +618,6 @@ test "ACP provider routes are host-managed only when configured and never leak i
 
     // Without the policy each provider needs its own credential.
     state.cfg.provider_auth_mode = .local;
-    try std.testing.expect(!hostManagesRoute(state.cfg, .codex));
-    try std.testing.expect(!hostManagesRoute(state.cfg, .grok));
     try std.testing.expect(!hostManagesRoute(state.cfg, configured));
     try std.testing.expect(!hostManagesRoute(state.cfg, .gateway));
 }
@@ -689,19 +681,19 @@ fn publishRefreshedCredential(
     if (expected_account_id) |expected| {
         const refreshed_account = refreshed.accountId() orelse {
             debug_trace.logf("auth", "ACP credential publication rejected stage=refreshed_account_missing", .{});
-            return error.ChatGptAccountChanged;
+            return error.CredentialAuthorityChanged;
         };
         const state_account = state.account_id orelse {
             debug_trace.logf("auth", "ACP credential publication rejected stage=state_account_missing", .{});
-            return error.ChatGptAccountChanged;
+            return error.CredentialAuthorityChanged;
         };
         if (!std.mem.eql(u8, expected, refreshed_account)) {
             debug_trace.logf("auth", "ACP credential publication rejected stage=refreshed_account_changed", .{});
-            return error.ChatGptAccountChanged;
+            return error.CredentialAuthorityChanged;
         }
         if (!std.mem.eql(u8, expected, state_account)) {
             debug_trace.logf("auth", "ACP credential publication rejected stage=state_account_changed", .{});
-            return error.ChatGptAccountChanged;
+            return error.CredentialAuthorityChanged;
         }
     }
     if (expected_team) |expected| {
@@ -718,11 +710,11 @@ fn publishRefreshedCredential(
         if (expected_account_id) |expected| {
             const active_account = active.account_id orelse {
                 debug_trace.logf("auth", "ACP credential publication rejected stage=active_account_missing", .{});
-                return error.ChatGptAccountChanged;
+                return error.CredentialAuthorityChanged;
             };
             if (!std.mem.eql(u8, expected, active_account)) {
                 debug_trace.logf("auth", "ACP credential publication rejected stage=active_account_changed", .{});
-                return error.ChatGptAccountChanged;
+                return error.CredentialAuthorityChanged;
             }
         }
     }
@@ -2973,10 +2965,8 @@ fn handleInitialize(state: *ServerState, alloc: Allocator, msg: *jsonrpc.Message
             if (routed_credential == null) {
                 return state.writer.writeError(alloc, msg.id, .{
                     .code = ErrorCode.invalid_request,
-                    .message = if (state.provider == .codex)
-                        credentials.missing_chatgpt_credential_message
-                    else if (state.provider == .grok)
-                        credentials.missing_grok_credential_message
+                    .message = if (state.provider == .configured)
+                        "Configured provider authentication is unavailable"
                     else
                         credentials.missing_credential_message,
                 });
@@ -2986,12 +2976,7 @@ fn handleInitialize(state: *ServerState, alloc: Allocator, msg: *jsonrpc.Message
         if (credential.token.len == 0 and credential.source != .configured) {
             return state.writer.writeError(alloc, msg.id, .{
                 .code = ErrorCode.invalid_request,
-                .message = if (state.provider == .codex)
-                    credentials.missing_chatgpt_credential_message
-                else if (state.provider == .grok)
-                    credentials.missing_grok_credential_message
-                else
-                    credentials.missing_credential_message,
+                .message = credentials.missing_credential_message,
             });
         }
         adoptServerCredential(state, credential);
@@ -3371,7 +3356,7 @@ fn ultrafastOverrideRejection(
 test "ultrafastOverrideRejection accepts only Gateway models with the catalog capability" {
     const alloc = std.testing.allocator;
     try std.testing.expectEqual(@as(?[]u8, null), try ultrafastOverrideRejection(alloc, .gateway, .{ .supports_ultrafast_mode = true }, "openai/model"));
-    const rejection = (try ultrafastOverrideRejection(alloc, .codex, .{ .supports_ultrafast_mode = true }, "openai/model")).?;
+    const rejection = (try ultrafastOverrideRejection(alloc, model_provider.parse("local").?, .{ .supports_ultrafast_mode = true }, "openai/model")).?;
     defer alloc.free(rejection);
     try std.testing.expect(std.mem.find(u8, rejection, "openai/model") != null);
     const unavailable = (try ultrafastOverrideRejection(alloc, .gateway, .{}, "openai/model")).?;
@@ -3510,12 +3495,10 @@ fn handleSetConfigOption(state: *ServerState, alloc: Allocator, msg: *jsonrpc.Me
                 if (!try selectCredentialForProvider(state, session.provider)) {
                     return state.writer.writeError(alloc, msg.id, .{
                         .code = ErrorCode.invalid_request,
-                        .message = if (session.provider == .codex)
-                            credentials.missing_chatgpt_credential_message
-                        else if (session.provider == .grok)
-                            credentials.missing_grok_credential_message
+                        .message = if (session.provider == .configured)
+                            "Configured provider authentication is unavailable"
                         else
-                            "Configured provider authentication is unavailable",
+                            credentials.missing_credential_message,
                     });
                 }
             }
@@ -3592,10 +3575,8 @@ fn handleSetConfigOption(state: *ServerState, alloc: Allocator, msg: *jsonrpc.Me
                 )) orelse
                     return state.writer.writeError(alloc, msg.id, .{
                         .code = ErrorCode.invalid_request,
-                        .message = if (target == .codex)
-                            credentials.missing_chatgpt_credential_message
-                        else if (target == .grok)
-                            credentials.missing_grok_credential_message
+                        .message = if (target == .configured)
+                            "Configured provider authentication is unavailable"
                         else
                             credentials.missing_credential_message,
                     });
@@ -4051,7 +4032,7 @@ test "speedSupportedBy keeps only the lanes the new model offers" {
     try std.testing.expectEqual(on, speedSupportedBy(on, .gateway, both));
     try std.testing.expectEqual(SessionSpeed{ .fast = true, .ultrafast = false }, speedSupportedBy(on, .gateway, fast_only));
     try std.testing.expectEqual(SessionSpeed{ .fast = false, .ultrafast = false }, speedSupportedBy(on, .gateway, plain));
-    try std.testing.expectEqual(SessionSpeed{ .fast = true, .ultrafast = false }, speedSupportedBy(on, .codex, both));
+    try std.testing.expectEqual(SessionSpeed{ .fast = true, .ultrafast = false }, speedSupportedBy(on, model_provider.parse("local").?, both));
     const standard: SessionSpeed = .{ .fast = false, .ultrafast = false };
     try std.testing.expectEqual(standard, speedSupportedBy(standard, .gateway, both));
 }
@@ -4706,18 +4687,23 @@ test "ACP ultrafast writes preserve v2 baselines across other preference changes
     active.effort = .auto;
     active.fast_mode = false;
     active.ultrafast_mode = false;
+    // A configured provider is saved with its binding, so it must be bound
+    // before it can be written into the session.
+    var registry = try @import("../core/config/configured_provider.zig").Registry.parse_json(alloc, "{\"local\":{\"protocol\":\"openai-chat-completions\",\"base_url\":\"http://localhost:11434/v1\",\"auth\":{\"type\":\"none\"}}}");
+    defer registry.deinit(alloc);
+    const local = try model_provider.parse("local").?.bind(registry);
     try commitActiveSessionUltrafast(alloc, &active, true);
     try std.testing.expect(active.ultrafast_mode);
     active.ultrafast_mode = false;
     try commitActiveSessionModel(alloc, &active, "new-model");
-    try commitActiveSessionProvider(alloc, &active, .codex, "child-model");
+    try commitActiveSessionProvider(alloc, &active, local, "child-model");
     try commitActiveSessionEffort(alloc, &active, .literal("high"));
     {
         var preferences = try v2.currentPreferences(alloc);
         defer preferences.deinit(alloc);
         try std.testing.expect(preferences.ultrafast_mode);
         try std.testing.expectEqualStrings("child-model", preferences.model);
-        try std.testing.expectEqual(model_provider.ProviderId.codex, preferences.provider);
+        try std.testing.expect(preferences.provider.eql(local));
         try std.testing.expectEqualStrings("high", preferences.effort.label());
     }
     var failing = std.testing.FailingAllocator.init(alloc, .{ .fail_index = 0 });
@@ -4782,20 +4768,20 @@ test "ACP model commits honor the active session write boundary" {
     );
 }
 
-test "ACP publishes an account-bound refreshed Codex token for later prompts" {
+test "ACP publishes an account-bound refreshed token for later prompts" {
     const alloc = std.testing.allocator;
     var state: ServerState = undefined;
     state.alloc = alloc;
     state.api_key = try alloc.dupe(u8, "stale-token");
     state.account_id = try alloc.dupe(u8, "acct-1");
-    state.credential_source = .chatgpt_subscription;
+    state.credential_source = .fx_login;
     state.credential_refresh_after_ms = 1;
     state.gateway_team = null;
     var active: ActiveSessionState = undefined;
     active.v2 = null;
     active.api_key = state.api_key;
     active.account_id = state.account_id;
-    active.credential_source = .chatgpt_subscription;
+    active.credential_source = .fx_login;
     active.credential_refresh_after_ms = 1;
     active.session_rt = .{ .max_history_turns = 8 };
     state.active_session = active;
@@ -4807,7 +4793,7 @@ test "ACP publishes an account-bound refreshed Codex token for later prompts" {
 
     var refreshed = credentials.Credential{
         .token = try alloc.dupe(u8, "fresh-token"),
-        .source = .chatgpt_subscription,
+        .source = .fx_login,
         .account_id = try alloc.dupe(u8, "acct-1"),
         .refresh_after_ms = 100,
     };
@@ -4823,20 +4809,20 @@ test "ACP publishes an account-bound refreshed Codex token for later prompts" {
 }
 
 test "ACP credential readiness rejects refresh-due access tokens" {
-    try std.testing.expect(credentialReadyAt(.chatgpt_subscription, "token", 11, 10));
-    try std.testing.expect(!credentialReadyAt(.chatgpt_subscription, "token", 10, 10));
-    try std.testing.expect(!credentialReadyAt(.grok_subscription, "token", 1, 10));
+    try std.testing.expect(credentialReadyAt(.fx_login, "token", 11, 10));
+    try std.testing.expect(!credentialReadyAt(.fx_login, "token", 10, 10));
+    try std.testing.expect(!credentialReadyAt(.fx_login, "token", 1, 10));
     try std.testing.expect(credentialReadyAt(.ai_gateway_api_key, "token", null, 10));
     try std.testing.expect(!credentialReadyAt(.ai_gateway_api_key, "", null, 10));
 }
 
-test "ACP rejects refreshed Codex tokens for another account" {
+test "ACP rejects refreshed tokens for another account" {
     const alloc = std.testing.allocator;
     var state: ServerState = undefined;
     state.alloc = alloc;
     state.api_key = try alloc.dupe(u8, "stale-token");
     state.account_id = try alloc.dupe(u8, "acct-1");
-    state.credential_source = .chatgpt_subscription;
+    state.credential_source = .fx_login;
     state.credential_refresh_after_ms = 1;
     state.gateway_team = null;
     state.active_session = null;
@@ -4847,12 +4833,12 @@ test "ACP rejects refreshed Codex tokens for another account" {
 
     var refreshed = credentials.Credential{
         .token = try alloc.dupe(u8, "wrong-token"),
-        .source = .chatgpt_subscription,
+        .source = .fx_login,
         .account_id = try alloc.dupe(u8, "acct-2"),
         .refresh_after_ms = 100,
     };
     defer refreshed.deinit(alloc);
-    try std.testing.expectError(error.ChatGptAccountChanged, publishRefreshedCredential(
+    try std.testing.expectError(error.CredentialAuthorityChanged, publishRefreshedCredential(
         &state,
         &refreshed,
         "acct-2",

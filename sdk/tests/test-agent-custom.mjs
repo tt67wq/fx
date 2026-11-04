@@ -282,8 +282,8 @@ await assert.rejects(createFxEngine({ ...base, provider: { ...provider, apiKey: 
 await assert.rejects(createFxEngine({ ...base, provider: { ...provider, models: { "local-model": { context: 1 } } } }), /unknown field context/);
 await assert.rejects(createFxEngine({ ...backendOptions, provider }), /a custom provider needs a model/);
 await assert.rejects(createFxEngine({ ...base, provider, credentials: "sk" }), /credentials must be a function/);
-await assert.rejects(createFxEngine({ ...base, provider, onCredentials: () => {} }), /onCredentials needs provider "codex" or "grok"/);
-await assert.rejects(createFxEngine({ ...base, provider, refreshLock: async (_info, refresh) => refresh() }), /refreshLock needs provider "codex" or "grok"/);
+await assert.rejects(createFxEngine({ ...base, provider, onCredentials: () => {} }), /onCredentials is not supported/);
+await assert.rejects(createFxEngine({ ...base, provider, refreshLock: async (_info, refresh) => refresh() }), /refreshLock is not supported/);
 await assert.rejects(createFxEngine({ ...base, provider: { ...provider, models: { "local-model": { contextWindow: 100, maxOutputTokens: 100 } } } }), /maxOutputTokens must be less than contextWindow/);
 await assert.rejects(createFxEngine({ ...base, provider: { ...provider, models: { "local-model": { supportsVision: "yes" } } } }), /supportsVision must be a boolean/);
 // The engine applies the CLI's complete rules to what passes the quick checks.

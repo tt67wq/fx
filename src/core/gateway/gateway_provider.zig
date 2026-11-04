@@ -419,11 +419,11 @@ test "capability refresh keys host-managed catalogs by provider" {
     defer resolver.deinit(alloc);
     const input = model_catalog.FetchInput{ .endpoint = "https://example.invalid", .access = .host_managed };
     try resolver.refreshIfDue(alloc, provider, input);
-    provider.provider_id = .codex;
+    provider.provider_id = model_provider.parse("local").?;
     try resolver.refreshIfDue(alloc, provider, input);
     try std.testing.expectEqual(@as(usize, 2), fake.calls);
     fake.outcome = .unavailable;
-    provider.provider_id = .grok;
+    provider.provider_id = model_provider.parse("remote").?;
     try resolver.refreshIfDue(alloc, provider, input);
     try std.testing.expectEqual(@as(usize, 3), fake.calls);
     try std.testing.expect(resolver.catalogEntries() == null);

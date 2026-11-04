@@ -473,10 +473,6 @@ pub fn Runtime(comptime App: type) type {
                     app.auth.refreshSourceInventory(app.alloc) catch |err| {
                         debug_trace.logf("auth", "startup source inventory refresh failed err={s}", .{@errorName(err)});
                     };
-                } else if (comptime @hasDecl(@TypeOf(app.auth), "refreshChatGptSourceInventory")) {
-                    app.auth.refreshChatGptSourceInventory(app.alloc) catch |err| {
-                        debug_trace.logf("auth", "startup source inventory refresh failed err={s}", .{@errorName(err)});
-                    };
                 }
                 const startup_auth_view = app.auth.view();
                 if (startup_auth_view.active_source == null and !startup_auth_view.onboarding_skipped) {
@@ -1210,12 +1206,11 @@ test "app_bootstrap_runtime launch provider override marks the provider for resu
     defer app.deinit();
 
     try runBootstrapWithOverridesForTest(&app, &capture, .{
-        .provider = .grok,
+        .provider = model_provider.parse("local").?,
     });
 
-    try std.testing.expectEqual(
-        @as(?model_provider.ProviderId, .grok),
-        capture.provider_process_override,
+    try std.testing.expect(
+        capture.provider_process_override.?.eql(model_provider.parse("local").?),
     );
 }
 

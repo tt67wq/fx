@@ -307,7 +307,7 @@ test "Ultrafast requires explicit opt-in and verified OpenAI Gateway capability"
     const ultra = try resolveUltrafastProviderOptions(caps, .gateway, "openai/gpt-6-astra", .auto, true, true);
     try std.testing.expect(ultra.ultrafast and !ultra.fast);
     try std.testing.expectError(error.UltrafastUnavailable, resolveUltrafastProviderOptions(.{}, .gateway, "openai/gpt-6-astra", .auto, false, true));
-    try std.testing.expectError(error.UltrafastUnavailable, resolveUltrafastProviderOptions(caps, .codex, "openai/gpt-6-astra", .auto, false, true));
+    try std.testing.expectError(error.UltrafastUnavailable, resolveUltrafastProviderOptions(caps, model_provider.parse("local").?, "openai/gpt-6-astra", .auto, false, true));
     try std.testing.expectError(error.UltrafastUnavailable, resolveUltrafastProviderOptions(caps, .gateway, "anthropic/model", .auto, false, true));
 }
 

@@ -307,6 +307,15 @@ pub fn validate_model_id(id: []const u8) error{ LimitExceeded, InvalidModelId }!
     }
 }
 
+/// Names of the retired built-in providers. fx ignores a saved provider or
+/// model preference under one of them instead of refusing to start.
+pub fn is_retired_name(id: []const u8) bool {
+    for ([_][]const u8{ "codex", "grok" }) |retired| {
+        if (std.ascii.eqlIgnoreCase(id, retired)) return true;
+    }
+    return false;
+}
+
 /// Returns a borrow, removing only one optional trailing slash. No decoding,
 /// case folding, default-port removal, or path-prefix rewriting is performed.
 fn validate_url(url: []const u8) ParseError![]const u8 {
