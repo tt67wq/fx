@@ -1,7 +1,6 @@
 const std = @import("std");
 const agents = @import("../agents/agents.zig");
 const file_picker_path = @import("../input/file_picker_path.zig");
-const login_flow = @import("../auth/login_flow.zig");
 const debug_trace = @import("../shared/debug_trace.zig");
 const text_utils = @import("../shared/text_utils.zig");
 const types = @import("../shared/types.zig");
@@ -98,12 +97,6 @@ test "pasted image slash removes only a prefix before a captured path" {
 pub fn PasteEditRuntime(comptime App: type) type {
     return struct {
         const AppAgent = if (@hasField(App, "main_agent")) @FieldType(App, "main_agent") else struct {};
-        fn authCodeEntryActive(app: *const App) bool {
-            if (comptime !@hasField(App, "auth") or
-                !@hasDecl(@TypeOf(app.auth), "signInCodeEntryActive")) return false;
-            return app.auth.signInCodeEntryActive();
-        }
-
         pub fn beginPaste(app: *App, agent: *AppAgent, max_input_len: usize) void {
             const owner: paste_framing.Owner = if (agent.question_prompt.isActive())
                 if (agent.question_prompt.isFreeformSelected()) .question_freeform else .decision_prompt
@@ -111,13 +104,10 @@ pub fn PasteEditRuntime(comptime App: type) type {
                 .approval_amendment
             else if (agent.approval_prompt.isActive())
                 .decision_prompt
-            else if (authCodeEntryActive(app))
-                .auth_code
             else
                 .composer;
             const buffer_limit = switch (owner) {
                 .composer => app.input_runtime.replacementState(&agent.pending_images).availableBytesForSelectionOrInsertion(max_input_len),
-                .auth_code => login_flow.max_manual_code_bytes,
                 .none, .decision_prompt, .question_freeform, .approval_amendment => max_input_len,
             };
 
@@ -211,21 +201,11 @@ pub fn PasteEditRuntime(comptime App: type) type {
         pub fn finishPaste(app: *App, agent: *AppAgent, max_input_len: usize) !void {
             if (app.input_runtime.paste.overflow_bytes > 0) {
                 const attempted_bytes = app.input_runtime.paste.attemptedBytes();
-                if (app.input_runtime.paste.owner == .auth_code) {
-                    app.input_runtime.paste.resetSecretWithTrace(.{ .input_limit = .auth_code });
-                    app.shell.render_requests.request(.footer);
-                    try app.writeDomainNotice(.{
-                        .topic = "auth",
-                        .tone = .@"error",
-                        .body = "The authorization code is too long.",
-                    }, true);
-                    return;
-                }
                 const owner: text_scalar.Owner = switch (app.input_runtime.paste.owner) {
                     .composer => .composer,
                     .question_freeform => .question_freeform,
                     .approval_amendment => .approval_amendment,
-                    .none, .decision_prompt, .auth_code => unreachable,
+                    .none, .decision_prompt => unreachable,
                 };
                 app.input_runtime.paste.resetWithTrace(.{ .input_limit = switch (owner) {
                     .composer => .composer,
@@ -245,7 +225,6 @@ pub fn PasteEditRuntime(comptime App: type) type {
                     const normalized = normalizeApprovalAmendmentPasteInPlace(app.input_runtime.paste.buffer.items);
                     app.input_runtime.paste.buffer.items.len = normalized.len;
                 },
-                .auth_code => {},
                 else => {},
             }
 
@@ -332,30 +311,6 @@ pub fn PasteEditRuntime(comptime App: type) type {
                         app.shell.render_requests.request(.modal);
                     } else {
                         app.input_runtime.paste.resetWithTrace(.session_reset);
-                    }
-                },
-                .auth_code => {
-                    if (comptime @hasField(App, "auth") and
-                        @hasDecl(@TypeOf(app.auth), "replaceSignInCodeInput"))
-                    {
-                        const accepted = try app.auth.replaceSignInCodeInput(
-                            app.alloc,
-                            app.input_runtime.paste.buffer.items,
-                        );
-                        if (!accepted) {
-                            app.input_runtime.paste.resetSecretWithTrace(.session_reset);
-                            try app.writeDomainNotice(.{
-                                .topic = "auth",
-                                .tone = .@"error",
-                                .body = "The authorization code is invalid.",
-                            }, true);
-                            return;
-                        }
-                        app.input_runtime.paste.beginHandling();
-                        app.input_runtime.paste.finishSecretHandled();
-                        app.shell.render_requests.request(.footer);
-                    } else {
-                        app.input_runtime.paste.resetSecretWithTrace(.session_reset);
                     }
                 },
             }

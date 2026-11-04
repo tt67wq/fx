@@ -963,14 +963,6 @@ pub fn Runtime(comptime App: type) type {
             }
 
             if (resolved == .paste_start) {
-                if (comptime runtime_profile.allows(App, .native_auth) and
-                    @hasDecl(@TypeOf(app.auth), "signInCodeEntryActive"))
-                {
-                    if (app.auth.signInCodeEntryActive()) {
-                        paste_rt.beginPaste(app, agents.screenAgentOf(app), max_input_len);
-                        return .done;
-                    }
-                }
                 dismissActiveMenusThenRedraw(app, agents.screenAgentOf(app));
                 paste_rt.beginPaste(app, agents.screenAgentOf(app), max_input_len);
                 return .done;

@@ -45,7 +45,6 @@ const StoredKeyStoreFn = *const fn (?*anyopaque, Allocator, []const u8) anyerror
 
 const max_api_key_entry_bytes: usize = 8 * 1024;
 const max_api_key_mask_glyphs = provider_picker_catalog.max_key_mask_glyphs;
-const max_manual_code_mask_glyphs: usize = 32;
 const max_team_query_bytes: usize = 256;
 
 fn sourceLabelOrMissing(source: ?credentials.Source) []const u8 {
@@ -1328,13 +1327,6 @@ const ApiKeyExitReason = enum {
     runtime_deinit,
 };
 
-const ManualCodeClearReason = enum {
-    cancel,
-    submitted,
-    screen_replacement,
-    runtime_deinit,
-};
-
 pub const Choice = union(enum) {
     provider: model_provider.ProviderId,
     source: credentials.Source,
@@ -1384,8 +1376,6 @@ pub const PickerView = struct {
     team_query: []const u8 = &.{},
     sign_in: login_flow.SignInSnapshot = .{},
     sign_in_source: credentials.Source = .fx_login,
-    sign_in_code_visible: bool = false,
-    sign_in_code_mask_count: usize = 0,
     api_key_mask_count: usize = 0,
     api_key_inline: bool = false,
 
@@ -1766,8 +1756,6 @@ pub const Runtime = struct {
     sign_in_flow: login_flow.SignInRuntime = .{},
     sign_in_source: credentials.Source = .fx_login,
     sign_in_returns_to_root: bool = false,
-    sign_in_code_visible: bool = false,
-    sign_in_code_input: std.ArrayList(u8) = .empty,
     api_key_input: std.ArrayList(u8) = .empty,
     /// The key field is rendered as a `/provider` column instead of the staged
     /// panel, so the composer keeps showing which path the user walked.
@@ -1825,7 +1813,7 @@ pub const Runtime = struct {
         auth_mode: credentials.AuthMode,
     ) void {
         comptime {
-            if (@typeInfo(Self).@"struct".field_names.len != 35) {
+            if (@typeInfo(Self).@"struct".field_names.len != 33) {
                 @compileError("update Runtime.initInto for the changed field set");
             }
         }
@@ -1852,8 +1840,6 @@ pub const Runtime = struct {
         storage.sign_in_flow = .{};
         storage.sign_in_source = .fx_login;
         storage.sign_in_returns_to_root = false;
-        storage.sign_in_code_visible = false;
-        storage.sign_in_code_input = .empty;
         storage.api_key_input = .empty;
         storage.api_key_inline = false;
         storage.api_key_returns_to_root = false;
@@ -1905,7 +1891,6 @@ pub const Runtime = struct {
         self.remote_revocation_tasks.deinit(std.heap.c_allocator);
         self.api_key_save.deinit(alloc);
         self.sign_in_flow.deinit(alloc);
-        self.clearSignInCodeInput(alloc, .runtime_deinit);
         self.exitApiKeyStage(alloc, .runtime_deinit);
         self.clearTeamSelection(alloc);
         self.team_query.deinit(alloc);
@@ -2295,8 +2280,6 @@ pub const Runtime = struct {
             .team_query = self.team_query.items,
             .sign_in = self.sign_in_flow.snapshot(),
             .sign_in_source = self.sign_in_source,
-            .sign_in_code_visible = self.sign_in_code_visible,
-            .sign_in_code_mask_count = @min(self.sign_in_code_input.items.len, max_manual_code_mask_glyphs),
             .api_key_mask_count = self.apiKeyMaskCount(),
             .api_key_inline = self.api_key_inline,
         };
@@ -2482,26 +2465,11 @@ pub const Runtime = struct {
         self.picker_selection = null;
         self.sign_in_source = source;
         self.sign_in_returns_to_root = returns_to_root;
-        self.sign_in_code_visible = false;
         return true;
     }
 
     pub fn signInEntryActive(self: *const Self) bool {
         return self.picker_active and self.picker_stage == .sign_in;
-    }
-
-    pub fn signInCodeEntryActive(self: *const Self) bool {
-        return self.signInEntryActive() and
-            self.sign_in_flow.snapshot().accepts_manual_code and
-            self.sign_in_code_visible;
-    }
-
-    pub fn toggleSignInCodeEntry(self: *Self) bool {
-        if (!self.signInEntryActive() or !self.sign_in_flow.snapshot().accepts_manual_code) {
-            return false;
-        }
-        self.sign_in_code_visible = !self.sign_in_code_visible;
-        return true;
     }
 
     pub fn signInReturnsToRoot(self: *const Self) bool {
@@ -2524,47 +2492,6 @@ pub const Runtime = struct {
 
     pub fn pulseSignIn(self: *Self, alloc: Allocator) void {
         self.sign_in_flow.pulse(alloc);
-    }
-
-    pub fn appendSignInCodeByte(self: *Self, alloc: Allocator, byte: u8) !bool {
-        if (!self.signInCodeEntryActive()) return false;
-        if (byte <= 0x20 or byte > 0x7e) return true;
-        if (self.sign_in_code_input.items.len >= login_flow.max_manual_code_bytes) return true;
-        try self.sign_in_code_input.ensureTotalCapacityPrecise(alloc, login_flow.max_manual_code_bytes);
-        self.sign_in_code_input.appendAssumeCapacity(byte);
-        return true;
-    }
-
-    pub fn deleteSignInCodeByte(self: *Self) bool {
-        if (!self.signInCodeEntryActive()) return false;
-        if (self.sign_in_code_input.items.len > 0) {
-            self.sign_in_code_input.items.len -= 1;
-            self.sign_in_code_input.allocatedSlice()[self.sign_in_code_input.items.len] = 0;
-        }
-        return true;
-    }
-
-    pub fn replaceSignInCodeInput(self: *Self, alloc: Allocator, input: []const u8) !bool {
-        if (!self.signInCodeEntryActive()) return false;
-        const code = std.mem.trim(u8, input, " \t\r\n");
-        if (code.len == 0 or code.len > login_flow.max_manual_code_bytes) return false;
-        for (code) |byte| {
-            if (byte < 0x21 or byte > 0x7e) return false;
-        }
-        if (self.sign_in_code_input.capacity > 0) {
-            self.sign_in_code_input.clearRetainingCapacity();
-            @memset(self.sign_in_code_input.allocatedSlice(), 0);
-        }
-        try self.sign_in_code_input.ensureTotalCapacityPrecise(alloc, login_flow.max_manual_code_bytes);
-        self.sign_in_code_input.appendSliceAssumeCapacity(code);
-        return true;
-    }
-
-    pub fn submitSignInCode(self: *Self, alloc: Allocator) !bool {
-        if (!self.signInCodeEntryActive() or self.sign_in_code_input.items.len == 0) return false;
-        if (!try self.sign_in_flow.submitManualCode(alloc, self.sign_in_code_input.items)) return false;
-        self.clearSignInCodeInput(alloc, .submitted);
-        return true;
     }
 
     pub fn apiKeyEntryActive(self: *const Self) bool {
@@ -2664,7 +2591,6 @@ pub const Runtime = struct {
         if (stage == .sign_in) {
             const returns_to_root = self.sign_in_returns_to_root;
             _ = self.sign_in_flow.cancel(alloc);
-            self.clearSignInCodeInput(alloc, .cancel);
             self.sign_in_returns_to_root = false;
             if (!returns_to_root) {
                 self.picker_active = false;
@@ -2784,24 +2710,7 @@ pub const Runtime = struct {
     fn exitSignInStage(self: *Self, alloc: Allocator) void {
         if (self.picker_stage != .sign_in) return;
         _ = self.sign_in_flow.cancel(alloc);
-        self.clearSignInCodeInput(alloc, .screen_replacement);
         self.sign_in_returns_to_root = false;
-    }
-
-    fn clearSignInCodeInput(self: *Self, alloc: Allocator, reason: ManualCodeClearReason) void {
-        const byte_count = self.sign_in_code_input.items.len;
-        self.sign_in_code_visible = false;
-        if (self.sign_in_code_input.capacity > 0) {
-            secret.zeroAndFree(alloc, self.sign_in_code_input.allocatedSlice());
-            self.sign_in_code_input = .empty;
-        }
-        if (byte_count > 0) {
-            debug_trace.logf(
-                "auth",
-                "authorization code entry cleared reason={s} bytes={d}",
-                .{ @tagName(reason), byte_count },
-            );
-        }
     }
 
     /// The loaded team list regardless of which picker is presenting it: the
@@ -3154,7 +3063,6 @@ test "auth in-place initialization preserves empty runtime state" {
     try std.testing.expect(runtime.provider_picker_active == .gateway);
     try std.testing.expect(runtime.team_selection == null);
     try std.testing.expect(runtime.team_query.items.len == 0);
-    try std.testing.expect(runtime.sign_in_code_input.items.len == 0);
     try std.testing.expect(runtime.api_key_input.items.len == 0);
 }
 
@@ -5148,109 +5056,6 @@ test "api key stage zeroes its allocation on every exit path" {
         runtime.deinit(alloc);
         try expectApiKeyAllocationCleared(&runtime, &backing, sentinel);
     }
-}
-
-fn makeManualCodeTestLogin(alloc: Allocator) !login_flow.PreparedLogin {
-    const issuer = try alloc.dupe(u8, "https://issuer.test");
-    errdefer alloc.free(issuer);
-    const authorization_endpoint = try alloc.dupe(u8, "https://issuer.test/authorize");
-    errdefer alloc.free(authorization_endpoint);
-    const token_endpoint = try alloc.dupe(u8, "https://issuer.test/token");
-    errdefer alloc.free(token_endpoint);
-    const device_code = try alloc.dupe(u8, "device-code");
-    errdefer alloc.free(device_code);
-    const user_code = try alloc.dupe(u8, "");
-    errdefer alloc.free(user_code);
-    const verification_uri = try alloc.dupe(u8, "https://issuer.test/authorize");
-    errdefer alloc.free(verification_uri);
-    const client_id = try alloc.dupe(u8, "client-id");
-    errdefer alloc.free(client_id);
-    return .{
-        .metadata = .{
-            .issuer = issuer,
-            .device_authorization_endpoint = authorization_endpoint,
-            .token_endpoint = token_endpoint,
-        },
-        .device = .{
-            .device_code = device_code,
-            .user_code = user_code,
-            .verification_uri = verification_uri,
-            .expires_in = 300,
-            .interval = 1,
-        },
-        .client_id = client_id,
-    };
-}
-
-fn pendingManualCodeTestPoll(
-    _: ?*anyopaque,
-    _: Allocator,
-    _: oauth_transport.Provider,
-    _: oauth.Metadata,
-    _: []const u8,
-    _: []const u8,
-    cancel_flag: *std.atomic.Value(bool),
-    _: std.Io.Clock.Timestamp,
-) !oauth.PollResult {
-    while (!cancel_flag.load(.seq_cst)) io_mod.sleep(std.time.ns_per_ms);
-    return error.Cancelled;
-}
-
-fn acceptManualCodeForTest(_: ?*anyopaque, _: Allocator, _: []const u8) !void {}
-
-fn enterPendingTestSignIn(runtime: *Runtime, alloc: Allocator, accepts_manual_code: bool) !void {
-    const prepared = try makeManualCodeTestLogin(alloc);
-    try std.testing.expect(try runtime.sign_in_flow.startPrepared(alloc, prepared, .{
-        .poll = .{ .poll_device_token = pendingManualCodeTestPoll },
-        .submit_manual_code = if (accepts_manual_code) acceptManualCodeForTest else null,
-    }));
-    runtime.picker_active = true;
-    runtime.picker_stage = .sign_in;
-    runtime.sign_in_source = .fx_login;
-}
-
-test "manual code capability starts collapsed" {
-    const alloc = std.testing.allocator;
-    var runtime: Runtime = .{};
-    defer runtime.deinit(alloc);
-    try enterPendingTestSignIn(&runtime, alloc, true);
-
-    try std.testing.expect(runtime.pickerView().sign_in.accepts_manual_code);
-    try std.testing.expect(!runtime.signInCodeEntryActive());
-}
-
-test "manual code visibility preserves a draft across Tab toggles and clears it on exit" {
-    const alloc = std.testing.allocator;
-    var runtime: Runtime = .{};
-    defer runtime.deinit(alloc);
-    try enterPendingTestSignIn(&runtime, alloc, true);
-
-    try std.testing.expect(runtime.toggleSignInCodeEntry());
-    try std.testing.expect(runtime.signInCodeEntryActive());
-    for ("draft-code") |byte| try std.testing.expect(try runtime.appendSignInCodeByte(alloc, byte));
-    try std.testing.expectEqual(@as(usize, 10), runtime.pickerView().sign_in_code_mask_count);
-
-    try std.testing.expect(runtime.toggleSignInCodeEntry());
-    try std.testing.expect(!runtime.signInCodeEntryActive());
-    try std.testing.expect(!runtime.pickerView().sign_in_code_visible);
-    try std.testing.expectEqual(@as(usize, 10), runtime.pickerView().sign_in_code_mask_count);
-
-    try std.testing.expect(runtime.toggleSignInCodeEntry());
-    try std.testing.expect(runtime.signInCodeEntryActive());
-    try std.testing.expect(runtime.popPickerStage(alloc));
-    try std.testing.expect(!runtime.pickerView().sign_in_code_visible);
-    try std.testing.expectEqual(@as(usize, 0), runtime.pickerView().sign_in_code_mask_count);
-}
-
-test "manual code visibility cannot toggle without provider capability" {
-    const alloc = std.testing.allocator;
-    var runtime: Runtime = .{};
-    defer runtime.deinit(alloc);
-    try enterPendingTestSignIn(&runtime, alloc, false);
-
-    try std.testing.expect(!runtime.toggleSignInCodeEntry());
-    try std.testing.expect(!runtime.pickerView().sign_in_code_visible);
-    try std.testing.expect(!runtime.signInCodeEntryActive());
 }
 
 test "request-path credential verification stamp gates only within the window" {

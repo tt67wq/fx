@@ -197,10 +197,7 @@ pub const SignInSnapshot = struct {
     verification_uri: []const u8 = "",
     verification_uri_complete: ?[]const u8 = null,
     user_code: []const u8 = "",
-    accepts_manual_code: bool = false,
 };
-
-pub const max_manual_code_bytes: usize = 4096;
 
 pub const SignInCompletion = union(enum) {
     vercel: TeamSelection,
@@ -301,7 +298,6 @@ pub const CompleteSignInFn = *const fn (
 pub const SaveSignInFn = *const fn (?*anyopaque, Allocator, SignInCompletion) anyerror!void;
 pub const FinishSignInFn = *const fn (?*anyopaque, Allocator, bool) void;
 pub const DeinitSignInContextFn = *const fn (?*anyopaque, Allocator) void;
-pub const SubmitManualCodeFn = *const fn (?*anyopaque, Allocator, []const u8) anyerror!void;
 
 pub const SignInRuntimeDeps = struct {
     ctx: ?*anyopaque = null,
@@ -311,7 +307,6 @@ pub const SignInRuntimeDeps = struct {
     complete: CompleteSignInFn = completeSignIn,
     save: SaveSignInFn = saveSignIn,
     finish: ?FinishSignInFn = null,
-    submit_manual_code: ?SubmitManualCodeFn = null,
 };
 
 pub const SignInRuntime = struct {
@@ -456,17 +451,7 @@ pub const SignInRuntime = struct {
             .verification_uri = flow.device.verification_uri,
             .verification_uri_complete = flow.device.verification_uri_complete,
             .user_code = flow.device.user_code,
-            .accepts_manual_code = self.deps.submit_manual_code != null,
         };
-    }
-
-    pub fn submitManualCode(self: *Self, alloc: Allocator, code: []const u8) !bool {
-        self.mutex.lockUncancelable(io_mod.getIo());
-        defer self.mutex.unlock(io_mod.getIo());
-        if (self.state != .polling) return false;
-        const submit = self.deps.submit_manual_code orelse return false;
-        try submit(self.deps.ctx, alloc, code);
-        return true;
     }
 
     pub fn browserUrlAlloc(self: *Self, alloc: Allocator) !?[]u8 {

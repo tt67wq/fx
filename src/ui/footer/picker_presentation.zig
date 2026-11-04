@@ -269,7 +269,6 @@ pub noinline fn composeAuthPickerRow(
 ) !std.ArrayList(u8) {
     if (view.stage == .sign_in) {
         const source_row_index = signInProjectedRowIndex(
-            view.sign_in,
             row_index,
             row_count,
         );
@@ -293,17 +292,11 @@ pub noinline fn composeAuthPickerRow(
 }
 
 fn signInProjectedRowIndex(
-    snapshot: login_flow.SignInSnapshot,
     row_index: u16,
     row_count: u16,
 ) u16 {
-    const manual_code_priority = [_]u16{ 5, 4, 2, 0, 6, 3, 1 };
     const device_code_priority = [_]u16{ 2, 3, 6, 0, 5, 1, 4 };
-    const priority = if (snapshot.accepts_manual_code)
-        &manual_code_priority
-    else
-        &device_code_priority;
-    return prioritizedRowIndex(7, priority, row_index, row_count);
+    return prioritizedRowIndex(7, &device_code_priority, row_index, row_count);
 }
 
 fn prioritizedRowIndex(
@@ -421,12 +414,10 @@ fn composeSignInPickerRow(
     var row: std.ArrayList(u8) = .empty;
     errdefer row.deinit(alloc);
     if (width == 0) return row;
-    const accepts_manual_code = snapshot.accepts_manual_code;
 
     try row.appendSlice(
         alloc,
-        if ((accepts_manual_code and row_index == 5) or
-            (!accepts_manual_code and (row_index == 2 or row_index == 3)))
+        if (row_index == 2 or row_index == 3)
             ui_render.selected_completion_style
         else
             ui_render.dim_style,
@@ -455,10 +446,7 @@ fn composeSignInPickerRow(
             .failed => "   Sign-in failed",
             .cancelled => "   Sign-in cancelled",
         },
-        6 => if (accepts_manual_code)
-            "   enter submits or reopens browser · esc cancels"
-        else
-            "   enter reopens browser · esc cancels",
+        6 => "   enter reopens browser · esc cancels",
         else => "",
     };
     try row_text.appendClipped(alloc, &row, label, width);
