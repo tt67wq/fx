@@ -18,7 +18,7 @@ import {
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { FX_BIN, HAS_API_KEY, REPO_ROOT, runFx, providerVersionTestEnv } from "../evals/eval-helpers";
+import { FX_BIN, HAS_API_KEY, REPO_ROOT, runFx } from "../evals/eval-helpers";
 import {
   AUTO_EXA_SERIALIZED_TOOL_NAMES,
   customProviderGuidanceState,
@@ -406,11 +406,11 @@ class AcpClient {
       }
     }
     const proc = nodeSpawn(FX_BIN, args, {
-      env: providerVersionTestEnv({
+      env: {
         ...inheritedEnv,
         NO_COLOR: "1",
         PATH: inheritedEnv.PATH ?? "",
-      }),
+      },
       cwd: opts?.cwd ?? REPO_ROOT,
       stdio: ["pipe", "pipe", "pipe"],
     });

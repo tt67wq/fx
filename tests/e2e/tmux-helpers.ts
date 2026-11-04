@@ -11,7 +11,7 @@ import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FX_BIN, REPO_ROOT, providerVersionTestEnv } from "../evals/eval-helpers";
+import { FX_BIN, REPO_ROOT } from "../evals/eval-helpers";
 
 let sessionCounter = 0;
 
@@ -426,16 +426,6 @@ export function fakeGatewayTitleDefault() {
   }]);
 }
 
-// Finish-only Responses-protocol stream for title generation side calls at
-// Codex/Grok fake servers: completes without text deltas and without usable
-// title content, leaving the locally derived session title in place.
-export function fakeResponsesTitleDefault() {
-  return new Response(
-    'data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":2,"output_tokens":0}}}\n\n',
-    { headers: { "content-type": "text/event-stream" } },
-  );
-}
-
 function serveFakeGateway(
   nextCompletion: (body: string) => Response | Promise<Response>,
   options: FakeGatewayOptions,
@@ -670,7 +660,7 @@ export class TmuxSession {
       isolated = false,
       socketName,
     } = opts ?? {};
-    const env = providerVersionTestEnv(requestedEnv);
+    const env = requestedEnv;
 
     if (
       minimumHistoryLines !== undefined &&
