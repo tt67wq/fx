@@ -913,10 +913,7 @@ describe.skipIf(SKIP_TMUX)("tui: credential onboarding", () => {
       await session.sendText("/setup");
       const picker = await session.waitForPane(
         (pane) =>
-          pane.includes("/provider") &&
-          pane.includes("vercel") &&
-          pane.includes("codex") &&
-          pane.includes("grok"),
+          pane.includes("/provider") && pane.includes("vercel"),
         TIMEOUT,
       );
       expect(picker).not.toContain("Connections");

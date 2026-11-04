@@ -1,6 +1,6 @@
 # ISSUE-7 — 下线 provider 线路是破坏性变更，且 vercel_protocol.zig 属共享基础设施
 
-- **状态**: open
+- **状态**: closed
 - **发现于**: T-2 review / a39f4014（worker fx-codex-2）
 - **发现时间**: 2026-11-04T11:05:00Z
 - **来源**: 审查发现
@@ -8,6 +8,7 @@
 - **严重程度**: medium
 - **blocker_kind**: needs_user
 - **判据来源**: conductor 自行判断
+- **关闭时间**: 2026-11-04（提交 1983cd19「Remove the ChatGPT Codex and xAI Grok provider lines」）
 
 ## 现象
 
@@ -48,14 +49,20 @@
 
 ## 处置
 
-- [ ] 先决定是否下线（needs_user）
-- [ ] 若下线：先写迁移与降级路径（见 ISSUE-2），再改类型层
-- [ ] 若下线：同步 sdk/package.json 的 exports 与版本号，给出迁移说明
-- [ ] 若只是重构：把 `expandPendingToolReviewMessages` 从 `vercel_protocol.zig`
+- [x] 先决定是否下线（needs_user）——用户决定：分叉自用，不再同步上游，做硬删除，
+      不留弃用 shim 与警告窗口，不做上游 PR 与 fx.sh 文档同步
+- [x] 若下线：先写迁移与降级路径（见 ISSUE-2），再改类型层
+- [x] 若下线：同步 sdk/package.json 的 exports 与版本号，给出迁移说明
+      ——删掉 `./chatgpt` 与 `./grok` subpath export，删掉对应类型与凭据助手
+- [x] 若只是重构：把 `expandPendingToolReviewMessages` 从 `vercel_protocol.zig`
       抽到共享文件，解开自定义线路与 vercel 线路的耦合
-- [ ] 验收通过后置为 closed
+      ——`vercel_protocol.zig` 保留，自定义线路继续复用它
+- [x] 验收通过后置为 closed
 
 ## 备注
 
 关于「本地只用 magpie 自定义 provider」这个前提：运行时保留自定义线路足够，
 但仓库里三条原生线不该顺手删掉，原因就在上面 1 到 3 条。
+
+实际处置以本次硬删除为准：上面第 1 条的破坏性变更风险由「分叉自用、不再同步上游」
+的前提承担，第 2 条的类型层波及已在提交 1983cd19 中处理完毕。

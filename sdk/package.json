@@ -103,7 +103,7 @@
     "types/*.d.cts",
     "wasm-module.js",
     "core-output.js",
-    "subscription.js",
+    "provider-auth.js",
     "oauth.js",
     "custom-provider.js",
     "fetch-cleanup.js",

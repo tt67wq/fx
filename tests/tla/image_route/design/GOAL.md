@@ -27,7 +27,7 @@ Each criterion is a check that passes on this change and failed, or could fail, 
 
 - Supporting documents (PDFs) as tool results. The `file-input` tag would govern that, and fx does not send documents today.
 - Changing the gateway catalog or asking for different tags.
-- Removing the `has_file_input = vision` stand-ins in the Codex, Grok subscription, and Chat Completions providers (`CONTEXT.md`, item 2). They are now harmless, and changing them changes only what `/model` info prints.
+- Removing the `has_file_input = vision` stand-ins in the Chat Completions provider (`CONTEXT.md`, item 2). They are now harmless, and changing them changes only what `/model` info prints. The Codex and Grok subscription providers that stood in beside it have since been removed from fx.
 - Sending images once and referring to them afterwards (rule R2). The AI SDK prompt has no reference form, so every request resends the images in its history, as it already does for models with `file-input`.
 - A setting or override for image support.
 

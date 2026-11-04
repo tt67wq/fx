@@ -3,7 +3,7 @@
 // addon or the WebAssembly host, and loads neither itself.
 import { maxCoreMessageBytes } from "./core-output.js";
 import { customProviderDefinition, customProviderSpec } from "./custom-provider.js";
-import { createSubscriptionAuthorizer } from "./subscription.js";
+import { createProviderAuthorizer } from "./provider-auth.js";
 import { toolObservation } from "./tool-observation.js";
 
 const encoder = new TextEncoder();
@@ -1446,7 +1446,7 @@ export async function createFxEngine(options = {}, defaultRuntimeFactory = undef
   const hostFetch = options.fetch ?? globalThis.fetch?.bind(globalThis);
   // Adds the host's credentials to the provider's own requests.
   const providerAuth = options.customProvider && options.credentials
-    ? createSubscriptionAuthorizer([customProviderSpec(options.customProvider, () => sessionId)], { credentials: options.credentials, fetch: hostFetch })
+    ? createProviderAuthorizer([customProviderSpec(options.customProvider, () => sessionId)], { credentials: options.credentials })
     : null;
   const transportFetch = async (input, init = {}) => {
     const method = String(init.method ?? input?.method ?? "GET").toUpperCase();

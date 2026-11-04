@@ -73,7 +73,7 @@ OLD_SPELLING_REMOVAL = re.compile(r'^pub const old_spelling_removal = "(\d+)\.(\
 ACP_SET_ID = re.compile(r'std\.mem\.eql\(u8, config_id, "([a-z_]+)"\)')
 LIBFX_MODEL_FIELD = re.compile(r"^\s+([a-z][A-Za-z]*)\??:")
 # The libfx types a non-model run option is a field of: each provider config.
-LIBFX_PROVIDER_TYPES = ("FxGatewayProvider", "FxSubscriptionProvider", "FxCustomProvider")
+LIBFX_PROVIDER_TYPES = ("FxGatewayProvider", "FxCustomProvider")
 TOP_LEVEL_KEY_READ = re.compile(r'\broot\.object\.(?:get|getPtr|contains)\("([^"]+)"\)')
 SETTING_ENTRY = re.compile(r'\.name = "([^"]+)", \.where = \.([a-z_]+)')
 TEST_START = re.compile(r"^\s*test\b")

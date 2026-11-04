@@ -52,7 +52,7 @@ const files = [
   ["sdk/wasm-module.js", "wasm-module.js"],
   ["sdk/core-output.js", "core-output.js"],
   ["sdk/tool-observation.js", "tool-observation.js"],
-  ["sdk/subscription.js", "subscription.js"],
+  ["sdk/provider-auth.js", "provider-auth.js"],
   ["sdk/oauth.js", "oauth.js"],
   ["sdk/custom-provider.js", "custom-provider.js"],
   ["sdk/fetch-cleanup.js", "fetch-cleanup.js"],

@@ -402,8 +402,7 @@ export type FakeGatewayOptions = {
   classifierDecision?: "clear" | "caution";
   classifierResponses?: FakeGatewayResponse[];
   titleResponses?: FakeGatewayResponse[];
-  // Answers usage GETs (`/v1/report`, `/ai-gateway/usage-report`, ChatGPT's
-  // `/backend-api/wham/...`, Grok's `/billing` and `/settings`); see
+  // Answers usage GETs (`/v1/report`, `/ai-gateway/usage-report`); see
   // usage-fakes.ts. Null falls through to the routes below.
   usage?: (url: URL, request: Request) => Response | null;
   // Response for the /v4/ai/evaluation-model endpoint (TypeSafe Jev through

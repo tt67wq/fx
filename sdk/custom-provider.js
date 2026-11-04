@@ -4,7 +4,7 @@
 // API key, this module adds it at the fetch edge, to that provider's chat URL
 // only. The key never enters the engine or a session's saved records.
 
-import { tokenString } from "./subscription.js";
+import { tokenString } from "./provider-auth.js";
 
 const encoder = new TextEncoder();
 const reservedNames = new Set(["gateway", "codex", "grok"]);

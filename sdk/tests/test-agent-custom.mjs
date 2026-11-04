@@ -9,7 +9,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { customProviderDefinition, customProviderSpec } from "../custom-provider.js";
 import { createFxAgent, createFxEngine, memory, supportsJspi } from "../node.js";
-import { createSubscriptionAuthorizer } from "../subscription.js";
+import { createProviderAuthorizer } from "../provider-auth.js";
 
 const backend = process.argv[2] || "native";
 if (!new Set(["native", "wasm"]).has(backend)) throw new Error("usage: test-agent-custom.mjs [native|wasm]");
@@ -258,7 +258,7 @@ const assertNoGateway = (log) => assert.equal(log.some((entry) => entry.url.incl
 // engine names a request: origin and path.
 {
   const definition = customProviderDefinition(provider);
-  const auth = createSubscriptionAuthorizer([customProviderSpec(definition, () => undefined)], { credentials: () => ({ apiKey: "sk-provider" }) });
+  const auth = createProviderAuthorizer([customProviderSpec(definition, () => undefined)], { credentials: () => ({ apiKey: "sk-provider" }) });
   assert.ok(auth.specFor(chatUrl), "the chat URL carries the key");
   for (const endpoint of [
     "https://models.example/v1/models",

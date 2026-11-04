@@ -1,5 +1,5 @@
-// /usage in the TUI against loopback fakes for AI Gateway, ChatGPT (Codex),
-// and the Grok CLI proxy. The clock is pinned so day ranges are exact.
+// /usage in the TUI against loopback fakes for AI Gateway. The clock is
+// pinned so day ranges are exact.
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
@@ -7,19 +7,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startFakeGateway, TmuxSession, tmuxAvailable } from "./tmux-helpers";
 import {
-  codexBreakdownBody,
-  codexProfileBody,
-  codexUsageBody,
-  grokBillingBody,
-  grokSettingsBody,
   type ReportRow,
   USAGE_NOW_MS,
   usageEnv,
   usageFake,
   type UsageFakeOptions,
   utcDate,
-  writeChatGptLogin,
-  writeGrokLogin,
   writeUsageClock,
 } from "./usage-fakes";
 
@@ -117,58 +110,5 @@ describe.skipIf(!tmuxAvailable())("tui: /usage", () => {
       expect(pane).not.toContain("e2e-usage-key");
     },
     TIMEOUT * 2,
-  );
-
-  test(
-    "Codex /usage shows the ChatGPT plan's limits, tokens, and model shares",
-    async () => {
-      const { home, fake, env } = start("fx-tui-usage-codex-", {
-        codex: {
-          usage: codexUsageBody(),
-          profile: codexProfileBody(),
-          breakdown: codexBreakdownBody(),
-        },
-      });
-      writeChatGptLogin(home, "acct_e2e");
-      session = await TmuxSession.create({ env: { ...env, FX_PROVIDER: "codex", FX_MODEL: "gpt-5.6-sol" } });
-      await session.waitForComposer(TIMEOUT);
-      await session.sendText("/usage");
-      const pane = await session.waitForText("gpt-e2e-large", TIMEOUT);
-      expect(pane).toContain("usage: codex (ChatGPT), samdoe");
-      expect(pane).toContain("42%");
-      expect(pane).toContain("pro");
-      expect(pane).toContain("12.40");
-      expect(fake.requests.length).toBeGreaterThanOrEqual(3);
-      for (const request of fake.requests) {
-        expect(request.chatgptAccount).toBe("acct_e2e");
-      }
-      expect(fake.reportRanges()).toEqual([]);
-    },
-    TIMEOUT,
-  );
-
-  test(
-    "Grok /usage shows the plan's weekly allowance, credits, and pay as you go",
-    async () => {
-      const { home, fake, env } = start("fx-tui-usage-grok-", {
-        grok: { billing: grokBillingBody(), settings: grokSettingsBody() },
-      });
-      writeGrokLogin(home, "acct_grok_e2e");
-      session = await TmuxSession.create({ env: { ...env, FX_PROVIDER: "grok", FX_MODEL: "grok-4.20" } });
-      await session.waitForComposer(TIMEOUT);
-      await session.sendText("/usage");
-      const pane = await session.waitForText("SuperGrok Heavy", TIMEOUT);
-      expect(pane).toContain("usage: grok (xAI)");
-      expect(pane).toMatch(/63%\s+in 2d 5h/);
-      expect(pane).toContain("$12.50");
-      expect(pane).toContain("$3.00 of $100.00");
-      expect(pane).toContain("r refresh");
-      expect(pane).not.toContain("tab period");
-      expect(fake.requests.map((request) => request.path).sort()).toEqual(["/billing", "/settings"]);
-      for (const request of fake.requests) {
-        expect(request.grokUser).toBe("acct_grok_e2e");
-      }
-    },
-    TIMEOUT,
   );
 });
