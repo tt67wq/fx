@@ -26,7 +26,7 @@ class DetectCiNeedTests(unittest.TestCase):
             "GIT_COMMITTER_EMAIL": "test@example.com",
         }
         self.git("init", "-q")
-        self.write("src/acp/server.zig", "pub fn serve() void {}\n")
+        self.write("src/core/server.zig", "pub fn serve() void {}\n")
         self.write("src/mcp/engine.zig", "pub fn run() void {}\n")
         self.write("README.md", "fx\n")
         self.base = self.commit("base")
@@ -176,7 +176,7 @@ class DetectCiNeedTests(unittest.TestCase):
         self.assert_needs(mcp=False, transcript_window=True)
 
     def test_deleted_and_renamed_files_need_their_checks(self) -> None:
-        self.git("mv", "src/acp/server.zig", "src/server.zig")
+        self.git("mv", "src/core/server.zig", "src/server.zig")
         self.git("rm", "-q", "src/mcp/engine.zig")
         self.commit("head")
 

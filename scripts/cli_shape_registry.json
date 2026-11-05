@@ -109,18 +109,6 @@
       "job": "diagnostics",
       "stability": "stable"
     },
-    "FX_TEST_ACP_PROMPT_REAP_READY": {
-      "job": "test",
-      "stability": "internal"
-    },
-    "FX_TEST_ACP_PROMPT_RELEASE": {
-      "job": "test",
-      "stability": "internal"
-    },
-    "FX_TEST_ACP_PROMPT_TERMINAL_READY": {
-      "job": "test",
-      "stability": "internal"
-    },
     "FX_TEST_AUTH_LOCK_CONTENTION": {
       "job": "test",
       "stability": "internal"
@@ -316,40 +304,34 @@
     "--no-": "Pairs each --x with --no-x at compile time to build the launch usage line from launch_options; no argument is read."
   },
   "run_options": {
-    "_about": "One row per option a run can set, named on every surface: the agent-run flag, the setting, the FX_* variable when the option has one, and the ACP config option. Names may differ by surface, as ACP's mode does, but each one is written here. check_cli_shape fails when ACP offers a config option that no row names, or when a row names something that doesn't exist.",
+    "_about": "One row per option a run can set, named on every surface: the agent-run flag, the setting, and the FX_* variable when the option has one. check_cli_shape fails when a row names something that doesn't exist.",
     "effort": {
       "flag": "--effort",
-      "setting": "effort",
-      "acp": "effort"
+      "setting": "effort"
     },
     "fast": {
       "flag": "--fast",
-      "setting": "fast_mode",
-      "acp": "fast"
+      "setting": "fast_mode"
     },
     "model": {
       "flag": "--model",
       "setting": "models",
-      "env": "FX_MODEL",
-      "acp": "model"
+      "env": "FX_MODEL"
     },
     "permission_mode": {
       "flag": "--permission-mode",
       "setting": "permission_mode",
-      "env": "FX_PERMISSION_MODE",
-      "acp": "mode"
+      "env": "FX_PERMISSION_MODE"
     },
     "provider": {
       "flag": "--provider",
       "setting": "provider",
-      "env": "FX_PROVIDER",
-      "acp": "provider"
+      "env": "FX_PROVIDER"
     },
     "ultrafast": {
       "flag": "--ultrafast",
       "setting": "ultrafast_mode",
-      "env": "FX_ULTRAFAST",
-      "acp": "ultrafast"
+      "env": "FX_ULTRAFAST"
     }
   },
   "exceptions": {

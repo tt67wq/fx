@@ -41,8 +41,6 @@ CLI_ASK = "src/core/cli/cli_ask.zig"
 CONFIG_RUNTIME = "src/core/config/config_runtime.zig"
 ENV_SETTINGS = "src/core/config/env_settings.zig"
 SETTINGS_KEYS = "src/core/config/settings_keys.zig"
-ACP_SESSIONS = "src/acp/sessions.zig"
-ACP_SERVER = "src/acp/server.zig"
 
 JOBS = {
     "setting-override",
@@ -63,13 +61,9 @@ FX_LITERAL = re.compile(r'"(FX_[A-Z0-9_]+)"')
 GETENV_LITERAL = re.compile(r'(?:getenv|nonEmptyEnvValue)\("([A-Za-z_][A-Za-z0-9_]*)"\)')
 FLAG_LITERAL = re.compile(r'"(--?[A-Za-z0-9][A-Za-z0-9_<>-]*)=?"')
 KEY_READ = re.compile(r'\.(?:get|getPtr|contains)\("([^"]+)"\)')
-# An ACP config option as sessions.zig writes it: {\"id\":\"model\",\"name\":...
-ACP_CONFIG_ID = re.compile(r'\\"id\\":\\"([a-z_]+)\\",\\"name\\"')
 # fx's version, and the release that drops the old spellings.
 VERSION = re.compile(r'^pub const version = "(\d+)\.(\d+)\.(\d+)";', re.M)
 OLD_SPELLING_REMOVAL = re.compile(r'^pub const old_spelling_removal = "(\d+)\.(\d+)\.(\d+)";', re.M)
-# A config option ID that session/set_config_option accepts.
-ACP_SET_ID = re.compile(r'std\.mem\.eql\(u8, config_id, "([a-z_]+)"\)')
 TOP_LEVEL_KEY_READ = re.compile(r'\broot\.object\.(?:get|getPtr|contains)\("([^"]+)"\)')
 SETTING_ENTRY = re.compile(r'\.name = "([^"]+)", \.where = \.([a-z_]+)')
 TEST_START = re.compile(r"^\s*test\b")
@@ -412,8 +406,8 @@ class Checker:
 
     def check_run_options(self) -> None:
         """Each option a run can set has one row naming it on every surface,
-        so an ACP config option can't drift from the flag, setting, and
-        variable it stands for."""
+        so it can't drift from the flag, setting, and variable it stands
+        for."""
         rows = {name: row for name, row in self.registry.get("run_options", {}).items() if not name.startswith("_")}
         if not rows:
             self.report(None, "names", "the registry needs a run_options table")
@@ -432,25 +426,6 @@ class Checker:
                 job = env.get(row["env"], {}).get("job")
                 if job != "setting-override" and (job is None or job in JOBS):
                     self.report(None, "names", f'run_options "{name}" names {row.get("env")}, which the registry doesn\'t list as a setting-override')
-        acp_ids: dict[str, Line] = {}
-        for line in self.lines(ACP_SESSIONS):
-            for config_id in ACP_CONFIG_ID.findall(line.text):
-                acp_ids.setdefault(config_id, line)
-        named_acp = {row["acp"] for row in rows.values() if "acp" in row}
-        for config_id, line in sorted(acp_ids.items()):
-            if config_id not in named_acp:
-                self.report(line, "names", f'ACP config option "{config_id}" needs a run_options row in {REGISTRY} naming its flag, setting, and variable')
-        for config_id in sorted(named_acp - acp_ids.keys()):
-            self.report(None, "names", f'run_options names ACP config option "{config_id}", which {ACP_SESSIONS} doesn\'t offer')
-        set_ids: dict[str, Line] = {}
-        for line in self.lines(ACP_SERVER):
-            for config_id in ACP_SET_ID.findall(line.text):
-                set_ids.setdefault(config_id, line)
-        for config_id, line in sorted(set_ids.items()):
-            if config_id not in named_acp:
-                self.report(line, "names", f'ACP set_config_option takes "{config_id}", which needs a run_options row in {REGISTRY}')
-        for config_id in sorted(named_acp - set_ids.keys()):
-            self.report(None, "names", f'run_options names ACP config option "{config_id}", which set_config_option in {ACP_SERVER} doesn\'t take')
 
     def check_removal(self) -> None:
         """Old spellings, such as `fx setup`, keep working with a warning until

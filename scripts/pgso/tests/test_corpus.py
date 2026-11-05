@@ -33,7 +33,6 @@ TRAINING_E2E_TESTS = (
     "web-fetch-fake-network.test.ts",
     "web-search-fake-gateway.test.ts",
     "vision-route-fake-gateway.test.ts",
-    "acp.test.ts",
     "mcp-http.test.ts",
     "mcp-legacy-remote.test.ts",
     "mcp-stdio.test.ts",
