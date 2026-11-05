@@ -21,8 +21,6 @@ const usage_host = @import("core/app/usage_host.zig");
 const credits_lookup = @import("core/app/credits_lookup.zig");
 const app_auth_runtime = @import("core/app/app_auth_runtime.zig");
 const app_entry_runtime = @import("core/app/app_entry_runtime.zig");
-const acp_runner = @import("core/cli/acp_runner.zig");
-const acp_server = @import("acp/server.zig");
 const app_input_runtime = @import("core/app/app_input_runtime.zig");
 const input_full_transcript_runtime = @import("core/app/input_full_transcript_runtime.zig");
 const input_submit_runtime = @import("core/app/input_submit_runtime.zig");
@@ -3903,7 +3901,6 @@ fn hasPosixArgVector() bool {
 fn needsFullEntryConfig(args: []const [:0]const u8) bool {
     const command = cli_surface.commandAfterGlobalLaunchArgs(args) orelse return false;
     return std.mem.eql(u8, command, "ask") or
-        std.mem.eql(u8, command, "acp") or
         std.mem.eql(u8, command, "pr") or
         std.mem.eql(u8, command, "issue");
 }
@@ -4034,7 +4031,6 @@ test "early threaded io is resolved after global launch args" {
 
 test "full entry config commands also use early threaded io" {
     try std.testing.expect(needsEarlyThreadedIo(&.{@as([:0]const u8, "ask")}));
-    try std.testing.expect(needsEarlyThreadedIo(&.{@as([:0]const u8, "acp")}));
     try std.testing.expect(needsEarlyThreadedIo(&.{@as([:0]const u8, "pr")}));
     try std.testing.expect(needsEarlyThreadedIo(&.{@as([:0]const u8, "issue")}));
     try std.testing.expect(needsEarlyThreadedIo(&.{
@@ -4045,7 +4041,7 @@ test "full entry config commands also use early threaded io" {
     try std.testing.expect(needsEarlyThreadedIo(&.{
         @as([:0]const u8, "--context-limit=project_bytes=2048"),
         @as([:0]const u8, "--no-additional-dirs"),
-        @as([:0]const u8, "acp"),
+        @as([:0]const u8, "ask"),
     }));
 }
 
@@ -4242,7 +4238,6 @@ fn fullEntryConfig(auth_mode: credentials.AuthMode) app_entry_runtime.Config {
         .inspect_mcp_profile_config = builtin_mcp.inspectProfileConfig,
         .inspect_mcp_local_config = builtin_mcp.inspectLocalConfig,
         .load_mcp_host = builtin_mcp.loadHost,
-        .acp_runner = .{ .run_fn = runAcpServer },
     };
 }
 
@@ -4279,7 +4274,6 @@ fn localEntryConfig(auth_mode: credentials.AuthMode) app_entry_runtime.Config {
         .inspect_mcp_profile_config = builtin_mcp.inspectProfileConfig,
         .inspect_mcp_local_config = builtin_mcp.inspectLocalConfig,
         .load_mcp_host = builtin_mcp.loadHost,
-        .acp_runner = .{ .run_fn = runAcpServer },
     };
 }
 
@@ -4316,12 +4310,7 @@ fn emptyEntryConfig(auth_mode: credentials.AuthMode) app_entry_runtime.Config {
         .inspect_mcp_profile_config = builtin_mcp.inspectProfileConfig,
         .inspect_mcp_local_config = builtin_mcp.inspectLocalConfig,
         .load_mcp_host = builtin_mcp.loadHost,
-        .acp_runner = .{ .run_fn = runAcpServer },
     };
-}
-
-fn runAcpServer(_: ?*anyopaque, alloc: Allocator, cfg: acp_runner.Config) anyerror!void {
-    return acp_server.run(alloc, cfg);
 }
 
 fn handleSigWinchNative(_: std.posix.SIG) callconv(.c) void {
@@ -5081,9 +5070,6 @@ test {
     _ = @import("gateway/chat_completions_protocol.zig");
     _ = @import("gateway/json_depth.zig");
     _ = provider_runtime;
-    _ = @import("acp/prompt.zig");
-    _ = @import("acp/hooks.zig");
-    _ = @import("acp/types.zig");
     _ = @import("core/mcp_host/model.zig");
     _ = @import("core/output/activity_status.zig");
     _ = @import("core/agent/agent_runtime.zig");
@@ -5248,7 +5234,6 @@ test {
     _ = @import("tools/shell/shell.zig");
     _ = @import("tools/shell/process_provider.zig");
     _ = @import("core/app/input_approval_runtime.zig");
-    _ = @import("acp/sessions.zig");
     _ = @import("core/shared/text_utils.zig");
     _ = @import("core/tooling/tool_projection.zig");
     _ = @import("core/tooling/tool_dispatch.zig");

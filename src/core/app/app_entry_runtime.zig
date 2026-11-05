@@ -6,7 +6,6 @@ const app_lifecycle = @import("app_lifecycle.zig");
 const app_process_runtime = @import("app_process_runtime.zig");
 const app_session_runtime = @import("app_session_runtime.zig");
 const auto_upgrade = @import("../upgrade/auto_upgrade.zig");
-const acp_runner = @import("../cli/acp_runner.zig");
 const cli_surface = @import("../cli/cli_surface.zig");
 const debug_trace = @import("../shared/debug_trace.zig");
 const types = @import("../shared/types.zig");
@@ -97,7 +96,6 @@ pub const Config = struct {
     inspect_mcp_local_config: mcp_health.InspectLocalConfigFn =
         mcp_health.inspectLocalConfigUnavailable,
     load_mcp_host: ?mcp_host.LoadFn = null,
-    acp_runner: acp_runner.Runner,
 };
 
 pub const RunOutcome = union(enum) {
@@ -509,7 +507,6 @@ fn cliSurfaceConfig(cfg: Config) cli_surface.Config {
         .inspect_mcp_profile_config = cfg.inspect_mcp_profile_config,
         .inspect_mcp_local_config = cfg.inspect_mcp_local_config,
         .load_mcp_host = cfg.load_mcp_host,
-        .acp_runner = cfg.acp_runner,
     };
 }
 
@@ -598,10 +595,6 @@ fn noMcpConfigInspectionForTest(
     return .clear;
 }
 
-fn unexpectedAcpRunForTest(_: ?*anyopaque, _: Allocator, _: acp_runner.Config) anyerror!void {
-    return error.TestUnexpectedAcpRun;
-}
-
 fn testConfig() Config {
     return .{
         .version = "0.2.10",
@@ -628,7 +621,6 @@ fn testConfig() Config {
         .context_registry = test_entry_context_registry,
         .mode_registry = .{ .default_mode_id = "entry" },
         .inspect_mcp_profile_config = noMcpConfigInspectionForTest,
-        .acp_runner = .{ .run_fn = unexpectedAcpRunForTest },
         .tool_set = .{
             .registry = .{ .tools = &.{} },
             .order = &.{"entry_test_tool"},

@@ -10,7 +10,6 @@ const Allocator = std.mem.Allocator;
 pub const TopLevelKind = enum {
     help,
     ask,
-    acp,
     pr,
     issue,
     login,
@@ -1734,7 +1733,7 @@ test "rendered top-level help is a complete CLI navigation page" {
     try std.testing.expect(std.mem.find(u8, text, "Must appear before the command. Accepted names:") == null);
     try std.testing.expect(std.mem.find(u8, text, "skill_description_bytes, skill_catalog_bytes") == null);
     try std.testing.expect(std.mem.find(u8, text, "FX_EXPERIMENTAL_WORKSPACE_ACCESS=1") == null);
-    try std.testing.expect(std.mem.find(u8, text, "Supported for interactive, resume, ask, ACP, PR, and issue launches") == null);
+    try std.testing.expect(std.mem.find(u8, text, "Supported for interactive, resume, ask, PR, and issue launches") == null);
     try std.testing.expect(std.mem.find(u8, text, "Examples:") != null);
     try std.testing.expect(std.mem.find(u8, text, "fx ask \"Explain the changes in this repository\"") != null);
     try std.testing.expect(std.mem.find(u8, text, "fx session resume last") != null);
@@ -1866,19 +1865,6 @@ test "per-command help preserves long resume usage without debug recording" {
     try std.testing.expect(std.mem.find(u8, text, "Usage:\n  fx session resume [last|<id>] | -r, --resume [last|<id>] | --continue | -c") != null);
     try std.testing.expect(std.mem.find(u8, text, "Options:") != null);
     try std.testing.expect(std.mem.find(u8, text, "--record") == null);
-}
-
-test "ACP help documents accepted options" {
-    const text = try renderTopLevelCommandHelp(std.testing.allocator, testTopLevelRegistry(), .acp);
-    defer std.testing.allocator.free(text);
-
-    try std.testing.expect(std.mem.find(u8, text, "fx acp\n") != null);
-    try std.testing.expect(std.mem.find(u8, text, "Usage:\n  fx acp [--permission-mode <mode>|--ask|--auto|--full-access] [--provider <name>] [--model <id>] [--effort <level>] [--fast|--no-fast] [--ultrafast|--no-ultrafast] [--log-file <path>]") != null);
-    try std.testing.expect(std.mem.find(u8, text, "--model <id>") != null);
-    try std.testing.expect(std.mem.find(u8, text, "--effort <level>") != null);
-    try std.testing.expect(std.mem.find(u8, text, "--log-file <path>") != null);
-    // ACP sessions don't apply gateway provider routing.
-    try std.testing.expect(std.mem.find(u8, text, "--provider-order") == null);
 }
 
 test "hidden top-level commands do not reserve help usage width" {

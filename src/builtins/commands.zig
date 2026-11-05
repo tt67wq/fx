@@ -92,17 +92,11 @@ pub const session_options = [_]command_specs.OptionDoc{
     json_option,
 };
 
-pub const acp_options = agentRunOptions("sessions this server starts", .without_provider_order) ++ [_]command_specs.OptionDoc{
-    .{ .flag = "--log-file <path>", .description = "Write ACP logs to a file" },
-};
-
-pub const acp_usage = "acp " ++ agent_run_usage_base ++ " [--log-file <path>]";
-
-pub const pr_options = agentRunOptions("this request", .with_provider_order) ++ [_]command_specs.OptionDoc{
+pub const pr_options = agentRunOptions("this request") ++ [_]command_specs.OptionDoc{
     .{ .flag = "--create", .description = "Publish the drafted pull request via the GitHub CLI" },
 };
 
-const issue_options = agentRunOptions("this request", .with_provider_order) ++ [_]command_specs.OptionDoc{
+const issue_options = agentRunOptions("this request") ++ [_]command_specs.OptionDoc{
     .{ .flag = "--create", .description = "Publish the drafted issue via the GitHub CLI" },
 };
 
@@ -171,16 +165,11 @@ const permission_modes = [_][]const u8{ "ask", "auto", "full-access" };
 /// The built-in providers. A configured connection's name is also accepted.
 const builtin_providers = [_][]const u8{"gateway"};
 
-/// Whether a command takes the gateway provider-order flags.
-const ProviderOrder = enum { with_provider_order, without_provider_order };
-
 /// The flags that shape an agent run, the same on every command that runs the
-/// agent: `fx ask`, `fx pr`, `fx issue`, and `fx acp`. `scope` names what they
-/// shape, such as "this request". `src/core/cli/agent_run_flags.zig` parses
-/// them. `fx acp` leaves out the provider-order flags, because ACP sessions
-/// don't apply gateway provider routing.
-fn agentRunOptions(comptime scope: []const u8, comptime provider_order: ProviderOrder) [if (provider_order == .with_provider_order) 15 else 12]command_specs.OptionDoc {
-    const all = [_]command_specs.OptionDoc{
+/// agent: `fx ask`, `fx pr`, and `fx issue`. `scope` names what they shape,
+/// such as "this request". `src/core/cli/agent_run_flags.zig` parses them.
+fn agentRunOptions(comptime scope: []const u8) [15]command_specs.OptionDoc {
+    return [_]command_specs.OptionDoc{
         .{ .flag = "--permission-mode <mode>", .description = "Set the permission mode for " ++ scope ++ ": ask, auto, or full-access", .values = &permission_modes },
         .{ .flag = "--ask", .description = "Ask before each action that needs permission" },
         .{ .flag = "--auto", .description = "Automatically review unresolved permission requests" },
@@ -197,14 +186,12 @@ fn agentRunOptions(comptime scope: []const u8, comptime provider_order: Provider
         .{ .flag = "--provider-strict", .description = "Restrict " ++ scope ++ " to only the providers in --provider-order" },
         .{ .flag = "--no-provider-strict", .description = "Clear the provider restriction for " ++ scope },
     };
-    return if (provider_order == .with_provider_order) all else all[0..12].*;
 }
 
 /// The usage-line form of `agentRunOptions`.
-const agent_run_usage_base = "[--permission-mode <mode>|--ask|--auto|--full-access] [--provider <name>] [--model <id>] [--effort <level>] [--fast|--no-fast] [--ultrafast|--no-ultrafast]";
-const agent_run_usage = agent_run_usage_base ++ " [--provider-order <a,b,...>] [--provider-strict|--no-provider-strict]";
+const agent_run_usage = "[--permission-mode <mode>|--ask|--auto|--full-access] [--provider <name>] [--model <id>] [--effort <level>] [--fast|--no-fast] [--ultrafast|--no-ultrafast] [--provider-order <a,b,...>] [--provider-strict|--no-provider-strict]";
 
-pub const ask_options = agentRunOptions("this request", .with_provider_order) ++ [_]command_specs.OptionDoc{
+pub const ask_options = agentRunOptions("this request") ++ [_]command_specs.OptionDoc{
     .{ .flag = "--image PATH", .description = "Attach an image file; repeat for multiple images" },
     .{ .flag = "--system TEXT", .description = "Replace the built-in system prompt for this request" },
     json_option,
@@ -241,13 +228,6 @@ pub const top_level_specs = [_]TopLevelSpec{
             "--system replaces only the built-in base prompt for this request; tool, skill, project, and runtime context still apply.",
             "With --prompt-permissions, JSON and quiet requests may prompt on stderr only when stdin is a TTY.",
         },
-    },
-    .{
-        .kind = .acp,
-        .token = "acp",
-        .usage = acp_usage,
-        .summary = "Start an ACP server over stdio",
-        .options = &acp_options,
     },
     .{
         .kind = .pr,
@@ -497,7 +477,6 @@ pub const top_level_help_groups = [_]TopLevelHelpGroup{
         .{ .kind = .workspace, .usage = "workspace" },
         .{ .kind = .config, .usage = "config" },
         .{ .kind = .upgrade, .usage = "upgrade|update", .summary = "Upgrade fx on the selected release channel" },
-        .{ .kind = .acp, .usage = "acp" },
         .{ .kind = .completion, .usage = "completion <shell>" },
         .{ .kind = .help, .usage = "help" },
     } },
