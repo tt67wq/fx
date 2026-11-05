@@ -655,7 +655,7 @@ const ArgumentRedactionPolicy = struct {
     web_fetch: bool = false,
 };
 
-/// Client-facing display projection of tool-call arguments (ACP replay).
+/// Client-facing display projection of tool-call arguments.
 /// Persisted history keeps arguments verbatim; only display surfaces mask.
 pub fn redactToolArgumentsJson(
     alloc: Allocator,

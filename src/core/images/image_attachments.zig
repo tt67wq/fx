@@ -573,11 +573,11 @@ pub fn captureInlineImageBytes(
     var random_suffix: u64 = undefined;
     io_mod.getIo().random(std.mem.asBytes(&random_suffix));
     const source_name = try alloc.print(
-        "image-{d}.acp-source.{x}",
+        "image-{d}.inline-source.{x}",
         .{ image_id, random_suffix },
     );
     defer alloc.free(source_name);
-    defer deleteSnapshotFile(snapshot_dir_handle, source_name, "capture_acp_source");
+    defer deleteSnapshotFile(snapshot_dir_handle, source_name, "capture_inline_source");
 
     {
         var source = try snapshot_dir_handle.createFile(

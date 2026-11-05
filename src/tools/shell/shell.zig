@@ -699,7 +699,7 @@ fn callRun(
 }
 
 /// Adds the pending shell snapshot fallback notice to a JSON run result, so
-/// the model and ACP clients learn once that startup files run per command.
+/// the model learns once that startup files run per command.
 fn attachSnapshotNotice(
     alloc: Allocator,
     result: tool_dispatch.ToolResult,

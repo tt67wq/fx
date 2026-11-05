@@ -15,8 +15,8 @@
 //! - preferences, permissions, conversation language, title and usage are
 //!   `set` values in v1's encodings;
 //! - large bodies (tool results, tool images, command replay, web-fetch
-//!   downloads) are blobs of the session, each named by its hash (D44); an
-//!   ACP client's prompt and tool identities are settings (D46); hosted
+//!   downloads) are blobs of the session, each named by its hash (D44); a
+//!   client's prompt and tool identities are settings (D46); hosted
 //!   terminal state lives in `~/.fx/terminal/{id}/` (D45). An older session
 //!   with a `~/.fx/session-files/{id}/` side folder moves on its first
 //!   writable open (D47, `tests/tla/session_manager/MoveSideFiles.tla`).
@@ -25,7 +25,6 @@
 //! - `tests/tla/session_manager/rollout/pr-1072/PR1072Ask.tla`: `fx ask`
 //! - `tests/tla/session_manager/rollout/pr-1073/PR1073Interactive.tla`: resume and switch
 //! - `tests/tla/session_manager/rollout/pr-1076/PR1076RunningTools.tla`: running tool calls
-//! - `tests/tla/session_manager/rollout/pr-1079/PR1079ACP.tla`: ACP sessions
 //! - `tests/tla/session_manager/rollout/pr-1081/PR1081Subagents.tla`: subagents
 //! - `tests/tla/session_manager/rollout/pr-1082/PR1082Commands.tla`: session commands
 //! - `tests/tla/session_manager/rollout/pr-1116/PR1116Blobs.tla`: bodies as blobs
@@ -1641,7 +1640,7 @@ pub const Session = struct {
     }
 
     /// Opens the turn as its work starts. A subagent child streams nothing,
-    /// and its tools may store bodies before the commit (D44); an ACP prompt
+    /// and its tools may store bodies before the commit (D44); a client prompt
     /// opens it before the model is asked, so a disk that cannot take the
     /// turn fails the prompt first.
     pub fn beginTurn(self: *Session) !void {
@@ -2331,9 +2330,9 @@ pub const Session = struct {
         _ = try self.write(&.{.{ .set = .{ .key = .permissions, .value = value } }});
     }
 
-    // -- an ACP client's settings (D46) ---------------------------------------
+    // -- a client's settings (D46) --------------------------------------------
 
-    /// The system prompt the ACP client gave this session, or null. Caller
+    /// The system prompt a client gave this session, or null. Caller
     /// owns it.
     pub fn clientPrompt(self: *Session, alloc: Allocator) !?[]u8 {
         var scratch = std.heap.ArenaAllocator.init(self.alloc);
@@ -2343,7 +2342,7 @@ pub const Session = struct {
         return try alloc.dupe(u8, try json_decode.parseFromSliceLeaky([]const u8, sa, raw, .{}));
     }
 
-    /// Keeps the ACP client's system prompt with the session; the same
+    /// Keeps a client's system prompt with the session; the same
     /// prompt again writes nothing.
     pub fn setClientPrompt(self: *Session, text: []const u8) !void {
         var scratch = std.heap.ArenaAllocator.init(self.alloc);
@@ -2351,7 +2350,7 @@ pub const Session = struct {
         try self.putSetting(scratch.allocator(), .client_prompt, try jsonString(scratch.allocator(), text));
     }
 
-    /// The MCP tool identities this ACP session recorded for replay, as
+    /// The MCP tool identities this session recorded for replay, as
     /// their JSON object, or null. Caller owns it.
     pub fn toolIdentities(self: *Session, alloc: Allocator) !?[]u8 {
         var scratch = std.heap.ArenaAllocator.init(self.alloc);
@@ -2915,7 +2914,7 @@ const SideFileLines = struct {
 /// The `set` lines that carry a side folder into `handle` (D46, D47): each
 /// file of `folders` but those `left_out` names (`{folder}/{name}`, D62),
 /// and each of `stored` (results an older format kept inline), put as a
-/// blob and named in the moved map, which is one more blob, and the ACP
+/// blob and named in the moved map, which is one more blob, and the
 /// client's files. In `a`.
 /// Whether `stored` holds the result body named `handle`.
 fn storedInline(stored: []const v1_conversion.Stored, handle: []const u8) bool {
@@ -3053,9 +3052,8 @@ fn putBodies(handle: sm.Session, bodies: []Body) PutBodyError!void {
     for (threads) |thread| if (thread) |value| value.join();
     if (putter.failed.load(.acquire)) return putter.failure;
 }
-/// The side files an ACP client's settings came from, as `acp`'s
-/// `client_instructions.file_name` and `tool_call_identities.file_name`
-/// name them under the `client` folder (D46).
+/// The side files a client's settings came from, which an older release
+/// saved under the `client` folder (D46).
 pub const moved_client_prompt_file = "client/system-prompt.txt";
 pub const moved_tool_identities_file = "client/mcp-tool-identities.json";
 const moved_client_prompt_max = 64 * 1024;
@@ -7594,7 +7592,7 @@ test "-c resumes the session this host last opened" {
     const again = try Session.resumeSession(testing.allocator, &t.store, .last_opened, "/w", .app);
     defer again.close();
     try testing.expectEqualStrings(id, again.id());
-    try testing.expectError(error.NoRememberedSession, Session.resumeSession(testing.allocator, &t.store, .last_opened, "/w", .acp));
+    try testing.expectError(error.NoRememberedSession, Session.resumeSession(testing.allocator, &t.store, .last_opened, "/w", .ask));
 }
 
 fn pathExists(t: *TestHome, parts: []const []const u8) bool {
@@ -7886,14 +7884,14 @@ test "an older session moves off its side folder on its first writable open, and
     try t.init();
     defer t.deinit();
     var model = "m".*;
-    const s = try Session.create(testing.allocator, &t.store, "/w", .acp, testSeed(&model));
+    const s = try Session.create(testing.allocator, &t.store, "/w", .ask, testSeed(&model));
     const id = try testing.allocator.dupe(u8, s.id());
     defer testing.allocator.free(id);
     try OldSideFolder.write(&t, id);
     try OldSideFolder.commitTurn(&t, s);
     s.close();
 
-    const r = try Session.resumeSession(testing.allocator, &t.store, .{ .id = id }, "/w", .acp);
+    const r = try Session.resumeSession(testing.allocator, &t.store, .{ .id = id }, "/w", .ask);
     defer r.close();
     // One manager folder, and terminal state where the terminal store looks.
     try testing.expect(!pathExists(&t, &.{ ".fx", files_dir_name, id }));
@@ -8079,12 +8077,12 @@ test "a move cut short is redone on the next open, and old names still resolve (
     try testing.expectEqual(@as(u64, 0), (try t.store.manager.verify(id)).bad_blobs);
 }
 
-test "an ACP client's prompt and tool identities are settings, written only when they change (D46)" {
+test "a client's prompt and tool identities are settings, written only when they change (D46)" {
     var t: TestHome = undefined;
     try t.init();
     defer t.deinit();
     var model = "m".*;
-    const s = try Session.create(testing.allocator, &t.store, "/w", .acp, testSeed(&model));
+    const s = try Session.create(testing.allocator, &t.store, "/w", .ask, testSeed(&model));
     // Held with the session until its first turn, like the seed.
     try testing.expectEqual(@as(?[]u8, null), try s.clientPrompt(testing.allocator));
     try s.setClientPrompt("You run inside Mini.");
@@ -8098,7 +8096,7 @@ test "an ACP client's prompt and tool identities are settings, written only when
     try testing.expectEqual(@as(usize, 1), try countSettings(t.store.manager, id, .client_prompt));
     try testing.expectEqual(@as(usize, 1), try countSettings(t.store.manager, id, .tool_identities));
 
-    const r = try Session.resumeSession(testing.allocator, &t.store, .{ .id = id }, "/w", .acp);
+    const r = try Session.resumeSession(testing.allocator, &t.store, .{ .id = id }, "/w", .ask);
     defer r.close();
     const prompt = (try r.clientPrompt(testing.allocator)).?;
     defer testing.allocator.free(prompt);
@@ -8747,15 +8745,15 @@ test "a converted v1 session's side files keep their old names, and its prompt i
     try testing.expect(try userItemLists(&t, id, &image_hash));
 }
 
-test "a converted v1 session keeps its ACP client's prompt and tool identities (D46)" {
+test "a converted v1 session keeps its client's prompt and tool identities (D46)" {
     const alloc = testing.allocator;
     var t: TestHome = undefined;
     try t.init();
     defer t.deinit();
     var v1 = try V1Home.init(&t);
     defer v1.deinit();
-    // A v1 ACP session with a client system prompt and an MCP tool.
-    const id = (try v1.fixture("acp", 1))[0];
+    // A v1 session with a client system prompt and an MCP tool.
+    const id = (try v1.fixture("client", 1))[0];
     const saved_prompt = try v1.file(id, "client", "system-prompt.txt");
     const saved_identities = try v1.file(id, "client", "mcp-tool-identities.json");
 

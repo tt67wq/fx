@@ -1,6 +1,6 @@
 //! The frames a subagent's report or message to its parent travels in: a
 //! fixed header line, then one JSON line. `subagent/reports.zig` writes
-//! them; the runtime, the session store, and ACP recognize them here, so a
+//! them; the runtime and the session store recognize them here, so a
 //! saved or replayed frame is never taken for the user's words.
 
 const std = @import("std");

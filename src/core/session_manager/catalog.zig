@@ -715,14 +715,14 @@ test "records round trip" {
     summary.parent = "p";
     summary.opened_ms[@backingInt(schema.Host.ask)] = 9;
     try encodeRecord(arena.allocator(), &out, .{ .put = summary });
-    try encodeRecord(arena.allocator(), &out, .{ .opened = .{ .id = "abc", .host = .acp, .ts_ms = 10 } });
+    try encodeRecord(arena.allocator(), &out, .{ .opened = .{ .id = "abc", .host = .child, .ts_ms = 10 } });
     try encodeRecord(arena.allocator(), &out, .{ .del = .{ .id = "abc", .ts_ms = 11 } });
     var lines = std.mem.splitScalar(u8, out.items, '\n');
     const put = (try decodeRecord(arena.allocator(), try std.mem.concat(arena.allocator(), u8, &.{ lines.next().?, "\n" }))).?.put;
     try testing.expectEqualStrings("\"a \\\"title\\\"\"", put.title.?);
     try testing.expectEqual(@as(u64, 9), put.opened_ms[@backingInt(schema.Host.ask)]);
     const opened = (try decodeRecord(arena.allocator(), try std.mem.concat(arena.allocator(), u8, &.{ lines.next().?, "\n" }))).?.opened;
-    try testing.expectEqual(schema.Host.acp, opened.host);
+    try testing.expectEqual(schema.Host.child, opened.host);
     const del = (try decodeRecord(arena.allocator(), try std.mem.concat(arena.allocator(), u8, &.{ lines.next().?, "\n" }))).?.del;
     try testing.expectEqual(@as(u64, 11), del.ts_ms);
 }
@@ -760,15 +760,15 @@ test "open times decode without a second parse as written, and any other spellin
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    try testing.expectEqual([host_count]u64{ 1791248460854, 0, 7, 0, 0 }, plainTimes("[1791248460854,0,7,0,0]").?);
-    for ([_][]const u8{ "[1,0,0,0]", "[1,0,0,0,0,0]", "[01,0,0,0,0]", "[1, 0,0,0,0]", "[-1,0,0,0,0]", "[1,0,0,0,]", "[]", "1" }) |raw| {
+    try testing.expectEqual([host_count]u64{ 1791248460854, 0, 7 }, plainTimes("[1791248460854,0,7]").?);
+    for ([_][]const u8{ "[1,0]", "[1,0,0,0]", "[01,0,0]", "[1, 0,0]", "[-1,0,0]", "[1,0,0,]", "[]", "1" }) |raw| {
         try testing.expect(plainTimes(raw) == null);
     }
     // A spelling this module never writes still decodes, through JSON.
     var out: std.ArrayList(u8) = .empty;
-    try log_mod.appendFramed(a, &out, "{\"op\":\"put\",\"id\":\"s1\",\"role\":\"root\",\"host\":\"app\",\"workspace\":\"/w\",\"created\":1,\"updated\":2,\"turns\":1,\"opened\":[3, 0, 0, 0, 9]");
+    try log_mod.appendFramed(a, &out, "{\"op\":\"put\",\"id\":\"s1\",\"role\":\"root\",\"host\":\"app\",\"workspace\":\"/w\",\"created\":1,\"updated\":2,\"turns\":1,\"opened\":[3, 0, 9]");
     const put = (try decodeRecord(a, out.items)).?.put;
-    try testing.expectEqual([host_count]u64{ 3, 0, 0, 0, 9 }, put.opened_ms);
+    try testing.expectEqual([host_count]u64{ 3, 0, 9 }, put.opened_ms);
 }
 
 test "the live size is the share of folded lines still the newest of their id" {
