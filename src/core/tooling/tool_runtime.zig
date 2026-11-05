@@ -353,13 +353,18 @@ fn registeredToolSpec(ctx: Context, name: []const u8) ?*const tool_specs.ToolSpe
 }
 
 fn providerDisablesTool(capabilities: provider_set.Bundle.Capabilities, name: []const u8) bool {
-    return std.mem.eql(u8, name, "vision") and
-        !capabilities.vision_fallback;
+    if (std.mem.eql(u8, name, "vision") and
+        !capabilities.vision_fallback) return true;
+    // Configured lines have no search backend; fail fast with the same
+    // message shape as vision instead of the execution-time Gateway error.
+    if (std.mem.eql(u8, name, "web_search") and
+        !capabilities.fx_search) return true;
+    return false;
 }
 
 pub fn validateToolCall(ctx: Context, arena: Allocator, call: ToolCall) !tool_contracts.ToolCallValidationResult {
     if (providerDisablesTool(ctx.provider_capabilities, call.name)) {
-        return .{ .failure = try arena.dupe(u8, "Unsupported tool: vision") };
+        return .{ .failure = try arena.print("Unsupported tool: {s}", .{call.name}) };
     }
     const spec = registeredToolSpec(ctx, call.name) orelse {
         return switch (try tool_mcp_runtime.validateAdvertisedDynamicTool(.{
@@ -391,7 +396,7 @@ pub fn validateToolCall(ctx: Context, arena: Allocator, call: ToolCall) !tool_co
 
 pub fn checkToolAvailability(ctx: Context, arena: Allocator, call: ToolCall) !?[]const u8 {
     if (providerDisablesTool(ctx.provider_capabilities, call.name)) {
-        return try arena.dupe(u8, "Unsupported tool: vision");
+        return try arena.print("Unsupported tool: {s}", .{call.name});
     }
     return tool_dispatch.localToolAvailabilityFailureForCall(
         typedDispatchContext(ctx, arena),
@@ -3312,6 +3317,35 @@ test "tool runtime validates and executes only tools from supplied registry" {
     var read_rt = TestRuntime{ .tool_registry = read_only_registry };
     defer read_rt.deinit(alloc);
     try std.testing.expect((try validateToolCall(read_rt.context(), arena, call)) == .valid);
+}
+
+test "web_search fails fast on providers without the search capability" {
+    const alloc = std.testing.allocator;
+    var no_search_rt = TestRuntime{
+        .provider_capabilities = .{ .vision_fallback = true },
+    };
+    defer no_search_rt.deinit(alloc);
+    var arena_state = std.heap.ArenaAllocator.init(alloc);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const call = ToolCall{ .id = "search", .name = "web_search", .arguments_json = "{\"query\":\"x\"}" };
+    const validated = try validateToolCall(no_search_rt.context(), arena, call);
+    try std.testing.expectEqualStrings("Unsupported tool: web_search", validated.failure);
+
+    const unavailable = (try checkToolAvailability(no_search_rt.context(), arena, call)).?;
+    try std.testing.expectEqualStrings("Unsupported tool: web_search", unavailable);
+
+    // The gateway capability keeps the tool past the capability check.
+    var gateway_rt = TestRuntime{};
+    defer gateway_rt.deinit(alloc);
+    const gateway_validated = try validateToolCall(gateway_rt.context(), arena, call);
+    try std.testing.expect(gateway_validated == .not_registered or
+        (gateway_validated != .failure or
+            !std.mem.startsWith(u8, gateway_validated.failure, "Unsupported tool: web_search")));
+    const gateway_available = try checkToolAvailability(gateway_rt.context(), arena, call);
+    try std.testing.expect(gateway_available == null or
+        !std.mem.startsWith(u8, gateway_available.?, "Unsupported tool: web_search"));
 }
 
 test "removed tool names are not callable" {
