@@ -188,92 +188,9 @@ async function ask() {
   }
 }
 
-// A server that asks questions needs a client that can take them, and a
-// headless fx ask declares none: such scenarios run through fx acp, as an ACP
-// client that takes form questions and answers each with its defaults.
-const asksQuestions = scenario === "sep-2322-client-request-state";
-
-async function askOverAcp() {
-  const gateway = startFakeGateway(gatewaySteps());
-  const child = Bun.spawn([fxBin, "acp"], {
-    cwd: workspace,
-    env: { ...fxEnv, FX_GATEWAY_BASE_URL: gateway.baseUrl, FX_GATEWAY_CHAT_URL: gateway.chatUrl },
-    stdin: "pipe",
-    stdout: "pipe",
-    stderr: "inherit",
-  });
-  const send = (message: object) => {
-    child.stdin.write(`${JSON.stringify(message)}\n`);
-    child.stdin.flush();
-  };
-  const waiting = new Map<number, (message: any) => void>();
-  let nextId = 1;
-  const request = (method: string, params: object) =>
-    new Promise<any>((resolve) => {
-      const id = nextId++;
-      waiting.set(id, resolve);
-      send({ jsonrpc: "2.0", id, method, params });
-    });
-  const reading = (async () => {
-    const decoder = new TextDecoder();
-    let buffer = "";
-    for await (const chunk of child.stdout) {
-      buffer += decoder.decode(chunk, { stream: true });
-      for (let end = buffer.indexOf("\n"); end >= 0; end = buffer.indexOf("\n")) {
-        const line = buffer.slice(0, end).trim();
-        buffer = buffer.slice(end + 1);
-        if (!line) continue;
-        const message = JSON.parse(line);
-        if (message.method === undefined) {
-          waiting.get(message.id)?.(message);
-          waiting.delete(message.id);
-        } else if (message.method === "elicitation/create" && message.id !== undefined) {
-          send({ jsonrpc: "2.0", id: message.id, result: { action: "accept", content: formDefaults(message.params?.requestedSchema) } });
-        } else if (message.method === "session/request_permission" && message.id !== undefined) {
-          send({ jsonrpc: "2.0", id: message.id, result: { outcome: { outcome: "selected", optionId: "allow_once" } } });
-        }
-      }
-    }
-  })();
-  try {
-    await request("initialize", { protocolVersion: 1, clientCapabilities: { elicitation: { form: {} } } });
-    // An ACP client names its session's servers.
-    const created = await request("session/new", {
-      cwd: workspace,
-      mcpServers: [{ type: "http", name: "conformance", url: configuredServerUrl, headers: [] }],
-    });
-    const sessionId = created.result.sessionId;
-    await request("session/set_mode", { sessionId, modeId: "auto" });
-    const prompted = await request("session/prompt", {
-      sessionId,
-      prompt: [{ type: "text", text: "Call the conformance MCP tools." }],
-    });
-    return { exitCode: prompted.error === undefined ? 0 : 1, needsLogin: false };
-  } finally {
-    child.stdin.end();
-    child.kill();
-    await child.exited;
-    await reading.catch(() => {});
-    gateway.stop();
-  }
-}
-
-// Each property's default, else a value its type allows.
-function formDefaults(schema: any): Record<string, unknown> {
-  const content: Record<string, unknown> = {};
-  for (const [key, property] of Object.entries<any>(schema?.properties ?? {})) {
-    if (property.default !== undefined) content[key] = property.default;
-    else if (Array.isArray(property.enum)) content[key] = property.enum[0];
-    else if (property.type === "boolean") content[key] = true;
-    else if (property.type === "number" || property.type === "integer") content[key] = property.minimum ?? 0;
-    else if (property.type === "string") content[key] = "x".repeat(property.minLength ?? 0);
-  }
-  return content;
-}
-
 try {
   if (authScenario) await runFx(["mcp", "login", "conformance"]);
-  let result = asksQuestions ? await askOverAcp() : await ask();
+  let result = await ask();
   // A server that asks for more scope at call time: sign in again once,
   // then ask once more.
   if (authScenario && result.needsLogin) {
