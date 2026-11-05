@@ -15,7 +15,7 @@
 
 fx is a minimal coding agent CLI that still comes with batteries included. It's one native binary written in Zig, so there is no runtime to install, and it runs the same on your laptop, in CI, or inside an agent sandbox. Its output is closer to a Unix shell than an IDE, because the conversation prints into your terminal's scrollback instead of filling the screen.
 
-fx is meant to be embedded and extended. Scripts call it with `fx ask`, and editors connect over the Agent Client Protocol (ACP). Skills, MCP servers, and your project's `AGENTS.md` add to what the agent knows and can do.
+fx is meant to be embedded and extended. Scripts call it with `fx ask`. Skills, MCP servers, and your project's `AGENTS.md` add to what the agent knows and can do.
 
 <p>
   <a href="https://vercel.com/labs#labs-products"><img alt="Vercel Labs Product" src="https://img.shields.io/badge/LABS-PRODUCT-0a0a0a.svg?style=for-the-badge&amp;logo=Vercel&amp;labelColor=000000" height="28"></a>
@@ -71,7 +71,6 @@ fx ask --json "summarize the failing tests" | jq -r .final_output
 | Surface | Use it for |
 | --- | --- |
 | <code>fx&nbsp;ask</code> | One request from a script or CI job. `--json` returns structured output, and `--resume` continues a saved session. |
-| <code>fx&nbsp;acp</code> | Editors and other [Agent Client Protocol](https://fx.sh/docs/using-fx/acp) clients, over stdio. |
 
 The CLI also picks up these extensions:
 
@@ -125,8 +124,7 @@ fx/
 │   ├── tools/       built-in tools: files, shell, web, skills, subagents
 │   ├── ui/          terminal rendering and input
 │   ├── gateway/     model provider transport
-│   ├── mcp/         MCP engine
-│   └── acp/         Agent Client Protocol server
+│   └── mcp/         MCP engine
 ├── tests/           end-to-end tests and model evals
 └── benchmarks/      startup, memory, and latency benchmarks
 ```

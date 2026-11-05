@@ -14,7 +14,7 @@ everything about fx sessions:
 - crash recovery and listing.
 
 Each session is one append-only JSONL log. The interactive app, `fx ask`,
-ACP, subagents and the wasm SDK reach sessions only through its API. It is
+subagents and the wasm SDK reach sessions only through its API. It is
 built and proven standalone, then wired into fx next to v1, then replaces
 v1.
 
@@ -44,9 +44,9 @@ All paths are relative to fx at `46408935b`.
   persistence callbacks the agent loop uses.
 - `src/core/agent/runtime/orchestrator.zig:3857` (`persistRecoveryCheckpoint`)
   rebuilds the whole current turn at each of 13 step boundaries.
-- The four host copies of the save logic:
+- The three host copies of the save logic:
   `src/core/app/app_session_runtime.zig::Persistence` (line 1210),
-  `src/core/cli/cli_ask.zig:3102`, `src/acp/prompt.zig:2143`,
+  `src/core/cli/cli_ask.zig:3102`, and
   `src/core/subagent/execution.zig:509`.
 - `src/core/app/app_session_runtime.zig:2604` and `:1754` make `-c` remember
   only the interactive app's sessions; `session_store.zig:1168` resolves
@@ -57,7 +57,7 @@ All paths are relative to fx at `46408935b`.
 - `build.zig.zon` has no dependencies.
 - End-to-end coverage: `tests/e2e/session-recovery.test.ts`,
   `tests/e2e/tui-resume-brutal.test.ts`,
-  `tests/e2e/tui-interrupt-recovery.test.ts`, `tests/e2e/acp.test.ts`,
+  `tests/e2e/tui-interrupt-recovery.test.ts` and
   `tests/e2e/cli.test.ts`.
 
 ## Current System And Contracts
@@ -76,8 +76,7 @@ live session as a whole.
   until the turn is resolved (`session_log.zig:38` comment).
 - **Resume by id, by `--resume last` and through the picker.** `--resume last`
   means the newest session of any host.
-- **`-c` returns to the session the interactive app last opened.** `fx ask`
-  and ACP runs never change it.
+- **`-c` returns to the session the interactive app last opened.** `fx ask` runs never change it.
 - **Portability.** Sessions are global and portable, and each tracks
   `workspace_root` (fx `AGENTS.md`, Configuration and State).
 - **Children.** Child sessions stay out of discovery and cannot be resumed
@@ -290,7 +289,7 @@ delete(id)                                                   Busy if open anywhe
   `fsync` before returning if the batch holds a durable-class event.
 - **Child sessions:** resuming a child requires its `parent`; otherwise the
   result is ChildSession.
-- **Host names:** `host` is one of `app`, `ask`, `acp`, `sdk` or `child`.
+- **Host names:** `host` is one of `app`, `ask` or `child`.
   `-c` maps to `.last_opened{host: app}`. `--resume last` maps to `.last`.
 
 ### fx mapping (the adapter's side)
@@ -380,7 +379,7 @@ reused as ideas; no v1 code is shared.
   (`src/core/session/session_log.zig:3207`) keeps the five-file state split
   and the per-host copies of the save logic.
 - **Composing inside fx was rejected.** Merging the callbacks inside
-  `src/core/app/app_session_runtime.zig` alone leaves `fx ask`, ACP and
+  `src/core/app/app_session_runtime.zig` alone leaves `fx ask` and
   subagents on their own copies.
 - **Reused as patterns:**
   - the event envelope from `session_event.zig::Envelope`;
@@ -600,8 +599,7 @@ The figures are medians from 2026-09-27 on a Mac (APFS, SSD).
 - **Mixed state:** v1 and v2 use separate roots, `~/.fx/sessions/{id}` and
   `~/.fx/sessions/v2/` (D19), and one process uses one backend.
 - **Switch (D26):** `--sessions-v2` on `fx` and `fx ask`, or
-  `FX_SESSIONS_V2=1` for any host, including ACP launched by an editor and
-  the E2E suite. It was off by default. Subagents followed their parent's
+  `FX_SESSIONS_V2=1` for any host, including the E2E suite. It was off by default. Subagents followed their parent's
   process, and the wasm build stayed on v1 until `storage_js` landed. D53
   removed the switch with v1.
 - **Side files while the switch exists (D27):** per-session side folders
@@ -777,9 +775,7 @@ Settled in the 2026-09-27 pre-wiring API check:
 - **D20 Decision:** `State` carries `created_ms` and `updated_ms`, the `ts`
   of line 1 and of the newest line (0 before the first turn), and the index
   records the same `updated_ms` instead of the clock at the index write.
-  **Why:** ACP's load and usage recovery need both on resume
-  (`src/acp/sessions.zig` lines 669 to 679, and fx's usage recovery, since
-  removed), and a converted
+  **Why:** load and usage recovery on resume need both, and a converted
   session keeps its original times in the list rather than the conversion
   time. **Alternative:** the adapter looks the session up in `list`.
 - **D21 Decision:** a host may end a turn with `reason: failed` as well as
@@ -802,10 +798,10 @@ Settled in the 2026-09-27 pre-wiring API check:
   turn. **Why:** no manager or spec change, and the log stays append-only.
   **Alternative:** let a crashed turn stay open until fx decides, which
   changes D1 and TurnLifecycle.
-- **D24 Decision:** an ACP session that never gets a prompt is never written
+- **D24 Decision:** a session that never gets a prompt is never written
   (D2 applies to every host); loading its id after a restart returns
   NotFound. **Why:** it holds nothing to lose, and no empty folders appear.
-  **Alternative:** write every ACP session at creation as v1 does.
+  **Alternative:** write every session at creation as v1 does.
 - **D25 Decision:** token counters stay inside fx's `usage` value and are
   not added to the index or `fx sessions`. **Why:** the list does not show
   them today. **Alternative:** index them for the list.
@@ -813,9 +809,9 @@ Settled in the 2026-09-27 pre-wiring API check:
 Settled when wiring started (2026-09-27):
 - **D26 Decision:** the switch is `--sessions-v2` plus `FX_SESSIONS_V2=1`,
   off by default, instead of a runtime-profile capability flag. **Why:** a flag
-  opts one run in from the command line, and editors that launch ACP can only
-  set the environment. **Alternative:** a flag only, which leaves ACP and
-  the E2E suite out.
+  opts one run in from the command line, and editors can only
+  set the environment. **Alternative:** a flag only, which leaves the
+  E2E suite out.
 - **D27 Decision:** until the default flips, v2 sessions keep side files in
   v1's layout under `~/.fx/session-files/{id}/`, a temporary deviation from
   D6 and D13. **Why:** wiring and dogfooding can start without first
@@ -847,9 +843,9 @@ Settled after the first fault-injection runs (2026-09-27):
   with the pieces saved so far. Revisit before the flip. **Alternative:**
   port the checkpoint now.
 
-Settled while wiring ACP (2026-09-27):
-- **D32 Decision:** the transcript shown on resume and on an ACP load
-  lists every saved turn, as v1's does, while the model's history still
+Settled while wiring more hosts (2026-09-27):
+- **D32 Decision:** the transcript shown on resume lists every saved
+  turn, as v1's does, while the model's history still
   starts at the newest compaction. The adapter reads the whole log for it,
   one turn and one page in memory at a time, and must stay at least as
   fast as v1's full history load. `fx session {id}` lists every saved turn
@@ -935,21 +931,21 @@ Settled on 2026-09-28:
   remember the first error itself. No TLA+ change: the specs model a
   session going down, not the name of the error.
 - **D41 Decision:** a host switching sessions may open the next session
-  before it closes the current one. ACP creates or loads the next session
+  before it closes the current one. The host opens or loads the next session
   first and closes the current one only once the next is ready, so a
   failed switch leaves the current session in place. While a switch is
   pending, the current session's turn may still end and its children may
   still finish, but no turn or child starts; the current session closes
   only after its children are joined, and closing the next one instead
   abandons the switch. **Why:** found by the trace check of `Wiring`:
-  every ACP switch in the E2E runs opened the next session first, which
+  the switches in the E2E runs opened the next session first, which
   the spec's single session slot did not allow. **Alternative:** close the
-  current session first, which leaves ACP without a session when the next
-  one fails to open. `Wiring.tla` gains `next`, the session being
+  current session first, which leaves the host without a session when the
+  next one fails to open. `Wiring.tla` gains `next`, the session being
   switched to.
 - **D42 Decision:** a resume rewrites the session's index entry, stamped as
   opened by the resuming host, instead of appending only an `opened` line.
-  **Why:** found while porting ACP's load `cwd`: a resume from another
+  **Why:** found while porting load `cwd`: a resume from another
   workspace records `set workspace` in the log, but `list` kept the old
   workspace until the session closed, so `session/list` and `fx sessions`
   showed a moved session under the folder it left; a repaired open turn
@@ -958,12 +954,12 @@ Settled on 2026-09-28:
   resume but needs the repair to report what it wrote. `Catalog.tla`
   gains `Refresh`, a put for a live, indexed session, which the title,
   workspace and language updates already wrote.
-- **D43 Decision:** an ACP session on v2 keeps the client system prompt and
-  its MCP tool identities in its side folder, through the
-  `SessionChildCapability` v1 uses, and `session/new` and `session/load`
-  take the request's `cwd` as v1 does. The prompt is written at
-  `session/new`, as on v1; closing a session that never got a prompt
-  removes its side folder, and doctor sweeps one that a crash leaves
+- **D43 Decision (retired when ACP was removed):** an ACP session on v2
+  kept the client system prompt and its MCP tool identities in its side
+  folder, through the `SessionChildCapability` v1 uses, and `session/new`
+  and `session/load` took the request's `cwd` as v1 did. The prompt was
+  written at `session/new`, as on v1; closing a session that never got a
+  prompt removed its side folder, and doctor swept one that a crash left
   (D36). **Why:** fx's ACP gained these while v2 was being built; without
   them a v2 session silently lost the client's instructions and its replay
   detail, and started in the process folder. **Alternative:** hold the
@@ -1136,8 +1132,8 @@ Confirmed for the converter and the removal (2026-10-02;
 D59 replaces D55's import at start with conversion on open):
 - **D56 Decision:** besides the conversation and state, the converter
   carries what a user would otherwise lose: side files as blobs with old
-  handles mapped as D47 maps them; ACP client prompts and tool identities
-  as D46's settings; hosted terminal state into `~/.fx/terminal/{id}`
+  handles mapped as D47 maps them; the client prompts and tool identities
+  that ACP sessions saved, as D46's settings; hosted terminal state into `~/.fx/terminal/{id}`
   (D45), whatever its folders' modes, as v1 made each private when it
   opened it, while an entry the copy can't take (a link, a FIFO, a file
   that does not open, or nesting deeper than 8 folders) is left out and
@@ -1192,7 +1188,7 @@ Settled for `/fork` (2026-10-02):
 Settled for the converter (2026-10-06):
 - **D59 Decision (amends D55 and D57):** a v1 session converts when it
   is opened, not at start. Every open (the app's resume, `-c`, the
-  picker and `/resume`, `fx ask`, ACP `session/load`) goes through one
+  picker and `/resume`, `fx ask`) goes through one
   function: it opens the v2 copy, or converts the family (the root and
   the children in its registry, from one v1 state) and then opens it.
   Start scans nothing. Listing shows v1 sessions not yet converted next
@@ -1246,7 +1242,7 @@ Settled for the converter (2026-10-06):
   merged listing. `fx session {id}` shows an unconverted v1 session read
   only, without converting it. A converted session is a v2 session and
   behaves as one: nothing special for converted sessions. The slow notice
-  shows in the app, on `fx ask`'s stderr, and to ACP clients. `fx
+  shows in the app and on `fx ask`'s stderr. `fx
   sessions convert` prints `converted N, busy N, unreadable N` and a line
   per skipped session, and exits 1 when any was skipped. A damaged session's
   error names the file and the reason. Internal, by the same pass: a
@@ -1348,7 +1344,7 @@ Settled while removing v1 (2026-10-17):
   converts despite a leftover fence. **Why:** as in v1, an upgrade left
   half done is not guessed at. **Alternative:** convert past the fence.
 - **D71 Decision:** resuming a subagent child's id directly, with `fx
-  ask --resume-id`, `fx --resume` or ACP `session/load`, fails with v1's
+  ask --resume-id` or `fx --resume`, fails with v1's
   message: subagent child sessions cannot be resumed directly; message
   the named agent from its parent session. **Why:** it tells the user
   what to do instead. **Alternative:** a plain not-found.
@@ -1406,9 +1402,8 @@ Settled while removing v1 (2026-10-17):
   the reopened session shows the turn's finished pieces, such as a tool
   call and its result, and the turn as interrupted, but not the text
   streamed by the attempt being retried, which v1 kept. With D54 an fx
-  session has no recovery to continue: ACP's `_meta.fx.continueRecovery`
-  answers that the session does not support durable recovery, and serves
-  only libfx sessions that keep a journal. **Why:** text from an attempt
+  session has no recovery to continue; only libfx sessions that keep a
+  journal carry one. **Why:** text from an attempt
   being retried is not a result, and the next turn never sends it.
   **Alternative:** save it in the open turn.
 - **D81 Decision:** when fx relaunches itself after an update and the
@@ -1625,7 +1620,7 @@ rewriting a cached prompt prefix):
     tool calls into the instructions.
   - **Older fx:** an fx from before D93 does not know the type and leaves
     the item out (D17), so it reads the turn without the note.
-  - **libfx and ACP saved state:** the execution JSON in
+  - **libfx and older saved state:** the execution JSON in
     `session_codec.zig` names notes only in schema version 11, written only
     for a turn that has notes; a turn without them keeps version 10 and its
     bytes. An older fx rejects version 11, as it rejects every newer
@@ -1641,8 +1636,7 @@ rewriting a cached prompt prefix):
     `keep_steering`: the notes the cut covers follow from those. The
     summarizer reads no notes.
   - **Who gets them:** every model and provider, libfx hosts included,
-    since a tool result is part of every provider's conversation. ACP
-    clients never see them replayed.
+    since a tool result is part of every provider's conversation.
 
   **Why:** text that changes during a session, added to the instructions,
   rewrites the cached prefix of every request after it. A note on the
@@ -1767,7 +1761,7 @@ cached prompt prefix):
 - **Behavior changes.**
   - Creation at the first turn means a session-level `/model` or `/rename`
     before any prompt is not kept in the session.
-  - An unused ACP session is not kept, and loading its id after a restart
+  - An unused session is not kept, and loading its id after a restart
     returns NotFound (D24).
   - Handles become hashes.
   - The E2E suite must pass unchanged, or each difference must be approved.
@@ -1812,8 +1806,8 @@ cached prompt prefix):
   symlinked session path.
 - **Diagnostics:** every repair in the crash matrix emits exactly one
   diagnostics event.
-- **Real path:** `./zig-out/bin/fx` exercised interactively, through
-  `fx ask` and through ACP; the fx E2E session suite.
+- **Real path:** `./zig-out/bin/fx` exercised interactively and through
+  `fx ask`; the fx E2E session suite.
 - **Regression:** the E2E suite; the startup benchmark unchanged.
 
 ## Implementation Freedom

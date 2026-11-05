@@ -12,7 +12,7 @@ Pick the lowest layer that proves the behavior, and extend the closest existing 
 | --- | --- |
 | A parser, policy, reducer, formatter, or state transition | An inline `test` block in the owning `src/` file |
 | Terminal cells, wrapping, cursor, scroll, or resize | `src/ui/resize_tests.zig` or a VT test in the owning UI file |
-| CLI, ACP, or TUI behavior of the built binary | A root `tests/e2e/*.test.ts` file; terminal flows use `tui-*.test.ts` |
+| CLI or TUI behavior of the built binary | A root `tests/e2e/*.test.ts` file; terminal flows use `tui-*.test.ts` |
 | fx against the official MCP client conformance suite | `tests/e2e/conformance/`, an isolated npm project |
 | Evidence tooling for terminal rendering bugs | `tests/e2e/render-lab/` |
 | Task quality or tool choice with real models | `tests/evals/` |

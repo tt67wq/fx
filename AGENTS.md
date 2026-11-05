@@ -78,15 +78,13 @@ Key rules:
 
 * `src/core/shell_command/safe_git.zig` runs git for the `fx pr` and `fx issue` snapshot and for the agent's direct read-only `git status`, `git diff`, and `git log` when the command does not use the user's own shell environment. It turns off every program a repository's own config can name and refuses to run when git would use a different repository than the one fx read. In `auto` mode a git command it refuses is returned to the agent without running. Commands that run in a shell use git with the repository's full config: git in the shell tool's default `user` environment, and the routine commands `auto` mode runs without review, such as `git status` with other flags, `git fetch`, or `npm test`.
 
-* `src/mcp/` is the MCP engine. Its files import only `std` and each other, and the host passes in `std.Io` and every other service through `src/mcp/host.zig`. fx connects to it through `src/core/mcp_host/`. `src/core/mcp/` holds the MCP types, config parsing, schema checks, search, and tool naming that the host, the tools, ACP, and the UI share.
+* `src/mcp/` is the MCP engine. Its files import only `std` and each other, and the host passes in `std.Io` and every other service through `src/mcp/host.zig`. fx connects to it through `src/core/mcp_host/`. `src/core/mcp/` holds the MCP types, config parsing, schema checks, search, and tool naming that the host, the tools, and the UI share.
 
 * `src/tools/` owns built-in tool implementations. Generic tool contracts and dispatch live in `src/core/tooling/`. Default tool specs are centralized in `src/core/tooling/tool_specs.zig` or `src/builtins/tools.zig`, not in individual tool files.
 
 * `src/ui/` owns terminal rendering, event loop, input, transcript. It must not own product state.
 
 * `src/gateway/` owns provider transport. It must not absorb product-state logic.
-
-* `src/acp/` owns the ACP (Agent Client Protocol) JSON-RPC 2.0 server.
 
 
 ### Adding a Feature
@@ -198,7 +196,7 @@ Do not bypass the permission system for new tools.
 
 * To sort, use `sort` from `src/core/shared/sort_utils.zig` in place of `std.mem.sort`. It takes the same arguments and is also stable, but shares one implementation across element types instead of generating a block sort for each. Code that cannot import it, such as `src/core/indexer/`, `src/core/session_manager/`, and files that import only `std`, keeps `std.mem.sort`.
 
-* For JSON string escaping (writing raw JSON), use the project's `writeJsonStr` helper in `src/acp/jsonrpc.zig` rather than assuming `std.json.encodeJsonString` exists.
+* For JSON string escaping (writing raw JSON), use the project's `writeJsonStr` helper rather than assuming `std.json.encodeJsonString` exists.
 
 * Zig 0.17 uses `std.Io.File.stdin()` / `.stdout()` / `.stderr()`, not `std.io.getStdIn()`.
 
@@ -279,12 +277,11 @@ cd tests/evals && bun run eval:matrix               # cross-model matrix run
 
 ### `tests/e2e/` — End-to-End Tests
 
-Deterministic runtime tests (CLI commands, ACP protocol, TUI via tmux). No API key needed for most.
+Deterministic runtime tests (CLI commands, TUI via tmux). No API key needed for most.
 
 ```bash
 cd tests/e2e && bun install && bun test              # run all e2e tests
 cd tests/e2e && bun test cli.test.ts                 # just CLI tests
-cd tests/e2e && bun test acp.test.ts                 # just ACP tests
 cd tests/e2e && bun test tui-*.test.ts               # just TUI tests (requires tmux)
 ```
 
@@ -341,8 +338,6 @@ The `fx mcp call` model check, `.github/workflows/tla-mcp-call.yml`, runs `tests
 The macOS arm64 PGSO workflow runs on a pull request only when the PGSO pipeline changes: `scripts/pgso/` other than `corpus.json`, the `setup-pgso` action, or `.github/workflows/pgso-macos-arm64.yml`. To qualify any other change, run `gh workflow run pgso-macos-arm64.yml --ref <branch>`. The stable release always runs it.
 
 The Linux arm64 PGSO workflow, `.github/workflows/pgso-linux-arm64.yml`, builds and qualifies a Linux candidate in one job on a GitHub-hosted arm64 runner, which takes several hours. It runs on the same pull request paths, with its own workflow file in place of the macOS one, and `gh workflow run pgso-linux-arm64.yml --ref <branch>` runs it for any other change. The stable release always runs it and ships its candidate as the Linux arm64 binary. `.github/workflows/pgso-linux-x86_64.yml` does the same on a GitHub-hosted x86_64 runner, on the same pull request paths with its own workflow file, and the stable release ships its candidate as the Linux x86_64 binary.
-
-Live model evals and the live ACP suite need credentials and are not deterministic, so they run only on request. Run the live ACP suite with `gh workflow run ci.yml --ref <branch> -f acp_live=true`.
 
 A CI result is valid only when it belongs to the exact current commit and `Build & Test`, `E2E (deterministic)`, `Shellcheck`, `Startup Latency`, and `macOS arm64` all succeed. Do not mark the draft PR ready or request review from a stale, partial, queued, cancelled, skipped, or failed run. If CI fails, make the smallest repair, rerun the focused local proof, push the new commit to the same draft PR, and wait for CI on the new exact commit. After CI passes, run the final ship gate and mark the PR ready only when it reports `SHIP` for that exact commit.
 

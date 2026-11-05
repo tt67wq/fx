@@ -141,7 +141,7 @@ python3 benchmarks/first_frame.py --binary /tmp/fx-before --binary ./zig-out/bin
 
 ### Check a TLA+ model
 
-`tests/tla/` holds TLA+ models of fx, such as the session manager, the MCP engine and host, ACP, `/usage`, the shell tool, and the workspace indexer. Most come with Bun drivers that run the real binary and have TLC check what it did. CI runs the MCP models on `main` and on pull requests that change the code they cover; run the matching checker yourself when you change behavior that one of the others describes. You need Java and `tla2tools.jar`, and `tests/tla/README.md` lists every model and covers setup.
+`tests/tla/` holds TLA+ models of fx, such as the session manager, the MCP engine and host, `/usage`, the shell tool, and the workspace indexer. Most come with Bun drivers that run the real binary and have TLC check what it did. CI runs the MCP models on `main` and on pull requests that change the code they cover; run the matching checker yourself when you change behavior that one of the others describes. You need Java and `tla2tools.jar`, and `tests/tla/README.md` lists every model and covers setup.
 
 ```bash
 tests/tla/session_manager/check.sh SessionLog
@@ -250,7 +250,6 @@ Other runs start only on request:
 | MCP model checks | `gh workflow run ci.yml --ref your-branch` |
 | PGSO qualification | `gh workflow run pgso-macos-arm64.yml --ref your-branch` |
 | Linux PGSO qualification | `gh workflow run pgso-linux-arm64.yml --ref your-branch` or `pgso-linux-x86_64.yml` |
-| Live ACP suite | `gh workflow run ci.yml --ref your-branch -f acp_live=true` |
 | Long-turn memory benchmark | `gh workflow run bench.yml --ref your-branch -f long_turn_memory=true` |
 | Fuzzing of one target | `gh workflow run fuzz.yml --ref your-branch -f target=<target>` |
 | Unit tests with ThreadSanitizer | `gh workflow run tsan.yml --ref your-branch` |
