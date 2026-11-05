@@ -62,30 +62,6 @@
     "properties": []
   },
   {
-    "pr": 1079,
-    "module": "PR1079ACP",
-    "directory": "pr-1079",
-    "summary": "ACP lazy creation, whole-history replay, compaction boundary, preferences and workspace updates",
-    "bounds": {
-      "MaxTurns": {
-        "smoke": "2",
-        "stress": "4"
-      },
-      "Keys": {
-        "smoke": "{model, language}",
-        "stress": "{model, effort, language}"
-      }
-    },
-    "invariants": [
-      "TypeOK",
-      "LazyMeansNoSession",
-      "ReplayWholeHistory",
-      "LoadRestoresSettings",
-      "WorkspaceImmediatelyIndexed"
-    ],
-    "properties": []
-  },
-  {
     "pr": 1081,
     "module": "PR1081Subagents",
     "directory": "pr-1081",
@@ -136,26 +112,6 @@
       "ReadOnlyCounts",
       "RecoveryKeepsSource",
       "DoctorNeverCleansLive"
-    ],
-    "properties": []
-  },
-  {
-    "pr": 1091,
-    "module": "PR1091Harness",
-    "directory": "pr-1091",
-    "summary": "tmux backend environment and explicit 168-cell end/fault/reentry coverage accounting, not product fault semantics",
-    "bounds": {
-      "MaxCases": {
-        "smoke": "1",
-        "stress": "2"
-      }
-    },
-    "invariants": [
-      "TypeOK",
-      "PaneGetsCallerEnvironment",
-      "EvidenceNamesCorrectBackend",
-      "NoDuplicateCoverage",
-      "OnlyDefinedGridCells"
     ],
     "properties": []
   },

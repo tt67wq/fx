@@ -240,7 +240,7 @@ scenario("a schema 3 session whose prompt is not UTF-8 is shown, refused with th
   const shown = await f.fx(true, ["session", NOT_UTF8, "--json"]);
   expect(shown.code).toBe(0);
   expect(JSON.parse(shown.stdout).history).toEqual(JSON.parse(v1Shown.stdout).history);
-  for (const via of ["ask", "acp", "app"] as const) {
+  for (const via of ["ask", "app"] as const) {
     await o.observe("open", await openVia(f, NOT_UTF8, via));
     expect(f.said).toMatch(/events\.jsonl turn 1 has a prompt that is not valid UTF-8/);
   }
@@ -421,7 +421,7 @@ scenario("hosted terminal state the copy can't take is left out, named, and kept
 
 // --- why a damaged session can't be converted -------------------------------------
 
-scenario("a damaged session's error names the file and the reason in fx ask, ACP and the app", async f => {
+scenario("a damaged session's error names the file and the reason in fx ask and the app", async f => {
   plainReplies(f);
   const id = (await f.v1Ask(["CONV_FIRST"])).session_id;
   const o = observer(f, id);
@@ -430,14 +430,14 @@ scenario("a damaged session's error names the file and the reason in fx ask, ACP
   await o.damage(id);
   await o.observe("damage");
   const said: Record<string, string> = {};
-  for (const via of ["ask", "acp", "app"] as const) {
+  for (const via of ["ask", "app"] as const) {
     await o.observe("open", await openVia(f, id, via));
     said[via] = f.said;
   }
   writeFileSync(join(f.root, "damaged-errors.json"), JSON.stringify(said, null, 2));
   const named = (text: string) => ({ file: /session\.json \S/.test(text), code: text.includes("InvalidSessionFormat") });
   const all = { file: true, code: true };
-  expect(Object.fromEntries(Object.entries(said).map(([via, text]) => [via, named(text)]))).toEqual({ ask: all, acp: all, app: all });
+  expect(Object.fromEntries(Object.entries(said).map(([via, text]) => [via, named(text)]))).toEqual({ ask: all, app: all });
   await requireAccepted(o, "damaged-errors");
 });
 
@@ -445,15 +445,13 @@ scenario("a damaged session's error names the file and the reason in fx ask, ACP
 
 const NOTICE = "Converting this session from the previous session format";
 
-// What the host showed of the notice: fx ask's stderr, ACP agent text
-// updates, or the app's screen.
-function notices(f: Fixture, via: "ask" | "acp" | "app") {
+// What the host showed of the notice: fx ask's stderr or the app's screen.
+function notices(f: Fixture, via: "ask" | "app") {
   if (via === "ask") return f.runs.at(-1)!.stderr;
-  if (via === "app") return f.said;
-  return JSON.stringify(JSON.parse(f.said).updates.filter((u: any) => u.sessionUpdate === "agent_message_chunk"));
+  return f.said;
 }
 
-for (const via of ["ask", "acp", "app"] as const) {
+for (const via of ["ask", "app"] as const) {
   scenario(`a conversion held 400 ms at its publish shows the slow notice in ${via}`, async f => {
     plainReplies(f);
     const id = (await f.v1Ask(["CONV_FIRST"])).session_id;

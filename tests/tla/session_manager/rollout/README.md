@@ -1,7 +1,7 @@
 # Session rollout models
 
 Protocol models for the pull requests that moved fx onto the session manager:
-`fx ask`, interactive sessions, running tools, ACP, subagents, commands, the
+`fx ask`, interactive sessions, running tools, subagents, commands, the
 test harness, steering, queued input, and blobs, checkpoints, migration,
 records, and terminals. Each folder holds one or more models, a smoke and a
 stress config for each, and the planted bugs in `mutants.json`.
@@ -11,7 +11,6 @@ stress config for each, and the planted bugs in `mutants.json`.
 | `pr-1072/PR1072Ask.tla` | Ask backend selection, no-save, acknowledged pieces, usage markers and interrupted resume |
 | `pr-1073/PR1073Interactive.tla` | Interactive resume/switch, busy picker admission, continuation, relaunch and child join ordering |
 | `pr-1076/PR1076RunningTools.tla` | Call-before-execution, real/partial results, sticky first OS failure |
-| `pr-1079/PR1079ACP.tla` | ACP lazy creation, whole-history replay, compaction boundary, preferences and workspace updates |
 | `pr-1081/PR1081Subagents.tla` | Persistent child work, backend inheritance, crash repair, parent lifetime and hidden child discovery |
 | `pr-1082/PR1082Commands.tla` | Read-only inspection, safe-prefix recovery, root listing, tombstones and orphan cleanup |
 | `pr-1091/PR1091Harness.tla` | tmux backend environment and explicit 168-cell end/fault/reentry coverage accounting, not product fault semantics |

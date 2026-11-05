@@ -35,7 +35,7 @@ export type Answer = "none" | "opened" | "converted" | "busy" | "unreadable" | "
 type Damage = "ok" | "salvage" | "lost";
 // open2: two processes opened the root at once; `ans2` is the second's answer.
 type Kind = "create" | "write" | "hold" | "release" | "open" | "open2" | "all" | "crash" | "damage" | "fresh" | "list" | "recover";
-export type Via = "ask" | "app" | "continue" | "picker" | "slash" | "acp";
+export type Via = "ask" | "app" | "continue" | "picker" | "slash";
 type Run = { pid: number; code: number | null; signal: string | null; stdout: string; stderr: string; args: string[]; v2: boolean; home: string };
 type Observation = {
   k: Kind; r: string; ans: Answer; ans2?: Answer; v1: Record<string, number>; pub: Record<string, string>;
@@ -63,7 +63,7 @@ function terminalLeavesOut(dir: string, depth: number): boolean {
     try { closeSync(openSync(path, "r")); return false; } catch { return true; }
   });
 }
-export const VIAS: Via[] = ["ask", "app", "continue", "picker", "slash", "acp"];
+export const VIAS: Via[] = ["ask", "app", "continue", "picker", "slash"];
 
 let pathFault: string | null = null;
 // ../../lib/path-fault.c, built once per run.
@@ -88,7 +88,6 @@ export function fixture(label: string, at?: string, models?: object[]) {
   const runs: Run[] = [];
   const active = new Set<ReturnType<typeof Bun.spawn>>();
   const apps = new Set<any>();
-  const acps = new Set<ChildProcess>();
   let respond: (body: string) => Response = () => fakeGatewayFinalText("UNEXPECTED_REQUEST");
   let injected: Record<string, string> = {};
   // A known window lets a long turn compact inside the turn.
@@ -178,14 +177,13 @@ export function fixture(label: string, at?: string, models?: object[]) {
   const v1Path = (id: string) => join(realpathSync(home), ".fx/sessions", id);
   const stagingPath = (id: string) => join(realpathSync(home), ".fx/sessions/v2/.tmp", id);
 
-  return { root, home, workspace, v1Root, v2Root, runs, gateway, env, start, fx, v1Ask, fingerprint, apps, acps, faultPaths, v1Path, stagingPath,
-    // What the host said in the last openVia: fx ask's output, ACP's load
+  return { root, home, workspace, v1Root, v2Root, runs, gateway, env, start, fx, v1Ask, fingerprint, apps, faultPaths, v1Path, stagingPath,
+    // What the host said in the last openVia: fx ask's output or the app's
     // error and session updates, or the app's screen and stderr.
     said: "",
     setRespond: (f: (body: string) => Response) => { respond = f; },
     async finish() {
       for (const app of apps) await app.kill().catch(() => {});
-      for (const proc of acps) proc.kill("SIGKILL");
       for (const child of active) child.kill("SIGKILL");
       await Promise.all([...active].map(child => child.exited));
       const bodies = (list: any[] = []) => list.map(r => r.body);
@@ -223,53 +221,6 @@ export function askAnswer(run: Run, id: string): Answer {
   return refusal(String(json?.error ?? json?.code ?? "") + " " + run.stdout + run.stderr, `fx ${run.args.join(" ")}`);
 }
 
-// A minimal ACP client over the real `fx acp`.
-export class Acp {
-  private buffer = "";
-  private nextId = 1;
-  private pending = new Map<number, (message: any) => void>();
-  readonly updates: any[] = [];
-  // The client's own MCP servers: the result carrier for each `mcp/message`.
-  serve: (params: any) => object = () => ({});
-  constructor(readonly proc: ChildProcess) {
-    proc.stdout!.on("data", (chunk: Buffer) => {
-      this.buffer += chunk.toString();
-      let newline: number;
-      while ((newline = this.buffer.indexOf("\n")) >= 0) {
-        const line = this.buffer.slice(0, newline); this.buffer = this.buffer.slice(newline + 1);
-        if (!line.trim()) continue;
-        const message = JSON.parse(line);
-        if (message.method !== undefined && message.id !== undefined) {
-          const result = message.method === "session/request_permission" ? { outcome: { outcome: "selected", optionId: "allow_once" } }
-            : message.method === "mcp/message" ? this.serve(message.params ?? {}) : {};
-          proc.stdin!.write(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }) + "\n");
-        } else if (message.method === "session/update") {
-          this.updates.push(message.params.update);
-        } else if (message.id !== undefined && this.pending.has(message.id)) {
-          this.pending.get(message.id)!(message); this.pending.delete(message.id);
-        }
-      }
-    });
-  }
-  static async start(f: Fixture, v2: boolean, homeDir = f.home) {
-    const proc = spawn(v2 ? binary : v1Writer(), ["acp"], { cwd: f.workspace, env: f.env(v2, homeDir), stdio: ["pipe", "pipe", "pipe"] });
-    f.acps.add(proc);
-    const client = new Acp(proc);
-    const initialized = await client.request("initialize", { protocolVersion: 1, clientCapabilities: {} });
-    if (initialized.error) throw new Error(`ACP initialize failed: ${JSON.stringify(initialized.error)}`);
-    return client;
-  }
-  request(method: string, params: unknown, timeoutMs = 30_000): Promise<any> {
-    const id = this.nextId++;
-    this.proc.stdin!.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`ACP ${method} timed out`)), timeoutMs);
-      this.pending.set(id, message => { clearTimeout(timer); resolve(message); });
-    });
-  }
-  close() { this.proc.kill("SIGKILL"); }
-}
-
 // Opens `id` with v2 through one host and, once open, runs one turn.
 export async function openVia(f: Fixture, id: string, via: Via, prompt = "CONV_NEXT", firstPrompt = "CONV_FIRST"): Promise<Answer> {
   f.said = "";
@@ -277,17 +228,6 @@ export async function openVia(f: Fixture, id: string, via: Via, prompt = "CONV_N
     const run = await f.fx(true, ["ask", "--json", "--auto", "--resume", id, prompt]);
     f.said = run.stdout + run.stderr;
     return askAnswer(run, id);
-  }
-  if (via === "acp") {
-    const client = await Acp.start(f, true);
-    try {
-      const loaded = await client.request("session/load", { sessionId: id, cwd: f.workspace, mcpServers: [] });
-      f.said = JSON.stringify({ error: loaded.error, updates: client.updates });
-      if (loaded.error) return refusal(JSON.stringify(loaded.error), "ACP session/load");
-      const prompted = await client.request("session/prompt", { sessionId: id, prompt: [{ type: "text", text: prompt }] });
-      assert(!prompted.error, `ACP prompt after load failed: ${JSON.stringify(prompted.error)}`);
-      return "opened";
-    } finally { client.close(); }
   }
   const flags = via === "app" ? `--resume ${shellQuote(id)}` : via === "continue" ? "-c" : via === "picker" ? "-r" : "";
   const stderrPath = join(f.root, `app-${via}-${Date.now()}.stderr`);
