@@ -19,7 +19,7 @@ pub const ManagedChildKind = enum {
     terminal_state,
     terminal_proofs,
     /// Session-scoped context supplied by the client that created it, such as
-    /// an ACP client system prompt.
+    /// a client system prompt.
     client_context,
 };
 

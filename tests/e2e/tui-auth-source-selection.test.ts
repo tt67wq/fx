@@ -629,7 +629,7 @@ for (const scenario of [
 }
 
 tmuxTest(
-  "unavailable configured credentials remain recoverable in TUI ask and ACP",
+  "unavailable configured credentials remain recoverable in TUI ask",
   async () => {
     home = mkdtempSync(join(tmpdir(), "fx-auth-startup-failure-"));
     stderrPath = join(home, "stderr.log");
@@ -664,14 +664,6 @@ tmuxTest(
     const ask = await runFx(["ask", "--json", "--no-save", "do not use another account"], { env });
     expect(ask.code).toBe(1);
     expect(JSON.parse(ask.stdout).error).toBe("CredentialStorageUnavailable");
-    const acp = await runFx(["acp"], {
-      env,
-      stdin: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: 1 } }) + "\n",
-    });
-    expect(acp.code).toBe(0);
-    const response = acp.stdout.trim().split("\n").map((line) => JSON.parse(line)).find((message) => message.id === 1);
-    expect(response.error.code).toBe(-32600);
-    expect(response.error.message).toContain("Saved credential storage is unavailable");
     session = await startFx(home, stderrPath, gateway, oauth.issuerUrl, undefined, env);
     await session.waitForComposer(TIMEOUT);
     const unavailable = await readStatusPanel(session, TIMEOUT, (panel) => panel.fields["Auth help"] !== undefined);

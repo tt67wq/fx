@@ -145,7 +145,11 @@ const KINDS: Record<string, Kind | { models: object[]; make: Kind }> = {
     await waitUntil(() => sessionIds(f).length === 1, 5_000);
     return sessionIds(f);
   },
-  ...Object.fromEntries(["rules", "acp", "terminal"].map(kind => [kind, async (f: Fixture) => [(await CARRIED[kind].make(f)).id]])),
+  // The driver's `acp` recipe lands in a `client` folder: it is the one kind
+  // whose sessions carry a client system prompt and tool identities.
+  ...Object.fromEntries([["rules", "rules"], ["acp", "client"], ["terminal", "terminal"]].map(
+    ([recipe, kind]) => [kind, async (f: Fixture) => [(await CARRIED[recipe].make(f)).id]],
+  )),
   // As the driver's `unfinished`: an open turn with its unfinished reply in
   // recovery.json, since compacting inside a turn logs the turn so far. A
   // small window lets a short reply compact.

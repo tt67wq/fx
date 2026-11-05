@@ -463,7 +463,7 @@ pub fn fetchGatewayJsonCancellable(
 }
 
 /// A stalled catalog request fails with `error.Timeout` after this long, so a
-/// hung endpoint cannot hold a background refresh or an ACP options request.
+/// hung endpoint cannot hold a background refresh or a model options request.
 const gateway_json_fetch_timeout_ms: i64 = 30_000;
 
 fn fetchGatewayJsonAtUrlCancellable(

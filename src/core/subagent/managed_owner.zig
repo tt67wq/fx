@@ -717,7 +717,7 @@ fn runOne(slot: *Slot) OneOutcome {
         return fallbackOutcome(owner.alloc, "unknown", .failed);
 
     // In the interactive app the child's own agent holds its session and
-    // saves its turns, as main does; only fx ask and ACP open it for a
+    // saves its turns, as main does; only fx ask opens it for a
     // run.
     const hosted = owner.services.bind_fn != null;
     var child: ?OpenChild = if (hosted) null else OpenChild.open(owner, slot.child_id, snapshot.instructions) catch |err|

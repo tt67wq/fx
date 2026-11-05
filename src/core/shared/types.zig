@@ -420,7 +420,7 @@ pub fn plainErrorText(raw: []const u8, buf: []u8) []const u8 {
         .{ "InvalidGatewaySseEvent", "unreadable reply" },
         .{ "InvalidProviderFinishReason", "unreadable reply" },
         .{ "GatewaySseEventTooLarge", "reply too large to read" },
-        // Storage faults read as fx says them on startup and in ACP.
+        // Storage faults read as fx says them on startup.
         .{ "AccessDenied", "permission denied" },
         .{ "ReadOnlyFileSystem", "the disk is read-only" },
         .{ "NoSpaceLeft", "the disk is full" },
@@ -529,10 +529,8 @@ pub const RouteRecoveryStatus = struct {
         };
     }
 
-    /// What `fx ask --json` reports as `recovery` and ACP as
-    /// `_meta.fx.modelResponseRecovery`. Every key is one word, so both
-    /// spell them the same way, and `need` keeps the module's snake_case
-    /// tags.
+    /// What `fx ask --json` reports as `recovery`. Every key is one word,
+    /// and `need` keeps the module's snake_case tags.
     pub const Report = struct {
         state: ReportedState,
         attempt: usize,
@@ -568,7 +566,7 @@ pub const RouteRecoveryStatus = struct {
         };
     }
 
-    /// The `state` that `fx ask --json` and ACP report, written as its tag.
+    /// The `state` that `fx ask --json` reports, written as its tag.
     pub const ReportedState = enum {
         waiting,
         retrying,
@@ -578,7 +576,7 @@ pub const RouteRecoveryStatus = struct {
         failed,
         /// A request an earlier fx process was running when it stopped, as
         /// its saved recovery checkpoint reports it. No live status maps
-        /// here: ACP reports it on session load.
+        /// here: a session load reports it.
         interrupted,
     };
 
@@ -752,7 +750,7 @@ test "route recovery terminal label names the cause, diagnostic, and attempts" {
     );
 }
 
-test "recovery reports write the shape fx ask and ACP share" {
+test "recovery reports write the shape fx ask reports" {
     var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer out.deinit();
     var label_buf: [RouteRecoveryStatus.label_max_bytes]u8 = undefined;
@@ -1592,7 +1590,7 @@ pub const ImageAttachment = struct {
 /// Who wrote a message an agent receives. A model frames each message by its
 /// author, and only the user's words carry the user's authority.
 pub const MessageAuthor = enum {
-    /// The person at fx: typed on the agent's screen, or sent by an ACP client.
+    /// The person at fx: typed on the agent's screen, or sent by a client.
     user,
     /// The agent that started this one, as its subagent.
     parent,

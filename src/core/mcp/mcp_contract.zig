@@ -110,20 +110,17 @@ pub const McpTransport = enum { stdio, http, sse };
 
 pub const ConfigSource = enum {
     profile,
-    acp,
     workspace,
 };
 
 pub const ConfigScope = enum {
     profile,
-    acp_session,
     workspace,
 };
 
 pub fn sourceAllowsScope(source: ConfigSource, scope: ConfigScope) bool {
     return switch (source) {
         .profile => scope == .profile,
-        .acp => scope == .acp_session,
         .workspace => scope == .workspace,
     };
 }
@@ -140,7 +137,7 @@ pub fn sourceAllowsWorkspaceAdmission(
 ) bool {
     return switch (source) {
         .workspace => admission != null,
-        .profile, .acp => admission == null,
+        .profile => admission == null,
     };
 }
 
@@ -165,10 +162,6 @@ pub const McpServerConfig = struct {
     /// Advertise this server's tool schemas on every model turn instead of
     /// loading them on demand through capability search.
     always_loaded: bool = false,
-    /// Host-issued registration for a server the host serves over its own
-    /// connection. Such a server speaks modern MCP through the runtime's
-    /// message carrier; `url` is only a placeholder.
-    acp_server_id: ?[]const u8 = null,
     transport: McpTransport = .stdio,
     command: ?[]const u8 = null,
     args: []const []const u8 = &.{},
@@ -207,7 +200,6 @@ pub const McpServerConfig = struct {
         freeOwnedStrings(alloc, self.args);
         if (self.cwd) |cwd| alloc.free(cwd);
         if (self.url) |url| alloc.free(url);
-        if (self.acp_server_id) |server_id| alloc.free(server_id);
         freeEnvVars(alloc, self.env);
         freeHttpHeaders(alloc, self.headers);
         freeHttpHeaderEnv(alloc, self.header_env);
@@ -267,11 +259,10 @@ test "MCP server configuration deinit owns present empty targets" {
 }
 
 test "MCP configuration sources admit only their product scope" {
-    for ([_]ConfigSource{ .profile, .acp, .workspace }) |source| {
-        for ([_]ConfigScope{ .profile, .acp_session, .workspace }) |scope| {
+    for ([_]ConfigSource{ .profile, .workspace }) |source| {
+        for ([_]ConfigScope{ .profile, .workspace }) |scope| {
             const expected = switch (source) {
                 .profile => scope == .profile,
-                .acp => scope == .acp_session,
                 .workspace => scope == .workspace,
             };
             try std.testing.expectEqual(expected, sourceAllowsScope(source, scope));
@@ -280,7 +271,7 @@ test "MCP configuration sources admit only their product scope" {
 }
 
 test "workspace admission is present exactly for workspace source" {
-    for ([_]ConfigSource{ .profile, .acp, .workspace }) |source| {
+    for ([_]ConfigSource{ .profile, .workspace }) |source| {
         for ([_]?WorkspaceAdmission{ null, .pending, .approved, .rejected }) |admission| {
             const expected = if (source == .workspace) admission != null else admission == null;
             try std.testing.expectEqual(

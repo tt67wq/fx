@@ -659,8 +659,8 @@ pub const StatusSnapshot = struct {
     mcp_config_error: ?[]const u8 = null,
     mcp_config_warning: ?mcp_contract.ProfileConfigWarning = null,
     permission_mode: types.PermissionMode,
-    /// The session modes ACP offers and the one a new session starts in,
-    /// when the caller has a mode registry with modes.
+    /// The session modes `/permissions` offers and the one a new session
+    /// starts in, when the caller has a mode registry with modes.
     modes: ?SessionModes = null,
     workspace_root: []const u8,
     /// The interactive shell's session, which only the `/status` panel

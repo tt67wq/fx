@@ -700,7 +700,7 @@ pub const Runtime = struct {
     }
 
     /// Whether nothing in this host's tree can still post to its owner:
-    /// no child works and no message waits for one. `fx ask` and ACP finish
+    /// no child works and no message waits for one. `fx ask` finishes
     /// only then.
     pub fn quiet(self: *Runtime) bool {
         return !self.anyWorking();

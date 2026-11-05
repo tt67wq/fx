@@ -20,7 +20,6 @@ pub const Held = enum {
     /// A project server the user rejected.
     rejected,
     /// `"type": "sse"`: HTTP+SSE is deprecated and the engine doesn't speak it.
-    /// `"type": "acp"` from an editor: a draft that ACP v1 doesn't define.
     unsupported,
     /// A header, token, or client secret names an environment variable that isn't set.
     missing_env,
@@ -42,8 +41,7 @@ pub const Server = struct {
     /// Signs in as fx's Slack app, whose redirect says `localhost`.
     slack_app: bool = false,
     held: ?Held = null,
-    /// An editor's server whose tools go to the model every turn (ACP
-    /// `_meta.fx.alwaysLoaded`).
+    /// A server whose tools go to the model every turn.
     always_loaded: bool = false,
     /// The variable a `missing_env` or `invalid_env` server names.
     missing: ?[]const u8 = null,
@@ -193,7 +191,7 @@ fn heldFor(c: *const McpServerConfig) ?Held {
         .rejected => return .rejected,
         .approved => {},
     };
-    if (c.transport == .sse or c.acp_server_id != null) return .unsupported;
+    if (c.transport == .sse) return .unsupported;
     return null;
 }
 
@@ -314,7 +312,6 @@ test "stdio and HTTP servers become engine configs; the rest are held back with 
         .{ .name = "no", .command = "x", .source = .workspace, .workspace_admission = .rejected },
         .{ .name = "old", .transport = .sse, .url = "https://old.example/sse" },
         .{ .name = "keyless", .transport = .http, .url = "https://k.example/mcp", .header_env = &missing_header },
-        .{ .name = "carried", .transport = .http, .url = "http://acp.invalid/x", .source = .acp, .acp_server_id = @constCast("x") },
     };
     const r = try resolve(arena, &configs, &inherited, "/Users/example/repo");
 
@@ -346,7 +343,6 @@ test "stdio and HTTP servers become engine configs; the rest are held back with 
     try testing.expectEqual(@as(?Held, .rejected), r.servers[5].held);
     try testing.expectEqual(@as(?Held, .unsupported), r.servers[6].held);
     try testing.expectEqual(@as(?Held, .missing_env), r.servers[7].held);
-    try testing.expectEqual(@as(?Held, .unsupported), r.servers[8].held);
     try testing.expectEqualStrings("NOT_SET", r.servers[7].missing.?);
 }
 

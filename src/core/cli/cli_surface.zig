@@ -3,7 +3,6 @@ const builtin = @import("builtin");
 const io_mod = @import("../shared/io.zig");
 const app_lifecycle = @import("../app/app_lifecycle.zig");
 const auth_runtime = @import("../auth/auth_runtime.zig");
-const acp_runner = @import("acp_runner.zig");
 const cli_ask = @import("cli_ask.zig");
 const cli_replay = @import("cli_replay.zig");
 const cli_flags = @import("cli_flags.zig");
@@ -74,7 +73,6 @@ pub const Command = union(enum) {
     interactive,
     help,
     ask: []const [:0]const u8,
-    acp: []const [:0]const u8,
     pr: []const [:0]const u8,
     issue: []const [:0]const u8,
     login: []const [:0]const u8,
@@ -184,13 +182,6 @@ pub const LaunchModifiers = struct {
             self.ultrafast_override != null or self.provider_order_override != null or
             self.provider_strict_override != null or self.permission_override != null;
     }
-
-    pub fn hasOnlyUltrafastOverride(self: LaunchModifiers) bool {
-        return self.ultrafast_override != null and self.provider_override == null and
-            self.model_override == null and self.effort_override == null and
-            self.fast_override != true and self.provider_order_override == null and
-            self.provider_strict_override == null;
-    }
 };
 
 fn freeProviderOrderOverride(alloc: Allocator, order: []const []const u8) void {
@@ -275,7 +266,6 @@ pub const Config = struct {
     inspect_mcp_local_config: mcp_health.InspectLocalConfigFn =
         mcp_health.inspectLocalConfigUnavailable,
     load_mcp_host: ?mcp_host.LoadFn = null,
-    acp_runner: acp_runner.Runner,
 };
 
 const LocalSurfaceOptions = struct {
@@ -382,15 +372,6 @@ const SessionRecoveryOptions = struct {
     fn deinit(self: *SessionRecoveryOptions, alloc: Allocator) void {
         alloc.free(self.session_id);
         self.* = undefined;
-    }
-};
-
-const AcpOptions = struct {
-    agent: agent_run_flags.Overrides = .{},
-    log_file: ?[]const u8 = null,
-
-    fn deinit(self: *AcpOptions, alloc: Allocator) void {
-        self.agent.deinit(alloc);
     }
 };
 
@@ -739,7 +720,6 @@ pub fn parse(command_catalog: CommandCatalog, args: []const [:0]const u8) Comman
         },
         'a' => {
             if (command_specs.matchesTopLevel(command_catalog, command, .ask)) return .{ .ask = args[1..] };
-            if (command_specs.matchesTopLevel(command_catalog, command, .acp)) return .{ .acp = args[1..] };
         },
         'b' => if (command_specs.matchesTopLevel(command_catalog, command, .credits)) return .{ .credits = args[1..] },
         'c' => {
@@ -1003,7 +983,7 @@ fn isPrintFlag(arg: []const u8) bool {
 /// The command or flag a mistyped first word most likely meant, such as
 /// `status` for `stauts` or `--version` for `version`. Words of four letters
 /// or fewer allow one edit and longer words two, so a short prompt such as
-/// `add` isn't taken for a typo of `acp`.
+/// `add` isn't taken for a typo of `ask`.
 fn launchWordSuggestion(command_catalog: CommandCatalog, word: []const u8) ?[]const u8 {
     // Flag names people type without their dashes.
     const bare_flags = [_]struct { word: []const u8, flag: []const u8 }{
@@ -1399,15 +1379,11 @@ fn runNonInteractiveWithDeps(
         return usage_failure;
     }
 
-    const acp_ultrafast_override = switch (parsed_command) {
-        .acp => global_args.modifiers.hasOnlyUltrafastOverride(),
-        else => false,
-    };
     if (global_args.modifiers.profile_name != null) {
         try writeStderr(deps, "fx: --profile applies to interactive sessions\n");
         return usage_failure;
     }
-    if (global_args.modifiers.hasModelOverrides() and !acp_ultrafast_override) {
+    if (global_args.modifiers.hasModelOverrides()) {
         try writeModelModifierUsage(alloc, deps, parsed_command, global_args.modifiers);
         return usage_failure;
     }
@@ -1444,56 +1420,6 @@ fn runNonInteractiveWithDeps(
             try writeMcpProfileWarningIfPresent(alloc, cfg, deps);
             const exit_code = try cli_ask.run(alloc, rest, workflowConfigWithLaunchModifiers(cfg, global_args.modifiers), cfg.context_registry, cfg.tool_set);
             return if (exit_code == 0) .handled_success else .{ .handled_exit = exit_code };
-        },
-        .acp => |rest| {
-            var bad: ?BadAgentValue = null;
-            var acp_opts = parseAcpArgs(alloc, rest, &bad) catch |err| switch (err) {
-                error.OutOfMemory => return err,
-                else => {
-                    if (bad) |value| {
-                        try writeBadAgentValue(alloc, deps, "acp", value);
-                    } else {
-                        try writeFlagFailure(alloc, deps, .acp, rest);
-                    }
-                    try writeStderr(deps, "usage: fx " ++ builtin_commands.acp_usage ++ "\n");
-                    return usage_failure;
-                },
-            };
-            defer acp_opts.deinit(alloc);
-            try cfg.acp_runner.run(alloc, .{
-                .auth_mode = cfg.auth_mode,
-                .default_model = cfg.default_model,
-                .default_agent_step_limit = cfg.default_agent_step_limit,
-                .gateway_retry_count = cfg.gateway_retry_count,
-                .gateway_chat_url = cfg.gateway_provider.chat_url.resolve(cfg.gateway_chat_url),
-                .gateway_models_path = cfg.models_path,
-                .gateway_provider = cfg.gateway_provider,
-                .provider_set = cfg.provider_set,
-                .process_provider = cfg.process_provider,
-                .secret_store = cfg.secret_store,
-                .prompt_policy = cfg.prompt_policy,
-                .ignored_list_entries = cfg.ignored_list_entries,
-                .max_list_entries = cfg.max_list_entries,
-                .max_read_file_bytes = cfg.max_read_file_bytes,
-                .max_read_file_lines = cfg.max_read_file_lines,
-                .max_read_file_line_len = cfg.max_read_file_line_len,
-                .max_command_output_bytes = cfg.max_command_output_bytes,
-                .max_tool_result_bytes = cfg.max_tool_result_bytes,
-                .max_history_turns = cfg.max_history_turns,
-                .context_registry = cfg.context_registry,
-                .mode_registry = cfg.mode_registry,
-                .context_limit_overrides = global_args.modifiers.context_limit_overrides,
-                .additional_directories = global_args.modifiers.additional_directories,
-                .saved_directories_suppressed = global_args.modifiers.saved_directories_suppressed,
-                .model_override = acp_opts.agent.model,
-                .effort_override = if (acp_opts.agent.effort) |*effort| effort.label() else null,
-                .fast_override = acp_opts.agent.fast,
-                .ultrafast_override = acp_opts.agent.ultrafast orelse global_args.modifiers.ultrafast_override,
-                .provider_override = acp_opts.agent.provider,
-                .permission_override = acp_opts.agent.permission,
-                .log_file = acp_opts.log_file,
-            });
-            return .handled_success;
         },
         .pr => |rest| return runGithubWorkflow(alloc, rest, cfg, global_args.modifiers, deps, .pull_request),
         .issue => |rest| return runGithubWorkflow(alloc, rest, cfg, global_args.modifiers, deps, .issue),
@@ -2846,7 +2772,6 @@ fn parsedOptions(kind: TopLevelKind) ?[]const command_specs.OptionDoc {
         .workspace => &builtin_commands.workspace_options,
         .config => &builtin_commands.config_parse_options,
         .session => &builtin_commands.session_options,
-        .acp => &builtin_commands.acp_options,
         .pr, .issue => &builtin_commands.pr_options,
         else => null,
     };
@@ -2877,7 +2802,7 @@ fn flagProblem(alloc: Allocator, kind: TopLevelKind, args: anytype) !?[]u8 {
     if (cli_flags.failureOf(parser)) |failure| {
         try failure.write(&writer.writer);
         switch (kind) {
-            .acp, .pr, .issue => try flag_placement.writeLaunchFlagHint(&writer.writer, @tagName(kind), failure),
+            .pr, .issue => try flag_placement.writeLaunchFlagHint(&writer.writer, @tagName(kind), failure),
             else => {},
         }
     } else if (!try cli_flags.writeRangeFailure(&writer.writer, parser)) {
@@ -2985,7 +2910,7 @@ fn workflowLanguagePlaceholder() types.ConversationLanguage {
 }
 
 /// The session modes `fx status` reports, so a client can show the mode
-/// choice before an ACP session exists. Null for a registry without modes.
+/// choice before a session exists. Null for a registry without modes.
 fn statusModes(registry: mode_registry.Registry, permission_mode: types.PermissionMode) ?output_contracts.StatusSnapshot.SessionModes {
     if (registry.modes.len == 0) return null;
     return .{ .current = registry.startingModeId(permission_mode), .all = registry.modes };
@@ -3661,7 +3586,7 @@ fn workflowConfigWithLaunchModifiers(
 
 fn commandSupportsWorkspaceModifiers(command: Command) bool {
     return switch (command) {
-        .interactive, .ask, .acp, .pr, .issue, .resume_session => true,
+        .interactive, .ask, .pr, .issue, .resume_session => true,
         else => false,
     };
 }
@@ -3669,7 +3594,7 @@ fn commandSupportsWorkspaceModifiers(command: Command) bool {
 fn writeWorkspaceModifierUsage(deps: RunDeps) !void {
     try writeStderr(
         deps,
-        "fx: --add-dir and --no-additional-dirs are only supported for interactive, resume, ask, ACP, PR, and issue launches\n",
+        "fx: --add-dir and --no-additional-dirs are only supported for interactive, resume, ask, PR, and issue launches\n",
     );
 }
 
@@ -3677,19 +3602,16 @@ fn writeWorkspaceModifierUsage(deps: RunDeps) !void {
 /// `fx: put agent-run flags after the command, as in fx ask --model <id>`.
 fn writeModelModifierUsage(alloc: Allocator, deps: RunDeps, command: Command, modifiers: LaunchModifiers) !void {
     const example = firstAgentRunFlag(modifiers);
-    const routing = modifiers.provider_order_override != null or modifiers.provider_strict_override != null;
     const target: ?[]const u8 = switch (command) {
         .ask => "ask",
         .pr => "pr",
         .issue => "issue",
-        // ACP sessions don't apply gateway provider routing.
-        .acp => if (routing) null else "acp",
         else => null,
     };
     const message = if (target) |name|
         try alloc.print("fx: put agent-run flags after the command, as in fx {s} {s}\n", .{ name, example })
     else
-        try alloc.print("fx: agent-run flags such as {s} apply to a session and to fx ask, fx pr, fx issue, and fx acp\n", .{example[0 .. std.mem.findScalar(u8, example, ' ') orelse example.len]});
+        try alloc.print("fx: agent-run flags such as {s} apply to a session and to fx ask, fx pr, and fx issue\n", .{example[0 .. std.mem.findScalar(u8, example, ' ') orelse example.len]});
     defer alloc.free(message);
     try writeStderr(deps, message);
 }
@@ -3719,55 +3641,6 @@ fn globalLaunchErrorMessage(err: anyerror) ?[]const u8 {
         error.InvalidPermissionModeValue => "--permission-mode accepts ask, auto, or full-access",
         else => null,
     };
-}
-
-const AcpFlag = enum { permission_mode, ask, auto, full_access, yolo, provider, model, effort, fast, no_fast, ultrafast, no_ultrafast, log_file };
-const acp_flag_ids = cli_flags.idTable(AcpFlag, &builtin_commands.acp_options);
-
-fn parseAcpArgs(alloc: Allocator, args: []const [:0]const u8, bad: *?BadAgentValue) !AcpOptions {
-    var opts = AcpOptions{};
-    errdefer opts.deinit(alloc);
-    var parser: cli_flags.Parser = .init(&builtin_commands.acp_options, args);
-    while (parser.next() catch return error.InvalidAcpArgs) |item| switch (item) {
-        .positional => return error.InvalidAcpArgs,
-        .option => |match| {
-            const id = acp_flag_ids[match.index].?;
-            if (agent_run_flags.fromId(id)) |flag| {
-                try applyAgentFlag(alloc, &opts.agent, flag, &builtin_commands.acp_options, match, bad);
-                continue;
-            }
-            switch (id) {
-                .log_file => opts.log_file = match.value.?,
-                else => unreachable,
-            }
-        },
-    };
-    return opts;
-}
-
-test "ACP arguments take the agent-run flags and a log file" {
-    const alloc = std.testing.allocator;
-    var bad: ?BadAgentValue = null;
-    var enabled = try parseAcpArgs(alloc, &.{ "--model", "provider/astra", "--ultrafast" }, &bad);
-    defer enabled.deinit(alloc);
-    try std.testing.expectEqualStrings("provider/astra", enabled.agent.model.?);
-    try std.testing.expectEqual(@as(?bool, true), enabled.agent.ultrafast);
-
-    var last = try parseAcpArgs(alloc, &.{ "--ultrafast", "--no-ultrafast", "--model=a", "--model", "b", "--effort", "high", "--fast", "--ask", "--provider", "local", "--log-file", "/tmp/acp.log" }, &bad);
-    defer last.deinit(alloc);
-    try std.testing.expectEqual(@as(?bool, false), last.agent.ultrafast);
-    try std.testing.expectEqualStrings("b", last.agent.model.?);
-    try std.testing.expectEqualStrings("high", last.agent.effort.?.label());
-    try std.testing.expect(last.agent.fast.?);
-    try std.testing.expectEqual(types.PermissionMode.ask, last.agent.permission.?);
-    try std.testing.expectEqualStrings("local", last.agent.provider.?.label());
-    try std.testing.expectEqualStrings("/tmp/acp.log", last.log_file.?);
-
-    try std.testing.expectError(error.InvalidAgentRunValue, parseAcpArgs(alloc, &.{ "--effort", "high effort" }, &bad));
-    try std.testing.expectEqualStrings("--effort", bad.?.flag);
-    try std.testing.expectEqualStrings("high effort", bad.?.value);
-    // ACP sessions don't apply gateway provider routing, so the flag isn't offered.
-    try std.testing.expectError(error.InvalidAcpArgs, parseAcpArgs(alloc, &.{ "--provider-order", "a" }, &bad));
 }
 
 test "pr and issue take the agent-run flags before their context" {
@@ -4338,10 +4211,6 @@ test "parse recognizes every top-level command and preserves unknown commands" {
         .ask => |rest| try std.testing.expectEqual(@as(usize, 1), rest.len),
         else => return error.TestExpectedEqual,
     }
-    switch (parse(command_catalog, &.{ @constCast("acp"), @constCast("--model"), @constCast("m") })) {
-        .acp => |rest| try std.testing.expectEqual(@as(usize, 2), rest.len),
-        else => return error.TestExpectedEqual,
-    }
     switch (parse(command_catalog, &.{ @constCast("pr"), @constCast("ready") })) {
         .pr => |rest| try std.testing.expectEqual(@as(usize, 1), rest.len),
         else => return error.TestExpectedEqual,
@@ -4709,118 +4578,6 @@ test "additional directory flags fail closed when malformed" {
     try std.testing.expectError(
         error.MissingAddDirectoryValue,
         parseGlobalLaunchArgs(std.testing.allocator, &.{@constCast("--add-dir=")}),
-    );
-}
-
-test "parse acp args extracts known flags and rejects invalid arguments" {
-    const alloc = std.testing.allocator;
-    var bad: ?BadAgentValue = null;
-    var opts = try parseAcpArgs(alloc, &.{ "--model", "openai/gpt-4o", "--log-file", "/tmp/fx.log" }, &bad);
-    defer opts.deinit(alloc);
-    try std.testing.expectEqualStrings("openai/gpt-4o", opts.agent.model.?);
-    try std.testing.expectEqualStrings("/tmp/fx.log", opts.log_file.?);
-
-    try std.testing.expectError(error.InvalidAcpArgs, parseAcpArgs(alloc, &.{"--unknown"}, &bad));
-    try std.testing.expectError(error.InvalidAcpArgs, parseAcpArgs(alloc, &.{"--model"}, &bad));
-    try std.testing.expectError(error.InvalidAcpArgs, parseAcpArgs(alloc, &.{"--log-file"}, &bad));
-    try std.testing.expectError(error.InvalidAcpArgs, parseAcpArgs(alloc, &.{ "--model", "first", "stray" }, &bad));
-}
-
-test "ACP command routes parsed options and launch config through the injected runner" {
-    const Capture = struct {
-        expected: Config,
-        calls: usize = 0,
-        config_matches: bool = false,
-        launch_matches: bool = false,
-
-        fn run(raw: ?*anyopaque, _: Allocator, cfg: acp_runner.Config) anyerror!void {
-            const self: *@This() = @ptrCast(@alignCast(raw.?));
-            self.calls += 1;
-            const expected = self.expected;
-            self.config_matches =
-                std.mem.eql(u8, cfg.default_model, expected.default_model) and
-                cfg.default_agent_step_limit == expected.default_agent_step_limit and
-                cfg.gateway_retry_count == expected.gateway_retry_count and
-                std.mem.eql(
-                    u8,
-                    cfg.gateway_chat_url,
-                    expected.gateway_provider.chat_url.resolve(expected.gateway_chat_url),
-                ) and
-                std.mem.eql(u8, cfg.gateway_models_path, expected.models_path) and
-                cfg.gateway_provider.chat_url.resolve_fn == expected.gateway_provider.chat_url.resolve_fn and
-                std.mem.eql(u8, cfg.prompt_policy.system_prompt, expected.prompt_policy.system_prompt) and
-                cfg.ignored_list_entries.len == expected.ignored_list_entries.len and
-                cfg.max_list_entries == expected.max_list_entries and
-                cfg.max_read_file_bytes == expected.max_read_file_bytes and
-                cfg.max_read_file_lines == expected.max_read_file_lines and
-                cfg.max_read_file_line_len == expected.max_read_file_line_len and
-                cfg.max_command_output_bytes == expected.max_command_output_bytes and
-                cfg.max_tool_result_bytes == expected.max_tool_result_bytes and
-                cfg.max_history_turns == expected.max_history_turns and
-                std.mem.eql(
-                    u8,
-                    cfg.context_registry.defaultProvider().id,
-                    expected.context_registry.defaultProvider().id,
-                ) and
-                std.mem.eql(u8, cfg.mode_registry.default_mode_id, expected.mode_registry.default_mode_id) and
-                cfg.provider_set.gateway.permission_reviewer.?.review_fn == expected.provider_set.gateway.permission_reviewer.?.review_fn;
-
-            const limit_matches = cfg.context_limit_overrides.len == 1 and
-                cfg.context_limit_overrides[0].name == .project_instructions_total_bytes and
-                switch (cfg.context_limit_overrides[0].value) {
-                    .bytes => |bytes| bytes == 1234,
-                    .off => false,
-                };
-            self.launch_matches =
-                limit_matches and
-                cfg.additional_directories.len == 1 and
-                std.mem.eql(u8, cfg.additional_directories[0], "/tmp/acp-extra") and
-                cfg.saved_directories_suppressed and
-                std.mem.eql(u8, cfg.model_override.?, "model-override") and
-                std.mem.eql(u8, cfg.log_file.?, "/tmp/acp.log");
-        }
-    };
-
-    var cfg = testConfig();
-    cfg.provider_set.gateway.permission_reviewer = test_builtin_gateway.permission_reviewer.provider;
-    var capture = Capture{ .expected = cfg };
-    cfg.acp_runner = .{ .context = &capture, .run_fn = Capture.run };
-    const result = try runIfRequestedWithDeps(
-        std.testing.allocator,
-        &.{
-            @constCast("--context-limit"),
-            @constCast("project_instructions_total_bytes=1234"),
-            @constCast("--add-dir"),
-            @constCast("/tmp/acp-extra"),
-            @constCast("--no-additional-dirs"),
-            @constCast("acp"),
-            @constCast("--model"),
-            @constCast("model-override"),
-            @constCast("--log-file"),
-            @constCast("/tmp/acp.log"),
-        },
-        cfg,
-        .{},
-    );
-
-    try std.testing.expectEqual(RunResult.handled_success, result);
-    try std.testing.expectEqual(@as(usize, 1), capture.calls);
-    try std.testing.expect(capture.config_matches);
-    try std.testing.expect(capture.launch_matches);
-}
-
-test "ACP runner errors preserve their identity" {
-    const Fixture = struct {
-        fn run(_: ?*anyopaque, _: Allocator, _: acp_runner.Config) anyerror!void {
-            return error.TestAcpRunnerFailed;
-        }
-    };
-
-    var cfg = testConfig();
-    cfg.acp_runner = .{ .run_fn = Fixture.run };
-    try std.testing.expectError(
-        error.TestAcpRunnerFailed,
-        runIfRequested(std.testing.allocator, &.{@constCast("acp")}, cfg),
     );
 }
 
@@ -5351,7 +5108,7 @@ test "workspace launch modifiers still reject unsupported local command help" {
     );
     try std.testing.expectEqual(usage_failure, result);
     try std.testing.expectEqualStrings("", capture.stdout.written());
-    try std.testing.expect(std.mem.find(u8, capture.stderr.written(), "only supported for interactive, resume, ask, ACP, PR, and issue launches") != null);
+    try std.testing.expect(std.mem.find(u8, capture.stderr.written(), "only supported for interactive, resume, ask, PR, and issue launches") != null);
 }
 
 test "global workspace launch option errors use user-facing copy" {
@@ -5604,17 +5361,6 @@ test "runIfRequested rejects removed record flag as unknown input" {
     );
     try std.testing.expectEqual(usage_failure, result);
     try std.testing.expect(std.mem.startsWith(u8, capture.stderr.written(), "fx: unknown flag --record\nusage: fx "));
-}
-
-test "global ultrafast launch modifier is ACP-only" {
-    var acp = try parseGlobalLaunchArgs(
-        std.testing.allocator,
-        &.{ @constCast("--ultrafast"), @constCast("acp") },
-    );
-    defer acp.deinit(std.testing.allocator);
-    try std.testing.expectEqual(@as(?bool, true), acp.modifiers.ultrafast_override);
-    try std.testing.expect(acp.modifiers.hasOnlyUltrafastOverride());
-    try std.testing.expectEqualStrings("acp", acp.remaining[0]);
 }
 
 test "runNoConfigIfRequested handles help without config" {
@@ -6540,10 +6286,6 @@ fn failingMcpLocalInspectionForTest(
     return result;
 }
 
-fn unexpectedAcpRunForTest(_: ?*anyopaque, _: Allocator, _: acp_runner.Config) anyerror!void {
-    return error.TestUnexpectedAcpRun;
-}
-
 fn testConfig() Config {
     return .{
         .version = "0.0.0",
@@ -6570,7 +6312,6 @@ fn testConfig() Config {
         .context_registry = test_surface_context_registry,
         .mode_registry = .{ .default_mode_id = "surface" },
         .inspect_mcp_profile_config = clearMcpConfigInspectionForTest,
-        .acp_runner = .{ .run_fn = unexpectedAcpRunForTest },
         .tool_set = .{
             .registry = .{ .tools = &.{} },
             .order = &.{},

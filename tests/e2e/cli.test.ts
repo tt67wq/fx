@@ -474,25 +474,6 @@ With --prompt-permissions, JSON and quiet requests may prompt on stderr only whe
   );
 
   test(
-    "fx acp help documents accepted options",
-    async () => {
-      for (const alias of ["--help", "-h"]) {
-        const r = await runFx(["acp", alias]);
-        expect(r.code).toBe(0);
-        expect(r.stderr).toBe("");
-        expect(r.stdout).toContain(
-          "Usage:\n  fx acp [--permission-mode <mode>|--ask|--auto|--full-access] [--provider <name>] [--model <id>] [--effort <level>] [--fast|--no-fast] [--ultrafast|--no-ultrafast] [--log-file <path>]",
-        );
-        expect(r.stdout).toContain("--model <id>");
-        expect(r.stdout).toContain("--ultrafast");
-        expect(r.stdout).toContain("--no-ultrafast");
-        expect(r.stdout).toContain("--log-file <path>");
-      }
-    },
-    TIMEOUT,
-  );
-
-  test(
     "fx replay help describes golden output",
     async () => {
       const r = await runFx(["replay", "--help"]);
@@ -502,32 +483,6 @@ With --prompt-permissions, JSON and quiet requests may prompt on stderr only whe
       expect(r.stdout).toContain("Write the final rendered grid to a file");
       expect(r.stdout).toContain("Developer tool for reproducing terminal rendering bugs");
       expect(r.stdout).not.toContain("Compare output against a golden file");
-    },
-    TIMEOUT,
-  );
-
-  test(
-    "fx acp rejects unknown options and missing option values",
-    async () => {
-      const cases: [string[], string][] = [
-        [["--bogus"], "fx acp: unknown flag --bogus\n"],
-        [["--model"], "fx acp: --model needs a value\n"],
-        [["--log-file"], "fx acp: --log-file needs a value\n"],
-        [["--effort", "high effort"], "fx acp: invalid value for --effort: high effort\n"],
-        [["--permission-mode", "never"], "fx acp: invalid value for --permission-mode: never\n"],
-        // ACP sessions don't apply gateway provider routing.
-        [["--provider-order", "a"], "fx acp: unknown flag --provider-order\n"],
-        [["--add-dir", "/tmp"], "fx acp: unknown flag --add-dir; it goes before the command: fx --add-dir <path> acp\n"],
-      ];
-      for (const [args, problem] of cases) {
-        const result = await runFx(["acp", ...args]);
-        expect(result.code).toBe(2);
-        expect(result.stdout).toBe("");
-        expect(result.stderr).toBe(
-          problem +
-            "usage: fx acp [--permission-mode <mode>|--ask|--auto|--full-access] [--provider <name>] [--model <id>] [--effort <level>] [--fast|--no-fast] [--ultrafast|--no-ultrafast] [--log-file <path>]\n",
-        );
-      }
     },
     TIMEOUT,
   );
@@ -5531,7 +5486,7 @@ describe("cli: workspace access", () => {
 
       const beforeCommand = await runFx(["--auto", "status"], { env: enabled });
       expect(beforeCommand.code).toBe(2);
-      expect(beforeCommand.stderr).toBe("fx: agent-run flags such as --permission-mode apply to a session and to fx ask, fx pr, fx issue, and fx acp\n");
+      expect(beforeCommand.stderr).toBe("fx: agent-run flags such as --permission-mode apply to a session and to fx ask, fx pr, and fx issue\n");
     },
     TIMEOUT,
   );

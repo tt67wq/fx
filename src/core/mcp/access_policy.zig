@@ -191,10 +191,10 @@ test "MCP authority generation changes with every captured identity" {
     live.runtime_generation += 1;
     try std.testing.expect(authorityGeneration(live) != base);
     live.runtime_generation -= 1;
-    live.servers[0].source = .acp;
+    live.servers[0].source = .workspace;
     try std.testing.expect(authorityGeneration(live) != base);
     live.servers[0].source = .profile;
-    live.servers[0].scope = .acp_session;
+    live.servers[0].scope = .workspace;
     try std.testing.expect(authorityGeneration(live) != base);
     live.servers[0].scope = .profile;
     live.servers[0].connection_generation += 1;

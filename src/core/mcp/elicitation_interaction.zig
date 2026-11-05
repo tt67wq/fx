@@ -434,7 +434,6 @@ fn answerField(
         if (field.kind == .single_select) {
             for (option_list.items) |option| {
                 alloc.free(@constCast(option.label));
-                if (option.description) |description| alloc.free(@constCast(description));
             }
         }
         option_list.deinit(alloc);
@@ -445,15 +444,8 @@ fn answerField(
             const label = try choiceLabelAlloc(alloc, choice_index, choice.title);
             var owns_label = true;
             errdefer if (owns_label) alloc.free(label);
-            const description = if (choice.description) |raw| blk: {
-                const safe = try terminalSafeAlloc(alloc, raw);
-                break :blk safe;
-            } else null;
-            var owns_description = description != null;
-            errdefer if (owns_description) alloc.free(@constCast(description.?));
-            try option_list.append(alloc, .{ .label = label, .description = description });
+            try option_list.append(alloc, .{ .label = label });
             owns_label = false;
-            owns_description = false;
         },
         .string, .number, .integer => {},
         .multi_select => unreachable,
@@ -529,7 +521,6 @@ fn answerCompactField(
     for (field.choices, 0..) |choice, index| {
         try choices.append(temp, .{
             .label = try choiceLabelAlloc(temp, index, choice.title),
-            .description = if (choice.description) |desc| try terminalSafeAlloc(temp, desc) else null,
         });
         try actions.append(temp, .{ .value = try stringifyString(temp, choice.value) });
     }

@@ -5,11 +5,6 @@ name: CI
 
 on:
   workflow_dispatch:
-    inputs:
-      acp_live:
-        description: Also run the full ACP suite with live model calls
-        type: boolean
-        default: false
   push:
     branches: [main]
   pull_request:
@@ -489,34 +484,3 @@ jobs:
           done
           shellcheck "${scripts[@]}"
 
-  e2e_acp_live:
-    name: E2E ACP (live models)
-    if: github.event_name == 'workflow_dispatch' && inputs.acp_live
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Zig
-        id: zig
-        uses: ./.github/actions/setup-zig
-        with:
-          version: "0.17.0"
-          cache-key: ci-unit-ReleaseSafe
-
-      - name: Build
-        run: zig build -Doptimize=ReleaseSafe
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: "1.3.14"
-
-      - name: Install e2e deps
-        run: bun install
-        working-directory: tests/e2e
-
-      - name: Run full ACP tests
-        run: bun test acp.test.ts
-        working-directory: tests/e2e
-        env:
-          AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}
