@@ -179,7 +179,7 @@ pub const LegacyUrlCompletion = struct {
 
 pub const LegacyUrlCompletionSink = struct {
     context: *anyopaque,
-    /// Accepts the unique outbound ACP elicitation id. The legacy wire id is
+    /// Accepts the unique outbound elicitation id. The legacy wire id is
     /// not unique across recovered connections and cannot own cleanup.
     accept: *const fn (*anyopaque, InputOrigin, []const u8) LegacyUrlAcceptTransition,
     consume: *const fn (*anyopaque, LegacyUrlCompletion) LegacyUrlConsumeTransition,

@@ -965,23 +965,6 @@ pub fn mergeNative(
     return merged;
 }
 
-pub fn appendWorkspaceAfterAcpPrimary(
-    alloc: Allocator,
-    output: *std.ArrayList(McpServerConfig),
-    workspace: *std.ArrayList(McpServerConfig),
-) !void {
-    const primary_len = output.items.len;
-    try output.ensureUnusedCapacity(alloc, workspace.items.len);
-    while (workspace.items.len > 0) {
-        var candidate = workspace.orderedRemove(0);
-        if (configNamePresent(output.items[0..primary_len], candidate.name)) {
-            candidate.deinit(alloc);
-            continue;
-        }
-        output.appendAssumeCapacity(candidate);
-    }
-}
-
 inline fn failServerConfig(err: anytype) @TypeOf(err)!McpServerConfig {
     return @errorCast(failServerConfigDynamic(err));
 }
@@ -1930,45 +1913,6 @@ test "native merge keeps the primary whole entry" {
     try std.testing.expectEqual(@as(usize, 2), merged.items.len);
     try std.testing.expectEqualStrings("profile", merged.items[0].command.?);
     try std.testing.expectEqualStrings("only", merged.items[1].name);
-}
-
-test "ACP primary duplicates remain ordered while workspace collisions are excluded" {
-    const alloc = std.testing.allocator;
-    var output: std.ArrayList(McpServerConfig) = .empty;
-    defer deinitConfigs(alloc, &output);
-    try output.append(alloc, .{
-        .name = try alloc.dupe(u8, "same"),
-        .source = .acp,
-        .scope = .acp_session,
-        .command = try alloc.dupe(u8, "one"),
-    });
-    try output.append(alloc, .{
-        .name = try alloc.dupe(u8, "same"),
-        .source = .acp,
-        .scope = .acp_session,
-        .command = try alloc.dupe(u8, "two"),
-    });
-    var workspace: std.ArrayList(McpServerConfig) = .empty;
-    defer deinitConfigs(alloc, &workspace);
-    try workspace.append(alloc, .{
-        .name = try alloc.dupe(u8, "same"),
-        .source = .workspace,
-        .scope = .workspace,
-        .command = try alloc.dupe(u8, "workspace"),
-        .workspace_admission = .pending,
-    });
-    try workspace.append(alloc, .{
-        .name = try alloc.dupe(u8, "only"),
-        .source = .workspace,
-        .scope = .workspace,
-        .command = try alloc.dupe(u8, "workspace"),
-        .workspace_admission = .pending,
-    });
-    try appendWorkspaceAfterAcpPrimary(alloc, &output, &workspace);
-    try std.testing.expectEqual(@as(usize, 3), output.items.len);
-    try std.testing.expectEqualStrings("one", output.items[0].command.?);
-    try std.testing.expectEqualStrings("two", output.items[1].command.?);
-    try std.testing.expectEqualStrings("only", output.items[2].name);
 }
 
 test "workspace parsing releases every partial allocation failure" {

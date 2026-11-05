@@ -171,8 +171,7 @@ pub const Options = struct {
     /// The questions fx's UI on this surface can ask, declared to servers so
     /// they only ask those.
     questions: elicitation.Capabilities = .{},
-    /// Where a 2025 server's URL completions go: ACP sends the editor
-    /// `elicitation/complete`.
+    /// Where a 2025 server's URL completions go.
     url_completions: ?tool_mcp_runtime.LegacyUrlCompletionSink = null,
     /// The surface takes slash commands, as fx's shell does, so the model
     /// tells the user to sign in with `/mcp login NAME`, not in a terminal.
@@ -2042,10 +2041,7 @@ pub const Runtime = struct {
             .disabled => alloc.dupe(u8, "the server is disabled"),
             .waiting_for_approval => alloc.dupe(u8, "the project server is waiting for approval"),
             .rejected => alloc.dupe(u8, "the project server was rejected"),
-            .unsupported => alloc.dupe(u8, if (s.transport == .sse)
-                "HTTP+SSE servers are not supported"
-            else
-                "servers of \"type\": \"acp\" are not supported: ACP v1 defines stdio, HTTP, and SSE"),
+            .unsupported => alloc.dupe(u8, "HTTP+SSE servers are not supported"),
             .missing_env => alloc.print("{s} is not set", .{s.missing orelse "a variable"}),
             .invalid_env => alloc.print("{s} holds a line break or another character a header can't carry", .{s.missing orelse "a variable"}),
         };
