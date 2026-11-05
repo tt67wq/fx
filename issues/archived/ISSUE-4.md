@@ -1,6 +1,6 @@
 # ISSUE-4 — web_search 在非网关线路上仍被广告，每次调用必失败
 
-- **状态**: open
+- **状态**: closed
 - **发现于**: T-1 review / defe3086（worker fx-codex-1）
 - **发现时间**: 2026-11-04T11:05:00Z
 - **来源**: 审查发现
@@ -40,10 +40,21 @@ vision 有对等处理：`src/core/tooling/tool_runtime.zig:364` 的 `providerDi
 
 ## 处置
 
-- [ ] 在广告层按 capability 过滤 web_search，或补齐 `providerDisablesTool` 对等处理
-- [ ] 加一条测试：非网关线路的工具广告集里没有 web_search
-- [ ] 验收通过后置为 closed
+- [x] 在广告层按 capability 过滤 web_search，或补齐 `providerDisablesTool` 对等处理
+- [x] 加一条测试：非网关线路的工具广告集里没有 web_search
+- [x] 验收通过后置为 closed
 
 ## 备注
 
 与 ISSUE-1 是不同问题：ISSUE-1 是崩溃，这一项是每轮白花一次工具调用。
+
+## 结论
+
+已按 `providerDisablesTool` 对等方案修复（提交 d1b98069）：web_search 在
+`!capabilities.fx_search` 时于 validate/availability 两入口立即拒绝，返回
+`Unsupported tool: web_search`，不再打到执行后端拿 Gateway transport 错误。
+广告层过滤未做（与 vision 行为一致：广告但快速拒绝）。
+
+验证：`zig build test` 全绿；新增单测覆盖两条路径；假网关端到端确认
+自定义线路工具结果为 `Unsupported tool: web_search`，gateway 线路不受影响；
+web-search 相关 e2e（fake gateway + permission progress）20 项全过。
