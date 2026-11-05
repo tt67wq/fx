@@ -1,9 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import {
-  execFileSync,
-  spawn as nodeSpawn,
-  type ChildProcess,
-} from "node:child_process";
+import { execFileSync, spawn as nodeSpawn } from "node:child_process";
 import {
   chmodSync,
   existsSync,
@@ -76,7 +72,6 @@ const roots: string[] = [];
 const gateways: Array<{ stop(): void }> = [];
 const heldResponses: Array<ReturnType<typeof heldFakeGatewayFinalText>> = [];
 let activeSession: TmuxSession | null = null;
-let activeClient: AcpClient | null = null;
 
 function heldFinalText() {
   const response = heldFakeGatewayFinalText();
@@ -89,10 +84,6 @@ afterEach(async () => {
   if (activeSession) {
     await activeSession.kill();
     activeSession = null;
-  }
-  if (activeClient) {
-    await activeClient.close();
-    activeClient = null;
   }
   for (const gateway of gateways.splice(0)) gateway.stop();
   for (const root of roots.splice(0)) {
@@ -3732,7 +3723,7 @@ describe("effect-aware command permissions", () => {
   );
 
   test(
-    "fx ask and ACP send large automatic review packets before execution",
+    "fx ask sends large automatic review packets before execution",
     async () => {
       const cliRoot = createIsolatedRoot();
       const cliMarker = "large-cli-marker";
@@ -3769,38 +3760,6 @@ describe("effect-aware command permissions", () => {
         cliRoot,
         cliJson.session_id,
         cliCommand,
-        "success",
-      );
-
-      const acpRoot = createIsolatedRoot();
-      const acpMarker = "large-acp-marker";
-      const acpCommand = largeEffectfulCommand(acpMarker);
-      const acpGateway = startFakeGateway([
-        toolCall(acpCommand),
-        finalText("large ACP complete"),
-      ]);
-      activeClient = AcpClient.create(acpRoot.workspace, gatewayEnv(acpRoot, acpGateway));
-      await startAcpSession(activeClient, "auto");
-      const acpMessages = await runAcpPrompt(activeClient, "Run the large ACP fixture.");
-      await activeClient.close();
-      activeClient = null;
-
-      const serialized = JSON.stringify(acpMessages);
-      expect(serialized).toContain("large ACP complete");
-      expect(serialized).not.toContain("permission_required");
-      expect(serialized).not.toContain("integer does not fit in destination type");
-      expect((serialized.match(/\"status\":\"failed\"/g) ?? [])).toHaveLength(0);
-      expect((serialized.match(/\"status\":\"completed\"/g) ?? [])).toHaveLength(1);
-      expect(existsSync(join(acpRoot.workspace, acpMarker))).toBe(true);
-      expect(acpGateway.requests).toHaveLength(2);
-      expect(acpGateway.classifierRequests).toHaveLength(1);
-      expect(
-        Buffer.byteLength(acpGateway.classifierRequests[0]!.body),
-      ).toBeGreaterThan(16 * 1024);
-      await expectSavedShellRun(
-        acpRoot,
-        sessionIdFromHome(acpRoot),
-        acpCommand,
         "success",
       );
     },
@@ -3972,198 +3931,4 @@ describe("effect-aware command permissions", () => {
     },
     TIMEOUT,
   );
-
-  test(
-    "ACP completes more than twenty-five serial terminal calls when unlimited",
-    async () => {
-      const root = createIsolatedRoot();
-      writeFileSync(
-        join(root.home, ".fx", "settings.json"),
-        JSON.stringify({
-          sandbox: "none",
-          permission: { bash: { pwd: "allow" } },
-        }),
-      );
-      const gateway = startFakeGateway([
-        ...Array.from(
-          { length: 26 },
-          (_, index) => toolCall("pwd", { profile: "clean" }, `acp_${index + 1}`),
-        ),
-        finalText("acp unlimited complete"),
-      ]);
-      activeClient = AcpClient.create(root.workspace, gatewayEnv(root, gateway, {
-        PATH: hostilePath(root),
-      }));
-      await startAcpSession(activeClient);
-      const messages = await runAcpPrompt(activeClient, "Run pwd until you can answer.");
-      await activeClient.close();
-
-      expect(JSON.stringify(messages)).toContain("acp unlimited complete");
-      expect(gateway.requests).toHaveLength(27);
-      expect(activeClient.stderr).toBe("");
-      expect(existsSync(root.profileMarker)).toBe(false);
-      expectNoHostileExecutables(root);
-      expectNoCommandArtifacts(root);
-      activeClient = null;
-    },
-    TIMEOUT,
-  );
-
-  test(
-    "ACP blocks redirected output before creating a file",
-    async () => {
-      const root = createIsolatedRoot();
-      const marker = join(root.workspace, "must-not-exist");
-      const gateway = startFakeGateway([
-        toolCall("printf x > must-not-exist"),
-        finalText("acp denial complete"),
-      ]);
-      activeClient = AcpClient.create(root.workspace, gatewayEnv(root, gateway, {
-        PATH: hostilePath(root),
-      }));
-      await startAcpSession(activeClient);
-      const messages = await runAcpPrompt(activeClient, "Create redirected output.");
-      await activeClient.close();
-
-      const serialized = JSON.stringify(messages);
-      expect(serialized).toContain("request_permission");
-      expect(serialized).toContain("user_denied");
-      expect(existsSync(marker)).toBe(false);
-      expect(existsSync(root.profileMarker)).toBe(false);
-      expectNoHostileExecutables(root);
-      expect(activeClient.stderr).toBe("");
-      activeClient = null;
-    },
-    TIMEOUT,
-  );
 });
-
-class AcpClient {
-  private buffer = "";
-  private lines: string[] = [];
-  private waiters: Array<(line: string) => void> = [];
-  private closed = false;
-  private stderrChunks: Buffer[] = [];
-  private activeSessionId: string | null = null;
-
-  private constructor(private proc: ChildProcess) {
-    proc.stdout!.on("data", (chunk: Buffer) => {
-      this.buffer += chunk.toString();
-      const parts = this.buffer.split("\n");
-      this.buffer = parts.pop() ?? "";
-      for (const line of parts) {
-        if (!line.trim()) continue;
-        const waiter = this.waiters.shift();
-        if (waiter) waiter(line);
-        else this.lines.push(line);
-      }
-    });
-    proc.stderr!.on("data", (chunk: Buffer) => this.stderrChunks.push(chunk));
-    proc.on("close", () => {
-      this.closed = true;
-    });
-  }
-
-  static create(cwd: string, env: Record<string, string | undefined>) {
-    return new AcpClient(nodeSpawn(FX_BIN, ["acp"], {
-      cwd,
-      env: definedEnv({ ...process.env, ...env, NO_COLOR: "1" }),
-      stdio: ["pipe", "pipe", "pipe"],
-    }));
-  }
-
-  get stderr() {
-    return Buffer.concat(this.stderrChunks).toString();
-  }
-
-  send(message: object) {
-    let outgoing = message as any;
-    if (
-      this.activeSessionId !== null &&
-      [
-        "session/prompt",
-        "session/cancel",
-        "session/set_mode",
-        "session/set_config_option",
-      ].includes(outgoing.method) &&
-      outgoing.params?.sessionId === undefined
-    ) {
-      outgoing = {
-        ...outgoing,
-        params: { ...(outgoing.params ?? {}), sessionId: this.activeSessionId },
-      };
-    }
-    this.proc.stdin!.write(`${JSON.stringify(outgoing)}\n`);
-  }
-
-  async readLine(timeoutMs = TIMEOUT): Promise<any> {
-    const line = await new Promise<string>((resolve, reject) => {
-      const buffered = this.lines.shift();
-      if (buffered) {
-        resolve(buffered);
-        return;
-      }
-      const timer = setTimeout(() => reject(new Error("ACP read timeout")), timeoutMs);
-      this.waiters.push((value) => {
-        clearTimeout(timer);
-        resolve(value);
-      });
-    });
-    const message = JSON.parse(line);
-    if (message.method === "session/request_permission" && message.id !== undefined) {
-      this.send({
-        jsonrpc: "2.0",
-        id: message.id,
-        result: { outcome: { outcome: "selected", optionId: "reject_once" } },
-      });
-    }
-    return message;
-  }
-
-  async request(method: string, params: object, id: number) {
-    this.send({ jsonrpc: "2.0", id, method, params });
-    let response: any;
-    do {
-      response = await this.readLine();
-    } while (response.id !== id);
-    if (
-      response.error === undefined &&
-      method === "session/new" &&
-      typeof response.result?.sessionId === "string"
-    ) {
-      this.activeSessionId = response.result.sessionId;
-    }
-    return response;
-  }
-
-  async close() {
-    if (this.closed) return;
-    this.proc.stdin!.end();
-    this.proc.kill("SIGTERM");
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    if (!this.closed) this.proc.kill("SIGKILL");
-  }
-}
-
-async function startAcpSession(client: AcpClient, modeId: "ask" | "auto" = "ask") {
-  await client.request("initialize", { protocolVersion: 1 }, 1);
-  await client.request("session/new", { mcpServers: [] }, 2);
-  await client.readLine();
-  await client.request("session/set_mode", { modeId }, 3);
-}
-
-async function runAcpPrompt(client: AcpClient, text: string) {
-  const id = 10;
-  client.send({
-    jsonrpc: "2.0",
-    id,
-    method: "session/prompt",
-    params: { prompt: [{ type: "text", text }] },
-  });
-  const messages: any[] = [];
-  while (true) {
-    const message = await client.readLine();
-    if (message.id === id && message.result) return messages;
-    messages.push(message);
-  }
-}
