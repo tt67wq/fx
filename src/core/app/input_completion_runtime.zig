@@ -2054,7 +2054,9 @@ fn expectInlineSkillCompletionInactive(app: *InlineCompletionTestApp) !void {
 
 test "file picker disabled profile never claims literal input or prepares rows" {
     const DisabledApp = struct {
-        pub const host_profile = runtime_profile.wasm;
+        pub const host_profile = struct {
+            pub const file_index = false;
+        };
         main_agent: struct {} = .{},
         input_runtime: core_input_runtime.Runtime = .{},
         pub fn agent(self: anytype) @TypeOf(&self.main_agent) {

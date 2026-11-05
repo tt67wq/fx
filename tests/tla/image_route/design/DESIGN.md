@@ -30,7 +30,7 @@ How fx decides, for each model request, where images go: inline, through the vis
 - Q25: The scan is linear in the request's history, like the projections beside it that already walk every message (`withholdDroppedImages`, `materializeToolImages`).
 - Q26: One core state per turn, turns run one at a time per session, and each subagent has its own.
 - Q27: No saved format or protocol changes. `ImageInputSupport` keeps its tags and moves its definition to `image_route.Support` (`model_capabilities.zig:37`, this change). Saved sessions resume unchanged, and their images now reach vision-only models.
-- Q29: `/model` info prints image support (`app_commands.zig:3048-3050`) and now shows `native` for vision-only models. The CLI, TUI, ACP, and libfx share the code. Older releases keep the old rule.
+- Q29: `/model` info prints image support (`app_commands.zig:3048-3050`) and now shows `native` for vision-only models. The CLI, TUI, and ACP share the code. Older releases keep the old rule.
 - Q30: The gateway controls the tags over TLS. A repository cannot set capabilities, because project `.fx.json` accepts no profile-owned keys (`config_runtime.zig` `parseProjectSafeFields`). Tool output reaches the core only as a flag that images exist.
 - Q31: Nowhere. Core events and the trace line hold only model ids and tag names.
 - Q32: No. Images from permission-denied results still never leave the process (`vercel_protocol.zig:691-704`).
@@ -38,7 +38,7 @@ How fx decides, for each model request, where images go: inline, through the vis
 - Q34: The core extraction. Without it the reported bug is still fixed, but Q9's ordering fix has no function to check against a model. The design keeps it for that reason and for G6; see R10.
 - Q35: It reuses the resolver, `projectToolImageMessages`, and the wire encoder. It replaces `visionPolicy` and the inline re-resolve, so no parallel path remains, and it drops both inherited flaws: the `file-input` rule and the late re-resolve. Earlier images reuse the tool image rule (`held`) and the dropped-image note pattern rather than a rule of their own.
 - Q36: Nothing. No setting, override, or provider table.
-- Q37: `tests/e2e/file-tool-paths.test.ts` through the built binary, `sdk/tests/test-agent-images.mjs` through libfx on both backends, the drivers on the real core, the binary stage on `fx ask` turns of the built binary (`binary-to-spec.ts`), `tests/e2e/vision-route-fake-gateway.test.ts` for a resumed turn while the catalog is down, and a live run of the built binary against the gateway (`GOAL.md`, item 6).
+- Q37: `tests/e2e/file-tool-paths.test.ts` through the built binary, the drivers on the real core, the binary stage on `fx ask` turns of the built binary (`binary-to-spec.ts`), `tests/e2e/vision-route-fake-gateway.test.ts` for a resumed turn while the catalog is down, and a live run of the built binary against the gateway (`GOAL.md`, item 6).
 - Q38: The `vision_policy` trace line logs `image_support`, `route`, `mode`, `pending_images`, `tool_images`, and `earlier_images` for every request, and `image_gate` diagnostics record each failure (`orchestrator.zig:7357-7366`, this change).
 - Q39: Revert the change. No data needs migrating. Reverting `supportFromCatalog` alone (`image_route.zig:47-52`, this change) restores the old rule.
 
@@ -86,9 +86,9 @@ The laws `step` obeys. Each one is a named invariant or property in `spec/ImageR
 
 | Law | Statement | Enforced by |
 | --- | --- | --- |
-| L1 | Vision means native | `inv:VisionImpliesNative`, `trace:VisionImpliesNative`, `mutation:S1`, `mutation:C1`, `zig:src/core/images/image_route.zig#a catalog that lists vision makes image input native with or without file input`, `zig:src/core/config/model_capabilities.zig#image input support distinguishes unknown native and non native capability`, `zig:src/core/agent/runtime/tests/gateway_flow.zig#processQueuedPrompt routes images natively whenever the catalog lists vision`, `e2e:tests/e2e/file-tool-paths.test.ts#read_file attaches a workspace image inline for a vision model without file input`, `sdk:sdk/tests/test-agent-images.mjs#A host tool's image reaches a model the catalog lists with vision but not` |
+| L1 | Vision means native | `inv:VisionImpliesNative`, `trace:VisionImpliesNative`, `mutation:S1`, `mutation:C1`, `zig:src/core/images/image_route.zig#a catalog that lists vision makes image input native with or without file input`, `zig:src/core/config/model_capabilities.zig#image input support distinguishes unknown native and non native capability`, `zig:src/core/agent/runtime/tests/gateway_flow.zig#processQueuedPrompt routes images natively whenever the catalog lists vision`, `e2e:tests/e2e/file-tool-paths.test.ts#read_file attaches a workspace image inline for a vision model without file input` |
 | L2 | Vision tool only on the fallback route | `inv:RouteModeCoherent`, `trace:RouteModeCoherent`, `mutation:S18`, `mutation:C17`, `zig:src/core/images/image_route.zig#every decision reads one support value` |
-| L3 | Native excludes the vision tool | `inv:NativeExcludesFallback`, `trace:NativeExcludesFallback`, `mutation:S19`, `mutation:C18`, `sdk:sdk/tests/test-agent-images.mjs#a native image model is not offered the vision tool` |
+| L3 | Native excludes the vision tool | `inv:NativeExcludesFallback`, `trace:NativeExcludesFallback`, `mutation:S19`, `mutation:C18` |
 | L4 | One snapshot per request | `inv:OneSnapshot`, `trace:OneSnapshot`, `mutation:S2`, `mutation:C7` |
 | L5 | Unknown never inline | `inv:UnknownNeverInline`, `trace:UnknownNeverInline`, `mutation:S5`, `mutation:C4`, `zig:src/core/agent/runtime/gateway_step.zig#projectToolImageMessages tells the truth when the catalog is unavailable`, `mutation:S21`, `mutation:C20`, `driver:binary-to-spec` |
 | L6 | No silent withhold | `inv:NoSilentWithhold`, `inv:RequiredWhenPending`, `trace:NoSilentWithhold`, `trace:RequiredWhenPending`, `mutation:S17`, `mutation:C16`, `mutation:S10`, `mutation:C10`, `zig:src/core/agent/runtime/orchestrator.zig#requestHasToolImages ignores images the session dropped`, `e2e:tests/e2e/file-tool-paths.test.ts#read_file image is withheld with guidance for a text-only model`, `mutation:S22`, `mutation:C21`, `zig:src/core/images/image_attachments.zig#requests leave out earlier images the route cannot carry, each with a note`, `zig:src/core/images/image_attachments.zig#earlier images withheld from seeded random histories always leave a note` |
@@ -106,7 +106,7 @@ The laws `step` obeys. Each one is a named invariant or property in `spec/ImageR
 
 ### The fix
 
-`supportFromCatalog` (`src/core/images/image_route.zig:47-52`, this change) returns `native` when the catalog lists `vision` and `non_native` when it lists the model without it, and `unknown` for a missing model or a down catalog. `file-input` plays no part. `mergeCapabilities` calls it (`src/core/config/model_capabilities.zig:97-100`, this change), so the CLI, TUI, ACP, and libfx all change at once. `ImageInputSupport` is now an alias of `image_route.Support` (`model_capabilities.zig:37`, this change).
+`supportFromCatalog` (`src/core/images/image_route.zig:47-52`, this change) returns `native` when the catalog lists `vision` and `non_native` when it lists the model without it, and `unknown` for a missing model or a down catalog. `file-input` plays no part. `mergeCapabilities` calls it (`src/core/config/model_capabilities.zig:97-100`, this change), so the CLI, TUI, and ACP all change at once. `ImageInputSupport` is now an alias of `image_route.Support` (`model_capabilities.zig:37`, this change).
 
 ### The core
 

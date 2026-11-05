@@ -2372,7 +2372,7 @@ const TestScope = struct {
 
 test "subsequence scoring prefers basename prefix over mid-path match" {
     const path_a = "src/main.zig";
-    const path_b = "src/wasm_term_main.zig";
+    const path_b = "src/core/app/app_main_runtime.zig";
 
     const a = scoreAsciiMatch(path_a, path_a, 4, "main").?;
     const b = scoreAsciiMatch(path_b, path_b, 4, "main").?;
@@ -2402,14 +2402,14 @@ test "search returns best matches first" {
     var index = FileIndex{};
     defer index.deinit(alloc);
 
-    const raw = "src/wasm_term_main.zig\nsrc/main.zig\nREADME.md\nsrc/core/shared/io.zig\nbenchmarks/startup.sh\n";
+    const raw = "src/core/app/app_main_runtime.zig\nsrc/main.zig\nREADME.md\nsrc/core/shared/io.zig\nbenchmarks/startup.sh\n";
     try index.buildFromRaw(alloc, raw);
 
     var search: TestSearchBuffer(8) = .{};
     const results = try search.run(&index, "main");
     try std.testing.expect(results.len >= 2);
     try std.testing.expectEqualStrings("src/main.zig", results[0].path);
-    try std.testing.expectEqualStrings("src/wasm_term_main.zig", results[1].path);
+    try std.testing.expectEqualStrings("src/core/app/app_main_runtime.zig", results[1].path);
 }
 
 test "typed search supports abbreviated subsequences and caller-owned spans" {
@@ -3198,7 +3198,7 @@ test "search returns partial results while ready_count is below total" {
     var index = FileIndex{};
     defer index.deinit(alloc);
 
-    try index.buildFromRaw(alloc, "src/wasm_term_main.zig\nsrc/main.zig\nREADME.md\nsrc/core/shared/io.zig\n");
+    try index.buildFromRaw(alloc, "src/core/app/app_main_runtime.zig\nsrc/main.zig\nREADME.md\nsrc/core/shared/io.zig\n");
     try std.testing.expectEqual(@as(usize, 4), index.count());
 
     const generation = index.active_generation.?;

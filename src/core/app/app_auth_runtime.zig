@@ -5,7 +5,6 @@ const config_runtime = @import("../config/config_runtime.zig");
 const debug_trace = @import("../shared/debug_trace.zig");
 const host = @import("../hosts/host.zig");
 const runtime_profile = @import("../hosts/runtime_profile.zig");
-const host_target = @import("../hosts/target.zig");
 const io_mod = @import("../shared/io.zig");
 const credentials = @import("../auth/credentials.zig");
 const auth_runtime = @import("../auth/auth_runtime.zig");
@@ -20,8 +19,7 @@ const provider_picker_runtime = @import("provider_picker_runtime.zig");
 const types = @import("../shared/types.zig");
 
 fn oauthAuthEnabled(comptime App: type) bool {
-    return runtime_profile.allows(App, .native_auth) or
-        runtime_profile.allows(App, .js_host_auth);
+    return runtime_profile.allows(App, .native_auth);
 }
 
 const ProviderSwitchDecision = auth_transition.ProviderSwitchDecision;
@@ -141,7 +139,7 @@ pub fn Runtime(comptime App: type) type {
         fn selectProviderCredential(app: *App, provider: model_provider.ProviderId) !auth_runtime.ProviderCredentialSelection {
             if (hostManagesAuth(app) or (provider != .configured and model_provider.authorizesCredential(provider, app.auth.credentialSource()))) return .unchanged;
             var preferred: ?credentials.Source = null;
-            if (provider == .gateway and !host_target.is_wasm) {
+            if (provider == .gateway) {
                 var settings = try config_runtime.loadMergedSettings(app.alloc, app.workspace_root);
                 defer settings.deinit(app.alloc);
                 preferred = settings.credential_source;
@@ -157,7 +155,7 @@ pub fn Runtime(comptime App: type) type {
                 app.auth.cancelPromptCredentialRefresh();
                 app.model_cache.resetForProviderChange();
             }
-            if (comptime host_target.is_wasm) return;
+
             if (hostManagesAuth(app)) return;
             const selection = selectProviderCredential(app, provider) catch |err| {
                 if (err == error.OutOfMemory) return err;
@@ -237,10 +235,7 @@ pub fn Runtime(comptime App: type) type {
                 }, true);
                 return;
             }
-            if (comptime host_target.is_wasm) {
-                try beginSignIn(app, agent, false);
-                return;
-            }
+
             try beginProviderPickerInventoryRefresh(app, agent, .provider_picker_login);
         }
 
@@ -918,7 +913,7 @@ pub fn Runtime(comptime App: type) type {
         ) !void {
             if (comptime !provider_runtime.supported(App) or
                 !@hasDecl(App, "providerCatalog") or
-                !@hasDecl(@TypeOf(app.auth), "beginProviderPreparation") or host_target.is_wasm)
+                !@hasDecl(@TypeOf(app.auth), "beginProviderPreparation"))
             {
                 try app.writeDomainNotice(.{
                     .topic = "provider",
@@ -1027,7 +1022,7 @@ pub fn Runtime(comptime App: type) type {
         }
 
         pub fn collectProviderPreparationFacts(app: *App, agent: *AppAgent) !void {
-            if (comptime !@hasDecl(@TypeOf(app.auth), "takeProviderPreparation") or host_target.is_wasm) return;
+            if (comptime !@hasDecl(@TypeOf(app.auth), "takeProviderPreparation")) return;
             if (pendingPromptNeedsAdoption(app, agent)) return;
             const task = app.auth.takeProviderPreparation() orelse return;
             defer task.deinit();
@@ -1358,7 +1353,7 @@ pub fn Runtime(comptime App: type) type {
                 return false;
             };
             defer candidate.deinit(app.alloc);
-            if (comptime @hasDecl(@TypeOf(app.auth), "beginProviderPreparation") and @hasDecl(App, "providerCatalog") and !host_target.is_wasm) {
+            if (comptime @hasDecl(@TypeOf(app.auth), "beginProviderPreparation") and @hasDecl(App, "providerCatalog")) {
                 const catalog_provider = app.providerCatalog(.gateway) orelse return false;
                 var settings = config_runtime.loadMergedSettings(app.alloc, app.workspace_root) catch |err| {
                     debug_trace.logf("auth", "team preparation settings failed err={s}", .{@errorName(err)});
@@ -1649,7 +1644,7 @@ pub fn Runtime(comptime App: type) type {
         /// because the worker refreshes it before the turn's first request.
         /// Only a failure that needs a new sign-in stops the prompt here.
         pub fn admitQueuedPromptCredential(app: *App, agent: *AppAgent) !bool {
-            if (comptime host_target.is_wasm or !oauthAuthEnabled(App)) return admitPromptCredential(app, agent);
+            if (comptime !oauthAuthEnabled(App)) return admitPromptCredential(app, agent);
             if (!try ensurePromptCredential(app, agent)) return false;
             if (comptime @hasDecl(@TypeOf(app.auth), "credentialFailure")) {
                 if (app.auth.credentialFailure()) |failure| {
@@ -1687,9 +1682,7 @@ pub fn Runtime(comptime App: type) type {
             if (comptime @hasDecl(@TypeOf(app.auth), "providerPreparationPending")) {
                 if (app.auth.providerPreparationPending()) return .pending;
             }
-            if (comptime host_target.is_wasm) {
-                return if (try admitPromptCredential(app, agent)) .current else .rejected;
-            }
+
             if (!try ensurePromptCredential(app, agent)) return .rejected;
             const source = app.auth.credentialSource() orelse return .rejected;
             if (!credentials.sourceRefreshable(source)) {
@@ -1729,9 +1722,7 @@ pub fn Runtime(comptime App: type) type {
             if (comptime @hasDecl(@TypeOf(app.auth), "providerPreparationPending")) {
                 if (app.auth.providerPreparationPending()) return .pending;
             }
-            if (comptime host_target.is_wasm) {
-                return if (try admitPromptCredential(app, agent)) .current else .rejected;
-            }
+
             if (!try ensurePromptCredential(app, agent)) return .rejected;
             if (comptime @hasDecl(@TypeOf(app.auth), "credentialFailure")) {
                 if (app.auth.credentialFailure()) |failure| {
@@ -2757,23 +2748,17 @@ test "login inventory failure leaves the picker closed and reports one error" {
     ) != null);
 }
 
-test "OAuth app gating accepts native auth or JS-host auth and rejects neither" {
+test "OAuth app gating accepts native auth and rejects a host without it" {
     const NativeApp = struct {
         pub const host_profile = runtime_profile.native;
     };
-    const JsHostApp = struct {
-        pub const host_profile = runtime_profile.wasm;
-    };
     const NeitherApp = struct {
-        pub const host_profile = blk: {
-            var profile = runtime_profile.wasm;
-            profile.js_host_auth = false;
-            break :blk profile;
+        pub const host_profile = struct {
+            pub const native_auth = false;
         };
     };
 
     try std.testing.expect(oauthAuthEnabled(NativeApp));
-    try std.testing.expect(oauthAuthEnabled(JsHostApp));
     try std.testing.expect(!oauthAuthEnabled(NeitherApp));
 }
 

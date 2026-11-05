@@ -4,7 +4,6 @@ const api_key_validator = @import("api_key_validator.zig");
 const auth_transition = @import("auth_transition.zig");
 const credentials = @import("credentials.zig");
 const host = @import("../hosts/host.zig");
-const host_target = @import("../hosts/target.zig");
 const login_flow = @import("login_flow.zig");
 const oauth_session = @import("oauth_session.zig");
 const oauth = @import("oauth.zig");
@@ -1387,8 +1386,6 @@ pub const PickerView = struct {
         return switch (self.stage) {
             .root => if (self.include_skip)
                 connectionChoiceCount()
-            else if (comptime host_target.is_wasm)
-                3
             else
                 4,
             .connections => connectionChoiceCount(),
@@ -1401,14 +1398,7 @@ pub const PickerView = struct {
 
     pub fn choiceAt(self: PickerView, index: usize) ?Choice {
         return switch (self.stage) {
-            .root => if (self.include_skip) connectionChoiceAt(index) else if (comptime host_target.is_wasm)
-                switch (index) {
-                    0 => .{ .action = .connections },
-                    1 => .{ .action = .change_team },
-                    2 => .{ .action = .switch_credential },
-                    else => null,
-                }
-            else switch (index) {
+            .root => if (self.include_skip) connectionChoiceAt(index) else switch (index) {
                 0 => .{ .action = .connections },
                 1 => .{ .action = .switch_provider },
                 2 => .{ .action = .change_team },
@@ -2818,7 +2808,6 @@ pub const Runtime = struct {
     }
 
     pub fn beginPromptCredentialRefresh(self: *Self) PromptCredentialRefreshStart {
-        if (comptime host_target.is_wasm) return .not_needed;
         if (self.auth_mode == .host_managed) return .not_needed;
         if (self.prompt_credential_refresh_task != null) return .pending;
         const credential = self.selected_credential orelse return .not_needed;

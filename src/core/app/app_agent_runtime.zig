@@ -67,7 +67,6 @@ const web_search_runtime = @import("../tooling/web_search_runtime.zig");
 const types = @import("../shared/types.zig");
 const worker_runtime = @import("../agent/worker_runtime.zig");
 const workspace_access = @import("../workspace/workspace_access.zig");
-const js_host_workspace = @import("../hosts/js_host_workspace.zig");
 
 const Allocator = std.mem.Allocator;
 const ChatMessage = types.ChatMessage;
@@ -92,13 +91,6 @@ pub fn Runtime(comptime App: type) type {
             return null;
         }
 
-        fn appHostWorkspaceInfo(app: *const App) ?*const js_host_workspace.Info {
-            if (comptime @hasDecl(App, "workspaceHostInfo")) {
-                return app.workspaceHostInfo();
-            }
-            return null;
-        }
-
         const TurnWorkspace = struct {
             root: []const u8,
             access_scope: ?workspace_access.AccessScope,
@@ -107,10 +99,6 @@ pub fn Runtime(comptime App: type) type {
         /// A host workspace owns the root that tools, turns, and project
         /// context use; otherwise the app's local workspace does.
         fn turnWorkspace(app: *const App) TurnWorkspace {
-            if (appHostWorkspaceInfo(app)) |info| return .{
-                .root = info.root(),
-                .access_scope = workspace_access.AccessScope.primaryOnly(info.root()),
-            };
             return .{ .root = app.workspace_root, .access_scope = appAccessScope(app) };
         }
 
@@ -336,7 +324,6 @@ pub fn Runtime(comptime App: type) type {
             gateway_chat_url: []const u8,
             authority: ?ToolAuthorityView,
         ) tool_runtime.Context {
-            const host_workspace = appHostWorkspaceInfo(app);
             const workspace = turnWorkspace(app);
             const agent_settings = agent.worker.effectiveAgentTurnSettings();
             const permission_snapshot = if (authority) |snapshot|
@@ -439,11 +426,6 @@ pub fn Runtime(comptime App: type) type {
                 .context_registry = app.contextRegistry(),
                 .output_chunk_ctx = @ptrCast(agent),
                 .on_output_chunk = app_callbacks.Bindings(App).onCommandOutputChunk,
-                .workspace_executor = if (comptime @hasDecl(App, "workspaceExecutor")) app.workspaceExecutor() else null,
-                .host_sandbox_default = if (host_workspace) |info| switch (info.permission) {
-                    .allow_sandboxed => .allow_sandboxed,
-                    .prompt => .prompt,
-                } else .none,
                 .permission_reviewer_provider = if (comptime @hasDecl(App, "permissionReviewerProvider")) app.permissionReviewerProvider() else null,
                 .tracker = &agent.change_tracker,
                 .mcp_ctx = @ptrCast(app),
@@ -1072,15 +1054,9 @@ pub fn Runtime(comptime App: type) type {
             _ = gateway_retry_count;
             _ = gateway_chat_url;
             const permission_snapshot = app_permission_runtime.Runtime(App).livePermissionSnapshot(app, agent);
-            const host_workspace = appHostWorkspaceInfo(app);
             const workspace = turnWorkspace(app);
             try app.contextRegistry().appendDefaultTransient(.{
                 .workspace_root = workspace.root,
-                .host_workspace = if (host_workspace) |info| .{
-                    .root = info.root(),
-                    .cwd = info.cwd(),
-                    .home = info.home(),
-                } else null,
                 .access_scope = workspace.access_scope,
                 .interactive = true,
                 .permission_mode = permission_snapshot.mode,
@@ -1923,14 +1899,9 @@ const RefreshContextApp = struct {
     context_notices: std.ArrayList(u8) = .empty,
     context_notice_tone: ?types.NoticeTone = null,
     context_notice_visibility: ?types.NoticeVisibility = null,
-    host_info: ?js_host_workspace.Info = null,
 
     fn contextRegistry(self: *const RefreshContextApp) context_contract.Registry {
         return self.context_registry;
-    }
-
-    pub fn workspaceHostInfo(self: *const RefreshContextApp) ?*const js_host_workspace.Info {
-        return if (self.host_info) |*info| info else null;
     }
 
     fn deinit(self: *RefreshContextApp) void {
@@ -2896,51 +2867,14 @@ test "app agent runtime refreshes enabled project context through registry" {
     try std.testing.expectEqual(types.NoticeVisibility.full_only, app.context_notice_visibility.?);
 }
 
-const TestHostWorkspace = struct {
-    pub fn workspaceAvailable() i32 {
-        return 1;
-    }
-
-    pub fn workspaceInfo(out_ptr: [*]u8, out_cap: usize) i32 {
-        const json = "{\"version\":1,\"root\":\"/workspace\",\"cwd\":\"/workspace\",\"home\":\"/home/visitor\",\"git\":false,\"ephemeral\":true,\"permission\":\"allow-sandboxed\"}";
-        if (json.len > out_cap) return -3;
-        @memcpy(out_ptr[0..json.len], json);
-        return json.len;
-    }
-};
-
-test "app agent runtime turn workspace prefers the host workspace root" {
-    const alloc = std.testing.allocator;
-    var app = RefreshContextApp{
-        .alloc = alloc,
-        .workspace_root = "/",
-        .context_enabled = true,
-        .context_registry = fresh_context_registry,
-        .main_agent = .{ .context_snapshot = .{} },
-    };
-    defer app.deinit();
-
-    const local = Runtime(RefreshContextApp).turnWorkspace(&app);
-    try std.testing.expectEqualStrings("/", local.root);
-    try std.testing.expect(local.access_scope == null);
-
-    app.host_info = try js_host_workspace.Adapter(TestHostWorkspace).loadInfo(alloc);
-    const hosted = Runtime(RefreshContextApp).turnWorkspace(&app);
-    try std.testing.expectEqualStrings("/workspace", hosted.root);
-    const scope = hosted.access_scope orelse return error.TestExpectedEqual;
-    try std.testing.expectEqualStrings("/workspace", scope.primary_directory);
-    try std.testing.expectEqual(@as(usize, 0), scope.additional_directories.len);
-}
-
-test "app agent runtime gathers project context from the host workspace root" {
+test "app agent runtime gathers project context from the workspace root" {
     const alloc = std.testing.allocator;
     refresh_gather_calls = 0;
     var app = RefreshContextApp{
         .alloc = alloc,
-        .workspace_root = "/",
+        .workspace_root = "/workspace",
         .context_enabled = true,
         .context_registry = fresh_context_registry,
-        .host_info = try js_host_workspace.Adapter(TestHostWorkspace).loadInfo(alloc),
         .main_agent = .{ .context_snapshot = .{} },
     };
     defer app.deinit();

@@ -14,20 +14,22 @@ pub const Profile = struct {
     url_opening: bool,
     web_search: bool,
     tools: bool,
-    js_host_clipboard: bool,
-    js_host_config: bool,
-    js_host_prompt_history: bool,
-    js_host_sessions: bool,
-    js_host_auth: bool,
-    js_host_url_open: bool,
-    js_host_workspace: bool,
 };
 
 pub const Capability = std.meta.FieldEnum(Profile);
 
+/// Reports whether the app's host profile enables a capability. A profile that
+/// leaves a capability out inherits the native value.
 pub fn allows(comptime App: type, comptime capability: Capability) bool {
     if (!@hasDecl(App, "host_profile")) return @field(native, @tagName(capability));
-    return @field(App.host_profile, @tagName(capability));
+    const profile = App.host_profile;
+    if (@TypeOf(profile) == type) {
+        // A profile given as a type names only the capabilities it sets.
+        if (!@hasDecl(profile, @tagName(capability))) return @field(native, @tagName(capability));
+        return @field(profile, @tagName(capability));
+    }
+    if (!@hasField(@TypeOf(profile), @tagName(capability))) return @field(native, @tagName(capability));
+    return @field(profile, @tagName(capability));
 }
 
 pub const native = Profile{
@@ -44,70 +46,27 @@ pub const native = Profile{
     .url_opening = true,
     .web_search = true,
     .tools = true,
-    .js_host_clipboard = false,
-    .js_host_config = false,
-    .js_host_prompt_history = false,
-    .js_host_sessions = false,
-    .js_host_auth = false,
-    .js_host_url_open = false,
-    .js_host_workspace = false,
-};
-
-pub const wasm = Profile{
-    .cooperative_agent = true,
-    .durable_sessions = false,
-    // `/usage` reads through the JS host's fetch.
-    .profile_usage = true,
-    .native_auth = false,
-    .file_index = false,
-    .mcp = false,
-    .subagents = false,
-    .auto_upgrade = false,
-    .skills = false,
-    .clipboard = false,
-    .url_opening = false,
-    .web_search = false,
-    .tools = false,
-    .js_host_clipboard = true,
-    .js_host_config = true,
-    .js_host_prompt_history = true,
-    .js_host_sessions = true,
-    .js_host_auth = true,
-    .js_host_url_open = true,
-    .js_host_workspace = true,
 };
 
 test "apps without a host profile retain native capabilities" {
     const App = struct {};
     try std.testing.expect(allows(App, .durable_sessions));
-    try std.testing.expect(!allows(App, .js_host_sessions));
+    try std.testing.expect(!allows(App, .cooperative_agent));
 }
 
 test "host profile capabilities are selected by field" {
     const App = struct {
-        pub const host_profile = wasm;
+        pub const host_profile = struct {
+            pub const durable_sessions = false;
+        };
     };
     try std.testing.expect(!allows(App, .durable_sessions));
-    try std.testing.expect(allows(App, .js_host_config));
-    try std.testing.expect(allows(App, .js_host_sessions));
-    try std.testing.expect(allows(App, .js_host_clipboard));
+    try std.testing.expect(allows(App, .file_index));
 }
 
-test "native and wasm profiles select distinct auth host effects" {
+test "native profile enables the terminal agent capabilities" {
     try std.testing.expect(native.native_auth);
     try std.testing.expect(native.url_opening);
-    try std.testing.expect(!native.js_host_auth);
-    try std.testing.expect(!native.js_host_url_open);
-
-    try std.testing.expect(!wasm.native_auth);
-    try std.testing.expect(!wasm.url_opening);
-    try std.testing.expect(wasm.js_host_auth);
-    try std.testing.expect(wasm.js_host_url_open);
-}
-
-test "workspace host capability is wasm only without enabling native tools" {
-    try std.testing.expect(@hasField(Profile, "js_host_workspace"));
-    try std.testing.expect(!native.js_host_workspace);
-    try std.testing.expect(wasm.js_host_workspace);
-    try std.testing.expect(!wasm.tools);
+    try std.testing.expect(native.tools);
+    try std.testing.expect(!native.cooperative_agent);
 }

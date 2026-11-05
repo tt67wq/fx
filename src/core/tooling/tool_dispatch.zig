@@ -169,43 +169,6 @@ pub const ToolResult = union(enum) {
 
 pub const ModelContentKind = enum { ordinary, complete_skill };
 
-/// Arguments: context, allocator, tool name, the model's call id, arguments
-/// JSON, result limit, and cancel flag.
-pub const HostToolProviderFn = *const fn (
-    *anyopaque,
-    Allocator,
-    []const u8,
-    []const u8,
-    []const u8,
-    usize,
-    ?*std.atomic.Value(bool),
-) DispatchError!ToolResult;
-
-pub const HostToolProvider = struct {
-    context: *anyopaque,
-    call_fn: HostToolProviderFn,
-
-    pub fn call(
-        self: HostToolProvider,
-        alloc: Allocator,
-        name: []const u8,
-        call_id: []const u8,
-        arguments_json: []const u8,
-        max_result_bytes: usize,
-        cancel_flag: ?*std.atomic.Value(bool),
-    ) DispatchError!ToolResult {
-        return self.call_fn(
-            self.context,
-            alloc,
-            name,
-            call_id,
-            arguments_json,
-            max_result_bytes,
-            cancel_flag,
-        );
-    }
-};
-
 /// Result of decoding a raw JSON argument buffer into a typed input.
 pub const DecodeResult = union(enum) {
     input: ToolInput,
@@ -294,7 +257,6 @@ pub const DispatchContext = struct {
     run_command_backend: ?RunCommandBackend = null,
     subagent_provider: ?subagent_tool_provider.Provider = null,
     vision_provider: ?VisionProvider = null,
-    host_tool_provider: ?HostToolProvider = null,
     ask_question_ctx: ?*anyopaque = null,
     observer: ?*observation.Observer = null,
     ask_question_batch: ?AskQuestionBatchFn = null,
@@ -422,7 +384,6 @@ pub const ExecutorKind = enum {
     mcp_select_tool,
     ask_user_question,
     vision,
-    host,
 };
 
 pub const ApprovalPolicy = enum {
@@ -470,16 +431,6 @@ pub const Tool = struct {
     /// never reaches a call-time permission check, so advertisement is its only
     /// enforcement point and requires an already-settled allow.
     provider_executed: bool = false,
-    /// A host tool whose calls may run beside neighboring calls of other such
-    /// tools. A host tool that declares `writes`, or that is not idempotent
-    /// and does not declare `writes: false`, leaves it unset and runs alone.
-    /// Concurrency never changes a call's permission review.
-    host_concurrent: bool = false,
-    /// A host tool the host declares idempotent: running a call again has
-    /// the effect of running it once. A journaled session starts a call of
-    /// such a tool that is also concurrent without waiting for its intent to
-    /// be stored.
-    host_idempotent: bool = false,
     executor_kind: ExecutorKind = .read_file,
     activity_kind: core_types.ToolActivityKind = .read,
     requires_approval: bool = false,

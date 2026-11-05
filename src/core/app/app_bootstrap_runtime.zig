@@ -15,7 +15,6 @@ const oauth_transport = @import("../auth/oauth_transport.zig");
 const config_runtime = @import("../config/config_runtime.zig");
 const model_provider = @import("../config/model_provider.zig");
 const host = @import("../hosts/host.zig");
-const host_target = @import("../hosts/target.zig");
 const debug_trace = @import("../shared/debug_trace.zig");
 const record_tape = @import("../workspace/record_tape.zig");
 const statusline_identity = @import("../workspace/statusline_identity.zig");
@@ -284,7 +283,7 @@ pub fn Runtime(comptime App: type) type {
         /// when it lands. Prompts already wait for a current catalog. Returns
         /// false when the host loads skills inline.
         fn beginStartupSkillsLoad(app: *App) !bool {
-            if (comptime host_target.is_wasm or !@hasDecl(App, "requestSkillsRefresh")) return false;
+            if (comptime !@hasDecl(App, "requestSkillsRefresh")) return false;
             const dir = (try app_runtime_setup.resolveManagedSkillsDir(std.heap.c_allocator)) orelse return false;
             // An empty catalog records the managed directory the refresh scans.
             app.skills.replaceLoaded(std.heap.c_allocator, dir, &.{}, &.{}) catch |err| {

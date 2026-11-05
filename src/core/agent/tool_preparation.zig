@@ -337,12 +337,6 @@ fn prepareRegisteredApplicableTargets(
         ) };
     }
 
-    // Host tools own their effects; the kernel has no typed target contract
-    // for them. Skipping permission-target projection keeps a host tool that
-    // reuses a reserved name (e.g. write_file) out of the builtin mutation
-    // path entirely.
-    if (tool.executor_kind == .host) return .{ .prepared = @constCast(&.{}) };
-
     var permission_targets = permissions.permissionTargetsForCallInScope(
         alloc,
         access_scope orelse workspace_access.AccessScope.primaryOnly(workspace_root),

@@ -17,10 +17,6 @@
       "job": "diagnostics",
       "stability": "internal"
     },
-    "FX_CONFIGURED_PROVIDERS": {
-      "job": "setting-override",
-      "stability": "internal"
-    },
     "FX_DEBUG_RECORD": {
       "job": "diagnostics",
       "stability": "stable"
@@ -32,14 +28,6 @@
     "FX_DISABLE_KEYCHAIN": {
       "job": "credentials",
       "stability": "stable"
-    },
-    "FX_EFFORT": {
-      "job": "setting-override",
-      "stability": "internal"
-    },
-    "FX_FAST": {
-      "job": "setting-override",
-      "stability": "internal"
     },
     "FX_GATEWAY_BASE_URL": {
       "job": "internal",
@@ -301,6 +289,7 @@
     "TYPESAFE_BASE_URL",
     "USER",
     "USERPROFILE",
+    "VERCEL_OIDC_TOKEN",
     "WAYLAND_DISPLAY",
     "XDG_CONFIG_HOME",
     "ZDOTDIR"
@@ -327,27 +316,22 @@
     "--no-": "Pairs each --x with --no-x at compile time to build the launch usage line from launch_options; no argument is read."
   },
   "run_options": {
-    "_about": "One row per option a run can set, named on every surface: the agent-run flag, the setting, its FX_* variable, the ACP config option, and the libfx option. Names may differ by surface, as ACP's mode does, but each one is written here. check_cli_shape fails when ACP offers a config option or libfx's FxModelOptions declares a field that no row names, or when a row names something that doesn't exist.",
+    "_about": "One row per option a run can set, named on every surface: the agent-run flag, the setting, the FX_* variable when the option has one, and the ACP config option. Names may differ by surface, as ACP's mode does, but each one is written here. check_cli_shape fails when ACP offers a config option that no row names, or when a row names something that doesn't exist.",
     "effort": {
       "flag": "--effort",
       "setting": "effort",
-      "env": "FX_EFFORT",
-      "acp": "effort",
-      "libfx": "model.effort"
+      "acp": "effort"
     },
     "fast": {
       "flag": "--fast",
       "setting": "fast_mode",
-      "env": "FX_FAST",
-      "acp": "fast",
-      "libfx": "model.fast"
+      "acp": "fast"
     },
     "model": {
       "flag": "--model",
       "setting": "models",
       "env": "FX_MODEL",
-      "acp": "model",
-      "libfx": "model.id"
+      "acp": "model"
     },
     "permission_mode": {
       "flag": "--permission-mode",
@@ -359,15 +343,13 @@
       "flag": "--provider",
       "setting": "provider",
       "env": "FX_PROVIDER",
-      "acp": "provider",
-      "libfx": "provider"
+      "acp": "provider"
     },
     "ultrafast": {
       "flag": "--ultrafast",
       "setting": "ultrafast_mode",
       "env": "FX_ULTRAFAST",
-      "acp": "ultrafast",
-      "libfx": "model.ultrafast"
+      "acp": "ultrafast"
     }
   },
   "exceptions": {

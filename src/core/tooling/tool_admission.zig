@@ -44,12 +44,6 @@ const PermissionMode = types.PermissionMode;
 const ToolPermissionDecision = types.ToolPermissionDecision;
 const WorkerRuntime = worker_runtime.WorkerRuntime;
 
-pub const HostSandboxDefault = enum {
-    none,
-    allow_sandboxed,
-    prompt,
-};
-
 pub const SessionPermissionStateProvider = struct {
     context: *anyopaque,
     snapshot_fn: *const fn (
@@ -84,7 +78,6 @@ pub const Input = struct {
     context_limits: context_limits.Values = .{},
     auto_classifier: permission_auto_classifier.Classifier = .disabled(),
     terminal_review_context: ?terminal_managed_observer.Context = null,
-    host_sandbox_default: HostSandboxDefault = .none,
 };
 
 fn registeredTool(input: Input, name: []const u8) ?*const tool_dispatch.Tool {
@@ -346,9 +339,6 @@ fn decodeFileMutationInput(
     const kind: file_mutation_contract.Kind = switch (tool.executor_kind) {
         .write_file => .write,
         .edit_file => .edit,
-        // A host tool may reuse the reserved names; it is not the builtin
-        // mutation, so the contract steps aside instead of failing the call.
-        .host => return .not_file_mutation,
         else => return .{ .failure = try arena.dupe(
             u8,
             "unsupported file mutation tool",
@@ -1314,14 +1304,7 @@ fn requestPermissionOutcomeResolved(
     permission_mode: PermissionMode,
     local_grants: []const PermissionGrant,
 ) !command_admission.PermissionOutcome {
-    if (file_mutation_contract.isToolName(call.name) and
-        // A host tool that reuses a reserved name executes through the host
-        // executor, not the builtin file mutation, so it follows the ordinary
-        // registered-tool permission path. A missing registry entry keeps the
-        // contract's own failure handling.
-        (input.tool_registry.lookup(call.name) == null or
-            input.tool_registry.lookup(call.name).?.executor_kind != .host))
-    {
+    if (file_mutation_contract.isToolName(call.name)) {
         return requestFileMutationPermissionOutcome(
             input,
             arena,
@@ -1460,15 +1443,6 @@ fn requestPermissionOutcomeResolved(
                 grant_epoch,
             ),
             vision_path_authority,
-        );
-    }
-    if (input.host_sandbox_default == .allow_sandboxed and
-        try isRunCommandCall(input, arena, call))
-    {
-        return shellPermissionOutcome(
-            try runCommandContext(input, arena, call),
-            .once,
-            .js_host,
         );
     }
     const resolution = try resolveOrdinaryPermissionOutcome(
@@ -2576,14 +2550,6 @@ fn permissionTargetsForCall(input: Input, arena: Allocator, call: ToolCall) !per
         };
         return .{ .items = items };
     }
-    // A host tool that reuses a reserved file-mutation name has no typed
-    // mutation target; its permission target is its own name.
-    if (tool.executor_kind == .host) {
-        const items = try arena.alloc(permissions.PermissionCallTarget, 1);
-        errdefer arena.free(items);
-        items[0] = .{ .role = "target", .path = try arena.dupe(u8, call.name) };
-        return .{ .items = items };
-    }
     var permission_call = call;
     if (std.mem.eql(u8, permission_call.name, "shell")) {
         permission_call.name = "shell";
@@ -2626,9 +2592,6 @@ pub fn permissionTargetForCall(input: Input, arena: Allocator, call: ToolCall) !
     if (try isRunCommandCall(input, arena, call)) {
         return commandPermissionTarget(input, arena, call);
     }
-    // A host tool that reuses a reserved file-mutation name has no typed
-    // mutation target; its permission target is its own name.
-    if (tool.executor_kind == .host) return arena.dupe(u8, call.name);
     return permissions.permissionTargetForCallInScope(
         arena,
         accessScope(input),
@@ -3694,75 +3657,6 @@ test "file mutation decode accepts a registered tool under any name" {
         .not_file_mutation => return error.TestExpectedDecodedInput,
         .failure => return error.TestExpectedDecodedInput,
     }
-}
-
-test "file mutation decode steps aside for a host tool reusing a reserved name" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-
-    const HostRaw = struct {
-        json: []u8,
-    };
-    const Hooks = struct {
-        fn deinit(raw: *anyopaque, alloc: Allocator) void {
-            const input: *HostRaw = @ptrCast(@alignCast(raw));
-            alloc.free(input.json);
-            alloc.destroy(input);
-        }
-        fn decode(
-            ctx: tool_dispatch.DispatchContext,
-            arguments_json: []const u8,
-        ) tool_dispatch.DispatchError!tool_dispatch.DecodeResult {
-            const input = try ctx.allocator.create(HostRaw);
-            errdefer ctx.allocator.destroy(input);
-            input.* = .{ .json = try ctx.allocator.dupe(u8, arguments_json) };
-            return .{ .input = .{ .ptr = input, .deinit_fn = deinit } };
-        }
-        fn call(
-            _: tool_dispatch.DispatchContext,
-            _: tool_dispatch.ToolInput,
-        ) tool_dispatch.DispatchError!tool_dispatch.ToolResult {
-            return error.InvalidToolArguments;
-        }
-        fn readsOnly(_: tool_dispatch.ToolInput) bool {
-            return false;
-        }
-        fn irreversible(_: tool_dispatch.ToolInput) bool {
-            return false;
-        }
-    };
-
-    // A host tool registered under the reserved name must not enter the
-    // builtin mutation contract at all.
-    const host_tool = tool_dispatch.Tool{
-        .name = "write_file",
-        .description = "",
-        .model_schema = .{ .name = "write_file", .description = "" },
-        .model_visible = false,
-        .executor_kind = .host,
-        .activity_kind = .command,
-        .action_label = "Running",
-        .completed_action_label = "Ran",
-        .decode = Hooks.decode,
-        .call = Hooks.call,
-        .reads_only_fn = Hooks.readsOnly,
-        .irreversible_fn = Hooks.irreversible,
-    };
-    const tools = [_]tool_dispatch.Tool{host_tool};
-    const decoded = try decodeFileMutationInput(arena, .{ .tools = tools[0..] }, .{
-        .id = "host-write",
-        .name = "write_file",
-        .arguments_json = "{\"path\":\"note.txt\",\"content\":\"hi\"}",
-    });
-    try std.testing.expect(decoded == .not_file_mutation);
-
-    const prepared = try prepareFileMutationCall(arena, .{
-        .id = "host-write",
-        .name = "write_file",
-        .arguments_json = "{\"path\":\"note.txt\",\"content\":\"hi\"}",
-    }, .{ .tool_registry = .{ .tools = tools[0..] }, .workspace_root = "/tmp" });
-    try std.testing.expect(prepared == .not_file_mutation);
 }
 
 test "file mutation decode rejects a registered tool that is not a mutation" {
@@ -5959,90 +5853,6 @@ test "prepared session deny blocks local file mutation without setup effects" {
         error.FileNotFound,
         tmp.dir.openFile(io_mod.getIo(), "workspace/blocked.txt", .{}),
     );
-}
-
-test "js host workspace sandbox default is lowest priority and prompt disables it" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    var worker: WorkerRuntime = .{};
-    defer worker.deinit(std.testing.allocator);
-    var input = testInputWithClassifier(
-        &worker,
-        permission_auto_classifier.Classifier.disabled(),
-    );
-    input.host_sandbox_default = .allow_sandboxed;
-    const call = ToolCall{
-        .id = "browser-command",
-        .name = "shell",
-        .arguments_json = "{\"action\":\"run\",\"command\":\"touch created.txt\"}",
-    };
-
-    const allowed = try requestPermissionOutcome(
-        input,
-        arena_state.allocator(),
-        call,
-        .auto,
-        &.{},
-    );
-    try std.testing.expectEqual(ToolPermissionDecision.once, allowed.decision);
-    try std.testing.expectEqual(
-        command_admission.ShellAuthorizationSource.js_host,
-        allowed.execution_authority.?.run_command.shell_allowed.source,
-    );
-
-    var rules = [_]types.PermissionRule{.{
-        .permission = @constCast("bash"),
-        .pattern = @constCast("touch *"),
-        .action = .deny,
-    }};
-    input.permission_rules = .{ .rules = &rules };
-    const denied = try requestPermissionOutcome(
-        input,
-        arena_state.allocator(),
-        call,
-        .auto,
-        &.{},
-    );
-    try std.testing.expectEqual(ToolPermissionDecision.policy_denied, denied.decision);
-    try std.testing.expect(denied.execution_authority == null);
-
-    rules[0].action = .ask;
-    const asked = try requestPermissionOutcome(
-        input,
-        arena_state.allocator(),
-        call,
-        .auto,
-        &.{},
-    );
-    try std.testing.expectEqual(ToolPermissionDecision.permission_required, asked.decision);
-    try std.testing.expect(asked.execution_authority == null);
-
-    rules[0].action = .allow;
-    const explicitly_allowed = try requestPermissionOutcome(
-        input,
-        arena_state.allocator(),
-        call,
-        .auto,
-        &.{},
-    );
-    try std.testing.expectEqual(ToolPermissionDecision.once, explicitly_allowed.decision);
-    try std.testing.expectEqual(
-        command_admission.ShellAuthorizationSource.configured_rule,
-        explicitly_allowed.execution_authority.?.run_command.shell_allowed.source,
-    );
-
-    input.permission_rules = .{};
-    input.host_sandbox_default = .prompt;
-    const prompted = try requestPermissionOutcome(
-        input,
-        arena_state.allocator(),
-        call,
-        .auto,
-        &.{},
-    );
-    try std.testing.expectEqual(ToolPermissionDecision.deny, prompted.decision);
-    try std.testing.expectEqual(types.ToolPermissionDenialReason.review_unavailable, prompted.denial_reason.?);
-    try std.testing.expect(prompted.execution_authority == null);
 }
 
 test "built-in structured review sends exact arguments without redundant schema" {

@@ -44,7 +44,7 @@ The full rules behind SKILL.md, by mechanism. Each rule says whether the code fo
   | Flag | kebab-case | `--permission-mode` |
   | Env var | `FX_` plus upper snake case | `FX_PERMISSION_MODE` |
   | Slash command | `/` plus the setting or group name | `/permissions` |
-  | libfx and ACP options | The host language's case | `permissionMode` |
+  | ACP options | The host language's case | `permissionMode` |
 
 - Values use the same words everywhere, in storage too. Permission mode is `ask`, `auto`, or `full-access`: fx saves and prints `full-access` and reads `yolo` until 0.0.18. ACP's mode `_meta` keeps `yolo` because ACP clients may read it.
 - Boolean env values accept `1`/`0`, `true`/`false`, `on`/`off`, and `yes`/`no`, trimmed and case-insensitive.
@@ -157,7 +157,7 @@ Each env var has one job and that job's namespace:
 
 - The command specs in `src/builtins/commands.zig` drive help, parsing, and `fx completion`: each command's `OptionDoc` list is what `cli_flags.Parser` reads, and `src/core/cli/completion.zig` builds the bash, zsh, and fish scripts from the same lists. A command's words, such as `config set` or `login vercel`, go in its spec's `subcommands`, which help prints under "Commands:"; a `<key>` right after the word makes completion offer setting keys, and `settable_key` narrows them to the ones `fx config set` changes. A word offers only its own `options` and `--help`, never its parent's, so declare the flags it takes on it. A flag with fixed values writes them in its placeholder (`--period <today|7d|month>`) or lists them in `values` (`--permission-mode <mode>`). Never list a subcommand as an `OptionDoc`, and never add completion data anywhere else. The fx.sh tables stay hand-written.
 - The settings list, `src/core/config/settings_keys.zig`, holds each key's placement, kind, values, and description, and `fx completion <shell>` and `fx config schema` read it. The fx.sh tables stay hand-written.
-- Each option a run can set, such as the model or Fast mode, has one row in `run_options` in `scripts/cli_shape_registry.json` naming its agent-run flag, setting, `FX_*` variable, ACP config option, and libfx option. Names may differ by surface, as ACP's `mode` does for `--permission-mode`, but each is written there. The shape check fails when ACP offers or accepts a config option or libfx's `FxModelOptions` declares a field that no row names, or when a row names something that doesn't exist. Add the row in the same change as the option.
+- Each option a run can set, such as the model or Fast mode, has one row in `run_options` in `scripts/cli_shape_registry.json` naming its agent-run flag, setting, `FX_*` variable, and ACP config option. Names may differ by surface, as ACP's `mode` does for `--permission-mode`, but each is written there. The shape check fails when ACP offers or accepts a config option that no row names, or when a row names something that doesn't exist. Add the row in the same change as the option.
 - The global launch flags live once in `launch_options`, starting with `launch_wide_options`; `fx --help` documents them in `top_level_flags`, and a test checks the two match both ways.
 - CI fails when code reads an `FX_*` env var, compares a flag by hand, or parses a setting that the registries don't list.
 - A new top-level command, a new stable env var, or a new project-safe setting needs a maintainer's explicit approval in the PR.

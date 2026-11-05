@@ -44,7 +44,7 @@ Every column except the last two comes from the current code. Rows 1 and 2 add t
 ## Constraints
 
 - Zig 0.17, standard library only. The engine imports nothing outside `src/core/shared/`: `std`, `ascii_case.zig` for ASCII case-insensitive search, and `display_width.zig` for UTF-8 decoding, which `AGENTS.md` requires instead of `std.unicode.utf8Decode`. `display_width.zig` imports only `unicode_display_data.zig` outside its tests, so the drivers can build their harness from the real file with `zig build-exe -M`, as `tests/tla/drivers/image_route/lib.ts` does.
-- `src/core/shared/` is the home for basics that `src/core/`, `src/ui/`, and the libfx entry points share.
+- `src/core/shared/` is the home for basics that `src/core/` and `src/ui/` share.
 
 ## Existing code that makes the wrong design look easy
 

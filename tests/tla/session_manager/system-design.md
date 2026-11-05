@@ -52,18 +52,13 @@ All paths are relative to fx at `46408935b`.
   only the interactive app's sessions; `session_store.zig:1168` resolves
   `--resume last` as the newest session in the workspace from any host.
 - `src/core/session/session_log.zig:4060` shows today's atomic publish.
-- `src/core/hosts/runtime_profile.zig::native` and `::wasm` are the capability
-  profiles; wasm sets `js_host_sessions`.
-- `sdk/fx-sdk.js:922` shows the embedder-supplied `sessionStore` with
-  `load`, `commit(id, bytes, expectedRevision)`, `list` and `remove`; it
-  backs `src/core/session/js_host_session_store.zig`.
-- `src/acp/sessions.zig:45` (`handleNewLibfxSession`): the N-API host keeps
-  sessions in memory only.
+- `src/core/hosts/runtime_profile.zig::native` is the capability profile the
+  terminal app runs with.
 - `build.zig.zon` has no dependencies.
 - End-to-end coverage: `tests/e2e/session-recovery.test.ts`,
   `tests/e2e/tui-resume-brutal.test.ts`,
   `tests/e2e/tui-interrupt-recovery.test.ts`, `tests/e2e/acp.test.ts`,
-  `tests/e2e/cli.test.ts`, `sdk/tests/test-term-session-resume.mjs`.
+  `tests/e2e/cli.test.ts`.
 
 ## Current System And Contracts
 
@@ -253,7 +248,7 @@ give identical state (`ResumeSnapshot.tla`).
 ### API (the only boundary fx sees)
 
 The manager is created once per process with
-`init{root, backend: posix or js_host, diagnostics}`. `diagnostics` is an
+`init{root, backend: posix, diagnostics}`. `diagnostics` is an
 optional callback (D14). It receives a typed event, with a kind, a session id
 and numbers such as the bytes cut or the seq, for every repair or drop:
 - a torn or bad-checksum final line cut;
@@ -1818,8 +1813,7 @@ cached prompt prefix):
 - **Diagnostics:** every repair in the crash matrix emits exactly one
   diagnostics event.
 - **Real path:** `./zig-out/bin/fx` exercised interactively, through
-  `fx ask` and through ACP; the fx E2E session suite and
-  `sdk/tests/test-term-session-resume.mjs`.
+  `fx ask` and through ACP; the fx E2E session suite.
 - **Regression:** the E2E suite; the startup benchmark unchanged.
 
 ## Implementation Freedom

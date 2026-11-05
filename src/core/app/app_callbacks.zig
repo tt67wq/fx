@@ -2374,7 +2374,9 @@ test "agent deps use request-time model capability resolution when available" {
 
 test "cooperative speed capability resolution uses active request settings and honors cancellation" {
     const App = struct {
-        pub const host_profile = runtime_profile.wasm;
+        pub const host_profile = struct {
+            pub const cooperative_agent = true;
+        };
         main_agent: struct {
             worker: worker_runtime.WorkerRuntime = .{},
         } = .{},

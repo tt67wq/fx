@@ -12,7 +12,6 @@ const io_mod = @import("../core/shared/io.zig");
 const select_watch = @import("../core/shared/select_watch.zig");
 const mem_utils = @import("../core/shared/mem_utils.zig");
 const types = @import("../core/shared/types.zig");
-const atomic_value = @import("../core/mcp/atomic_value.zig");
 const json_comparison = @import("../core/shared/json_comparison.zig");
 const sse = @import("sse.zig");
 const json_depth = @import("json_depth.zig");
@@ -984,7 +983,7 @@ const ConnectedRequestWatch = struct {
     /// the consume loop, read by the watcher thread. wasm32-safe via the
     /// project's portable atomic wrapper (wide atomics do not exist there);
     /// millisecond precision is ample for second-scale stall thresholds.
-    last_progress_ms: atomic_value.Value(i64) = .init(0),
+    last_progress_ms: std.atomic.Value(i64) = .init(0),
     timing: ResponseHeadTiming,
 
     fn init(timing: ResponseHeadTiming) ConnectedRequestWatch {

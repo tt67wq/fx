@@ -4,13 +4,13 @@ Line numbers refer to `origin/main` at `b0a90fd3a` unless a line says "this chan
 
 ## The report
 
-A libfx user building an AI SDK harness adapter reported that an image in a tool result never reaches the agent unless they pass a custom `model`. The default model, `spacexai/grok-4.7`, is listed in fx's model catalog with `vision` but without `file-input`, and fx requires both. The report held on libfx 0.0.13 and again on 0.0.14. The reproduction is the AI SDK example `examples/ai-functions/src/harness-agent/fx/with-to-model-output.ts`, lines 53–54, which set the model. Removing them makes the image disappear.
+A user building an SDK harness adapter reported that an image in a tool result never reaches the agent unless they pass a custom `model`. The default model, `spacexai/grok-4.7`, is listed in fx's model catalog with `vision` but without `file-input`, and fx requires both. The reproduction set the model in a harness adapter, and removing it makes the image disappear.
 
 Both catalogs fx reads were fetched on 2026-10-19:
 
 | Catalog | Used by | Models | `spacexai/grok-4.7` tags |
 | --- | --- | --- | --- |
-| `https://ai-gateway.vercel.sh/coding-agent/v1/models` | capability lookups (`src/builtins/gateway.zig:46`, the E2E fake at `tests/e2e/gateway-stream-lifecycle.test.ts:1305`), libfx `listModels` (`sdk/fx-sdk.js:611`) | 263 | `reasoning`, `tool-use`, `implicit-caching`, `vision`, `structured-output` |
+| `https://ai-gateway.vercel.sh/coding-agent/v1/models` | capability lookups (`src/builtins/gateway.zig:46`, the E2E fake at `tests/e2e/gateway-stream-lifecycle.test.ts:1305`) | 263 | `reasoning`, `tool-use`, `implicit-caching`, `vision`, `structured-output` |
 | `https://ai-gateway.vercel.sh/v1/models` | the public catalog, and the fallback models path when no web-search path is set (`src/core/app/app_agent_runtime.zig:250`) | 478 | the same |
 
 In `/v1/models`, 73 models list `vision` without `file-input`, including the default and `spacexai/grok-4.6`. None lists `file-input` without `vision`.
@@ -22,7 +22,7 @@ The AI Gateway documents the two tags as separate capabilities. Vision covers im
 | Entry point | Path to the decision |
 | --- | --- |
 | `fx`, `fx ask` | `processQueuedPromptLoop` (`src/core/agent/runtime/orchestrator.zig:6915`) builds every model request of a turn |
-| libfx `createFxEngine` (native and WebAssembly) | The ACP server in the Zig core, then the same loop. A host tool returns `{ type: "libfx.tool-result", text, images }` (`sdk/tests/test-agent-images.mjs:1266`), which becomes `tool_result_memory.tool_images` |
+| An ACP host | The ACP server in the Zig core, then the same loop. A host tool result carries images, which become `tool_result_memory.tool_images` |
 | `read_file` on an image | The same loop, with the image in `tool_result_memory` (`tests/e2e/file-tool-paths.test.ts:349-440`) |
 
 The default model is `spacexai/grok-4.7` (`src/builtins/gateway.zig:43`).
@@ -71,14 +71,14 @@ The default model is `spacexai/grok-4.7` (`src/builtins/gateway.zig:43`).
 - Zig 0.17, standard library only. The core imports nothing but `std`.
 - The decision runs once per model request, never at startup. The startup budget is 2 ms per CLI path (`AGENTS.md`, Benchmarks).
 - Permission handling is unchanged. Images from permission-denied results never leave the process (`vercel_protocol.zig:691-704`).
-- libfx has two surfaces, native and WebAssembly, that share this Zig code. Both must pass `sdk/tests/test-agent-images.mjs`.
+- The CLI, the TUI, and ACP share this Zig code, so all of them must pass the image route.
 - The model never changes within a turn: `gateway_model` is always `job.model` (`orchestrator.zig:7273`, `:7300`).
 
 ## Existing code that makes the wrong design look easy
 
 1. The wire part is named `file` (`vercel_protocol.zig:708`), so the `file-input` tag reads like a requirement for sending it. It isn't. The tag means documents.
 2. Three providers that have no `file-input` tag set `has_file_input = vision` to satisfy the rule: configured Chat Completions providers (`src/gateway/chat_completions.zig:235`), Codex (`src/gateway/openai_codex_models.zig:286`), and Grok subscriptions (`src/gateway/xai_grok_models.zig:364`). That kept the bug invisible everywhere except the gateway catalog. The Codex and Grok subscription providers have since been removed from fx; the Chat Completions provider still carries the stand-in.
-3. Every image test fixture pairs `vision` with `file-input`: `sdk/tests/test-agent-images.mjs:34`, `tests/e2e/file-tool-paths.test.ts:365`, `tests/e2e/vision-route-fake-gateway.test.ts:227-232`, and about 40 more (`git grep -n file-input -- tests sdk`). No test ran a vision-only catalog entry, though 73 live models are vision-only.
+3. Every image test fixture pairs `vision` with `file-input`: `tests/e2e/file-tool-paths.test.ts:365`, `tests/e2e/vision-route-fake-gateway.test.ts:227-232`, and about 40 more (`git grep -n file-input -- tests`). No test ran a vision-only catalog entry, though 73 live models are vision-only.
 4. `processQueuedPrompt routes images natively only when vision and file input are both supported` (`src/core/agent/runtime/tests/gateway_flow.zig:2508-2537`) set `image_input_support` by hand from its expectation. It stated the rule without testing where it comes from.
 5. The rule predates `ImageInputSupport`. Commit `77e62a3ac` (2026-08-30, "Hide Vision from native image models") carried `supports_vision and supports_file_input` over from the initial commit (`git show 77e62a3ac^:src/core/agent/runtime/orchestrator.zig`, lines 3462 and 3505).
 6. The tool-image re-resolve sits after the route is chosen (`orchestrator.zig:7372` against `:7485`), the easiest place to add it. When it changes support, one request takes its route and vision tool mode from the old value and its tool images from the new one.
@@ -93,6 +93,6 @@ The only fakes are effect handlers at the edge of a shell:
 | Recording `send`, `fail`, and `notify` | `tests/tla/drivers/image_route/harness.zig` | Sending the request, failing the turn, and printing the notice. The harness prints the effects instead of running them |
 | A crash | `Harness.crash` in `tests/tla/drivers/image_route/lib.ts` | A process dying. The driver kills the harness process with `SIGKILL` and starts a new one |
 | The fake gateway | `startFakeGateway` (`tests/e2e/tmux-helpers.ts`) in `tests/e2e/file-tool-paths.test.ts` | The catalog and the model, for the built `fx` binary |
-| `mockGateway` | `sdk/tests/test-agent-images.mjs:79-101` | The catalog and the model, for libfx |
+| `mockGateway` | `tests/e2e/vision-route-fake-gateway.test.ts` | The catalog and the model |
 
 The drivers call the real `src/core/images/image_route.zig` through the harness. They never reimplement it.

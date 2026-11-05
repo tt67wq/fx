@@ -11,7 +11,7 @@ That decision is one pure function, `image_route.step(state, event)`, in `src/co
 - **One snapshot per request.** Every part of a request's image handling reads the same capability value, even when that value changes mid-turn.
 - **Honest about what it withholds.** An image that does not reach the model always leaves a notice the model can act on. The user hears about it once per turn when the catalog itself is down.
 - **Bounded.** One waiting request, at most two effects per step, and at most one catalog request per turn from the image decision.
-- **Shared by every surface.** The CLI, the TUI, ACP, and both libfx backends run the same core.
+- **Shared by every surface.** The CLI, the TUI, and ACP run the same core.
 
 ## What it refuses to be
 

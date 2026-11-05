@@ -9,7 +9,8 @@ const io_mod = @import("../core/shared/io.zig");
 const debug_trace = @import("../core/shared/debug_trace.zig");
 const jsonrpc = @import("jsonrpc.zig");
 const acp_types = @import("types.zig");
-const journal = @import("../core/agent/runtime/journal.zig");
+/// The most bytes a turn id holds.
+const max_turn_id_bytes = 128;
 
 pub const Config = struct { capture_content: bool = false };
 
@@ -34,7 +35,7 @@ pub const Bridge = struct {
     source_session_id: ?[]const u8 = null,
     work_id: ?[]const u8 = null,
     turn_id: []const u8,
-    turn_id_storage: [@max(journal.max_turn_id_bytes, 32)]u8,
+    turn_id_storage: [@max(max_turn_id_bytes, 32)]u8,
     session_id_storage: [255]u8,
     execution_id: acp_types.MessageIdBuffer,
     config: Config,
@@ -558,7 +559,7 @@ test "libfx hook bridge disables observation for overlong identities in every bu
     var capture: Capture = .{};
     var writer = jsonrpc.Writer.initCallback(&capture, Capture.write);
     var session: [256]u8 = @splat('s');
-    var turn: [journal.max_turn_id_bytes + 1]u8 = @splat('t');
+    var turn: [max_turn_id_bytes + 1]u8 = @splat('t');
     var bridge: Bridge = undefined;
     bridge.init(std.testing.allocator, &writer, &session, "turn", .{});
     try std.testing.expect(!bridge.enabled);
@@ -569,7 +570,7 @@ test "libfx hook bridge disables observation for overlong identities in every bu
     bridge.observer.beginTurn("input", false);
     bridge.observer.endTurn(.completed, null);
     try std.testing.expectEqual(@as(usize, 0), capture.writes);
-    bridge.init(std.testing.allocator, &writer, session[0..255], turn[0..journal.max_turn_id_bytes], .{});
+    bridge.init(std.testing.allocator, &writer, session[0..255], turn[0..max_turn_id_bytes], .{});
     try std.testing.expect(bridge.enabled);
 }
 

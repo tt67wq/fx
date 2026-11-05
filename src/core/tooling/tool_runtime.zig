@@ -78,11 +78,6 @@ const test_builtin_gateway = if (builtin.is_test)
     @import("../../builtins/gateway.zig")
 else
     struct {};
-const test_browser_workspace_tools = if (builtin.is_test)
-    @import("../../builtins/browser_workspace_tools.zig")
-else
-    struct {};
-const js_host_workspace = @import("../hosts/js_host_workspace.zig");
 
 const Allocator = std.mem.Allocator;
 const ToolCall = types.ToolCall;
@@ -174,7 +169,6 @@ pub const Context = struct {
     provider_strict: bool = false,
     first_call_tool_choice: types.ToolChoice = .auto,
     tool_registry: tool_dispatch.Registry = .{},
-    host_tool_provider: ?tool_dispatch.HostToolProvider = null,
     subagent_host: ?*subagent_tool_host.Runtime = null,
     subagent_caller_id: ?[]const u8 = null,
     permission_mode: PermissionMode,
@@ -244,8 +238,6 @@ pub const Context = struct {
     on_web_search_progress: ?tool_dispatch.WebSearchProgressFn = null,
     web_fetch_progress_ctx: ?*anyopaque = null,
     on_web_fetch_progress: ?tool_dispatch.WebFetchProgressFn = null,
-    workspace_executor: ?js_host_workspace.Executor = null,
-    host_sandbox_default: tool_admission.HostSandboxDefault = .none,
     model_capability_resolver: ?model_capabilities.Resolver = null,
     model_override_resolver: ?subagent_tool_host.ModelOverrideResolver = null,
     /// False when running outside an interactive TUI (e.g. ACP). Tools
@@ -284,7 +276,6 @@ pub const Context = struct {
             .context_limits = self.context_limits,
             .auto_classifier = self.admissionAutoClassifier(),
             .terminal_review_context = self.terminalReviewContext(),
-            .host_sandbox_default = self.host_sandbox_default,
         };
         if (self.permission_state_override != null) {
             input.session_permission_state_provider = null;
@@ -622,34 +613,6 @@ test "executed file mutation failures classify as tool failures, not rejections"
         diagnostics.ToolCallOutcome.tool_failed,
         classifyReturnedToolCallOutcome(undeclared_failure),
     );
-}
-
-pub fn executeHostToolCallAuthorized(
-    ctx: Context,
-    request: tool_contracts.ToolExecutionRequest,
-) !ToolExecutionResult {
-    const spec = ctx.tool_registry.lookup(request.call.name) orelse
-        return error.InvalidToolArguments;
-    if (spec.executor_kind != .host) return error.InvalidToolArguments;
-
-    var execution_ctx = ctx;
-    execution_ctx.observer = request.observer orelse ctx.observer;
-    if (request.permission_mode) |permission_mode| {
-        execution_ctx.permission_mode = permission_mode;
-    }
-    execution_ctx.max_tool_result_bytes = request.max_tool_result_bytes;
-    var dispatch_ctx = typedDispatchContextForCall(
-        execution_ctx,
-        request.result_allocator,
-        request.call,
-    );
-    dispatch_ctx.execution_authority = request.authority;
-    const dispatched = try tool_dispatch.dispatchAuthorizedToolCall(
-        dispatch_ctx,
-        execution_ctx.tool_registry,
-        request.call,
-    );
-    return toolExecutionResultFromDispatch(dispatched, .{});
 }
 
 fn rebindMcpAuthorityGeneration(
@@ -1554,7 +1517,6 @@ fn typedDispatchContext(ctx: Context, arena: Allocator) tool_dispatch.DispatchCo
         .on_web_search_progress = ctx.on_web_search_progress,
         .web_fetch_progress_ctx = ctx.web_fetch_progress_ctx,
         .on_web_fetch_progress = ctx.on_web_fetch_progress,
-        .host_tool_provider = ctx.host_tool_provider,
         .mcp_ctx = ctx.mcp_ctx,
         .mcp_call_tool = ctx.mcp_call_tool,
         .mcp_search_tools = ctx.mcp_search_tools,
@@ -1928,20 +1890,6 @@ fn toolRunCommand(
         if (ctx.command_replay_capture) |capture| capture.policy() else null,
     );
 
-    if (comptime builtin.target.os.tag == .wasi or builtin.is_test) {
-        if (ctx.workspace_executor) |executor| {
-            return executeWorkspaceRunCommand(
-                arena,
-                request,
-                command_ctx,
-                authority,
-                executor,
-                timeout.timeout_ms,
-            );
-        }
-    }
-    if (comptime builtin.target.os.tag == .wasi) return error.WorkspaceUnavailable;
-
     try execution_router.validateConfigContext(.{
         .max_command_output_bytes = ctx.max_command_output_bytes,
     }, command_ctx);
@@ -2140,81 +2088,6 @@ fn toolRunCommand(
         .{
             .model_output = result.output,
             .command_result_json = if (result.command_result) |command_result| try command_result.toJson(arena) else null,
-        },
-    );
-}
-
-fn executeWorkspaceRunCommand(
-    arena: Allocator,
-    request: tool_dispatch.RunCommandRequest,
-    command_ctx: command_admission.CommandContext,
-    authority: command_admission.CommandExecutionAuthority,
-    executor: js_host_workspace.Executor,
-    configured_timeout_ms: ?usize,
-) !ToolExecutionResult {
-    if (std.meta.activeTag(request.environment) != .workspace_clean) return error.InvalidWorkspaceInput;
-    var route = try execution_router.prepareAuthorizedRoute(
-        arena,
-        command_ctx,
-        authority,
-    );
-    defer route.deinit(arena);
-
-    const timeout_ms: u32 = @intCast(@min(
-        @max(configured_timeout_ms orelse js_host_workspace.max_timeout_ms, js_host_workspace.min_timeout_ms),
-        js_host_workspace.max_timeout_ms,
-    ));
-    const started_ms = io_mod.milliTimestamp();
-    const result = executor.execute(
-        arena,
-        request.command,
-        request.resolved_cwd,
-        timeout_ms,
-    ) catch |err| {
-        if (err == error.WorkspaceDeadline) {
-            return command_result_mapping.Command.timeoutFailure(
-                arena,
-                request.command,
-                request.resolved_cwd,
-                timeout_ms,
-                started_ms,
-            );
-        }
-        return err;
-    };
-    var replay_transferred = false;
-    if (try command_result_mapping.Command.cancelledFailure(arena, result)) |cancelled| {
-        return finishCommandToolResult(
-            arena,
-            null,
-            false,
-            &replay_transferred,
-            result,
-            cancelled,
-        );
-    }
-    if (try command_result_mapping.Command.nonZeroFailure(arena, result)) |failure| {
-        return finishCommandToolResult(
-            arena,
-            null,
-            false,
-            &replay_transferred,
-            result,
-            failure,
-        );
-    }
-    return finishCommandToolResult(
-        arena,
-        null,
-        false,
-        &replay_transferred,
-        result,
-        .{
-            .model_output = result.output,
-            .command_result_json = if (result.command_result) |command_result|
-                try command_result.toJson(arena)
-            else
-                null,
         },
     );
 }
@@ -2858,9 +2731,6 @@ const TestRuntime = struct {
     web_fetch_artifact_error: ?anyerror = null,
     web_fetch_progress_ctx: ?*anyopaque = null,
     on_web_fetch_progress: ?tool_dispatch.WebFetchProgressFn = null,
-    workspace_executor: ?js_host_workspace.Executor = null,
-    host_sandbox_default: tool_admission.HostSandboxDefault = .none,
-
     fn deinit(self: *TestRuntime, alloc: Allocator) void {
         self.worker.deinit(alloc);
         self.session.deinit(alloc);
@@ -2932,8 +2802,6 @@ const TestRuntime = struct {
             .on_web_search_progress = self.on_web_search_progress,
             .web_fetch_progress_ctx = self.web_fetch_progress_ctx,
             .on_web_fetch_progress = self.on_web_fetch_progress,
-            .workspace_executor = self.workspace_executor,
-            .host_sandbox_default = self.host_sandbox_default,
             .interactive = self.interactive,
         };
     }
@@ -3966,19 +3834,6 @@ test "validateToolCall rejects malformed registered input without claiming unkno
         .name = "dynamic_tool",
         .arguments_json = "{}",
     }));
-}
-
-test "validateToolCall preserves the registered captured command host" {
-    var rt = TestRuntime{ .tool_registry = test_browser_workspace_tools.registry };
-    defer rt.deinit(std.testing.allocator);
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-
-    try std.testing.expect((try validateToolCall(rt.context(), arena_state.allocator(), .{
-        .id = "workspace-terminal",
-        .name = "shell",
-        .arguments_json = "{\"action\":\"run\",\"command\":\"printf ok\"}",
-    })) == .valid);
 }
 
 test "validateToolCall rejects selected MCP arguments through runtime capability" {
@@ -6274,146 +6129,6 @@ test "run_command success exposes structured foreground metadata" {
     try expectCommandResultInt(structured, "stderr_bytes", 0);
     try expectCommandResultBool(structured, "truncated", false);
     try std.testing.expect(std.mem.find(u8, structured, "hello") == null);
-}
-
-fn fakeWorkspaceNonzero(
-    alloc: Allocator,
-    command: []const u8,
-    cwd: []const u8,
-    timeout_ms: u32,
-) js_host_workspace.ExecuteError!command_contract.RunCommandResult {
-    if (timeout_ms != js_host_workspace.max_timeout_ms) return error.InvalidWorkspaceResult;
-    return command_contract.formatCommandResult(alloc, .{
-        .command = command,
-        .cwd = cwd,
-        .status = .{ .exit_code = 7 },
-        .stdout_display = "partial",
-        .stderr_display = "failed",
-        .stdout_bytes = 7,
-        .stderr_bytes = 6,
-        .duration_ms = 12,
-    });
-}
-
-fn fakeWorkspaceTruncated(
-    alloc: Allocator,
-    command: []const u8,
-    cwd: []const u8,
-    _: u32,
-) js_host_workspace.ExecuteError!command_contract.RunCommandResult {
-    var result = try command_contract.formatCommandResult(alloc, .{
-        .command = command,
-        .cwd = cwd,
-        .status = .{ .exit_code = 0 },
-        .stdout_display = "preview",
-        .stderr_display = "",
-        .stdout_bytes = 70_000,
-        .stderr_bytes = 0,
-        .duration_ms = 4,
-    });
-    var metadata = result.command_result.?;
-    metadata.truncated = true;
-    result.command_result = metadata;
-    return result;
-}
-
-fn fakeWorkspaceCancelled(
-    _: Allocator,
-    command: []const u8,
-    cwd: []const u8,
-    _: u32,
-) js_host_workspace.ExecuteError!command_contract.RunCommandResult {
-    return .{
-        .output = "",
-        .cancelled = true,
-        .command_result = .{
-            .command = command,
-            .cwd = cwd,
-            .duration_ms = 3,
-        },
-    };
-}
-
-fn fakeWorkspaceDeadline(
-    _: Allocator,
-    _: []const u8,
-    _: []const u8,
-    timeout_ms: u32,
-) js_host_workspace.ExecuteError!command_contract.RunCommandResult {
-    if (timeout_ms != js_host_workspace.max_timeout_ms) return error.InvalidWorkspaceResult;
-    return error.WorkspaceDeadline;
-}
-
-test "browser run_command uses only the admitted host executor for nonzero and truncated results" {
-    var rt = TestRuntime{
-        .workspace_root = "/virtual/workspace",
-        .tool_registry = test_browser_workspace_tools.registry,
-        .workspace_executor = .{ .execute_fn = fakeWorkspaceNonzero },
-    };
-    defer rt.deinit(std.testing.allocator);
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-
-    const failed = try executeTestRunCommand(rt.context(), arena, .{
-        .id = "browser-failed",
-        .name = "shell",
-        .arguments_json = "{\"action\":\"run\",\"command\":\"exit 7\"}",
-    });
-    try std.testing.expectEqual(tool_contracts.ToolExecutionStatus.failure, failed.status);
-    try expectToolErrorDetailInt(failed.model_output, "exit_code", 7);
-    const failed_json = failed.command_result_json orelse return error.TestExpectedEqual;
-    try expectCommandResultField(failed_json, "cwd", "/virtual/workspace");
-    try expectCommandResultNull(failed_json, "signal");
-    try expectCommandResultNull(failed_json, "output_file");
-
-    rt.workspace_executor = .{ .execute_fn = fakeWorkspaceTruncated };
-    const truncated = try executeTestRunCommand(rt.context(), arena, .{
-        .id = "browser-truncated",
-        .name = "shell",
-        .arguments_json = "{\"action\":\"run\",\"command\":\"generate output\"}",
-    });
-    try std.testing.expectEqual(tool_contracts.ToolExecutionStatus.success, truncated.status);
-    const truncated_json = truncated.command_result_json orelse return error.TestExpectedEqual;
-    try expectCommandResultBool(truncated_json, "truncated", true);
-    try expectCommandResultInt(truncated_json, "stdout_bytes", 70_000);
-    try expectCommandResultNull(truncated_json, "output_file");
-}
-
-test "browser run_command maps host cancellation and deadline without signal or fallback" {
-    var rt = TestRuntime{
-        .workspace_root = "/virtual/workspace",
-        .tool_registry = test_browser_workspace_tools.registry,
-        .workspace_executor = .{ .execute_fn = fakeWorkspaceCancelled },
-    };
-    defer rt.deinit(std.testing.allocator);
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-
-    const cancelled = try executeTestRunCommand(rt.context(), arena, .{
-        .id = "browser-cancelled",
-        .name = "shell",
-        .arguments_json = "{\"action\":\"run\",\"command\":\"long command\"}",
-    });
-    try std.testing.expectEqual(tool_contracts.ToolExecutionStatus.failure, cancelled.status);
-    try std.testing.expect(cancelled.cancelled);
-    const cancelled_json = cancelled.command_result_json orelse return error.TestExpectedEqual;
-    try expectCommandResultNull(cancelled_json, "signal");
-    try expectCommandResultBool(cancelled_json, "timed_out", false);
-
-    rt.workspace_executor = .{ .execute_fn = fakeWorkspaceDeadline };
-    const timed_out = try executeTestRunCommand(rt.context(), arena, .{
-        .id = "browser-timeout",
-        .name = "shell",
-        .arguments_json = "{\"action\":\"run\",\"command\":\"long command\"}",
-    });
-    try std.testing.expectEqual(tool_contracts.ToolExecutionStatus.failure, timed_out.status);
-    try expectContains(timed_out.model_output, "timeout=true\n");
-    try expectContains(timed_out.model_output, "timeout_ms=30000\n");
-    const timeout_json = timed_out.command_result_json orelse return error.TestExpectedEqual;
-    try expectCommandResultBool(timeout_json, "timed_out", true);
-    try expectCommandResultNull(timeout_json, "signal");
 }
 
 test "run_command preserves result when presentation callback fails" {

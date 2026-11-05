@@ -21,7 +21,6 @@ const mem_utils = @import("../../shared/mem_utils.zig");
 const text_utils = @import("../../shared/text_utils.zig");
 const file_mutation_contract = @import("../../tooling/file_mutation_contract.zig");
 const io_mod = @import("../../shared/io.zig");
-const host_target = @import("../../hosts/target.zig");
 const secret = @import("../../auth/secret.zig");
 const auth_transition = @import("../../auth/auth_transition.zig");
 const credentials = @import("../../auth/credentials.zig");
@@ -9785,7 +9784,7 @@ fn processQueuedPromptLoop(
                 .read_only => root_action_permission_mode == .auto or
                     root_action_permission_mode == .yolo,
                 // Each call is reviewed before the group starts.
-                .subagent, .host => true,
+                .subagent => true,
             };
             const parallel_candidate_len = if (parallel_permission_eligible)
                 parallel_group.len
@@ -10180,25 +10179,14 @@ fn processQueuedPromptLoop(
                         .{ .ctx = &completion_publisher, .notify = ParallelSubagentCompletionPublisher.notify }
                     else
                         null;
-                    if (comptime host_target.is_wasm) {
-                        parallel_run = try runtime_parallel_execution.runSequentialCalls(arena, executable_calls.items, .{
-                            .exec_ctx = &parallel_exec_ctx,
-                            .execute = runtime_parallel_execution.parallelHookExecute,
-                            .format_ctx = &parallel_exec_ctx,
-                            .format_error = runtime_parallel_execution.parallelHookFormatError,
-                            .cancel_flag = config.cancel_flag,
-                            .attempt_observer = attempt_observer,
-                        });
-                    } else {
-                        parallel_run = try runtime_parallel_execution.runParallelCalls(arena, executable_calls.items, .{
-                            .exec_ctx = &parallel_exec_ctx,
-                            .execute = runtime_parallel_execution.parallelHookExecute,
-                            .format_ctx = &parallel_exec_ctx,
-                            .format_error = runtime_parallel_execution.parallelHookFormatError,
-                            .cancel_flag = config.cancel_flag,
-                            .attempt_observer = attempt_observer,
-                        });
-                    }
+                    parallel_run = try runtime_parallel_execution.runParallelCalls(arena, executable_calls.items, .{
+                        .exec_ctx = &parallel_exec_ctx,
+                        .execute = runtime_parallel_execution.parallelHookExecute,
+                        .format_ctx = &parallel_exec_ctx,
+                        .format_error = runtime_parallel_execution.parallelHookFormatError,
+                        .cancel_flag = config.cancel_flag,
+                        .attempt_observer = attempt_observer,
+                    });
                 }
                 defer if (parallel_run) |*run| run.deinit(arena);
 
@@ -10783,12 +10771,7 @@ fn processQueuedPromptLoop(
                     },
                 }
             }
-            const is_file_mutation = file_mutation_contract.isToolName(tool_call.name) and
-                // A host tool may reuse a reserved file-mutation name; it owns
-                // its own execution and never enters the builtin contract. A
-                // missing registry entry keeps the contract's own failure path.
-                (deps.tool_registry.lookup(tool_call.name) == null or
-                    deps.tool_registry.lookup(tool_call.name).?.executor_kind != .host);
+            const is_file_mutation = file_mutation_contract.isToolName(tool_call.name);
             var prepared_file_mutation: ?tooling_tool_admission.PreparedFileMutationCall = null;
             defer if (prepared_file_mutation) |*prepared| prepared.deinit(arena);
 

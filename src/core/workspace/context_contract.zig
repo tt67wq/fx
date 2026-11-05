@@ -334,15 +334,8 @@ pub const StaticContextInput = struct {
     project_context: []const u8,
 };
 
-pub const HostWorkspaceContext = struct {
-    root: []const u8,
-    cwd: []const u8,
-    home: []const u8,
-};
-
 pub const TransientContextInput = struct {
     workspace_root: []const u8,
-    host_workspace: ?HostWorkspaceContext = null,
     access_scope: ?workspace_access.AccessScope = null,
     interactive: bool,
     permission_mode: types.PermissionMode,
