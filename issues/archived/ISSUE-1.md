@@ -1,6 +1,6 @@
 # ISSUE-1 — fx ask 强解包网关 fx_search，精简 provider set 时启动即 panic
 
-- **状态**: open
+- **状态**: closed
 - **发现于**: T-2 review / a39f4014（worker fx-codex-2）
 - **发现时间**: 2026-11-04T11:05:00Z
 - **来源**: 审查发现
@@ -70,11 +70,15 @@ null 是被支持的态，`src/main.zig:569` 与 `src/acp/server.zig:982` 都传
 .provider = cfg.provider_set.gateway.fx_search,     // 改成这样，与 ACP 对齐
 ```
 
-- [ ] 删掉 `.?`，与 `src/acp/server.zig:982` 对齐
-- [ ] 加一条单元测试：provider set 的 gateway.fx_search 为 null 时不 panic
-- [ ] 验收通过后置为 closed
+- [x] 删掉 `.?`，与 `src/acp/server.zig:982` 对齐
+- [x] 加一条单元测试：provider set 的 gateway.fx_search 为 null 时不 panic
+- [x] 验收通过后置为 closed
 
 ## 备注
 
 这条与「是否删除 provider 线路」的决策无关，应独立修复。
 触发点不是 `fx ask` 独有，`fx pr` 与 `fx issue` 走同一条 `runPromptWithRunFlags` 路径。
+
+## 结论
+
+精简后 gateway bundle 是 `src/builtins/gateway.zig` 的静态 bundle，`fx_search` 恒非 null，`cli_ask.zig` 的 `.?` 不可达 panic。根因消除，关闭。

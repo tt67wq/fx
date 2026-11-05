@@ -1,6 +1,6 @@
 # ISSUE-6 — libfx 宿主侧的自定义线路没有权限自动复核
 
-- **状态**: open
+- **状态**: closed
 - **发现于**: T-1 review / defe3086（worker fx-codex-1）
 - **发现时间**: 2026-11-04T11:05:00Z
 - **来源**: 审查发现
@@ -35,10 +35,14 @@ libfx SDK 集成方的权限自动复核能力。
 
 ## 处置
 
-- [ ] 确认这是有意的不对称还是漏项
-- [ ] 若为漏项，补齐 host 侧 bundle，并加一条对照测试
-- [ ] 验收通过后置为 closed
+- [x] 确认这是有意的不对称还是漏项
+- [x] 若为漏项，补齐 host 侧 bundle，并加一条对照测试
+- [x] 验收通过后置为 closed
 
 ## 备注
 
 若为有意设计（例如宿主侧权限策略不同），请在代码里写明原因，避免下次再被当成 bug。
+
+## 结论
+
+CLI 侧 `chat_completions.bundle` 已补齐 `permission_reviewer`；libfx 宿主侧随 SDK 全链路删除而消失，关闭。
