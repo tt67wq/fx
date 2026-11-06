@@ -796,4 +796,56 @@ describe("configured providers", () => {
       expect(f.requests).toHaveLength(0);
     } finally { f.close(); }
   }, 25000);
+
+  test("declared reasoning efforts ride the request as reasoning_effort", async () => {
+    const f = fixture();
+    try {
+      (f.settings.providers as any).local.model_metadata["local-model"].reasoning_efforts = ["low", "high"];
+      f.save();
+      const result = await runFx(["ask", "--json", "--no-save", "--effort", "high", "hello"], { cwd: f.workspace, env: f.env, timeoutMs: 20000 });
+      if (result.code !== 0) throw new Error(result.stdout + result.stderr);
+      expect(f.requests).toHaveLength(1);
+      expect(f.requests[0].body.reasoning_effort).toBe("high");
+    } finally { f.close(); }
+  }, 25000);
+
+  test("declared fast mode on a custom connection keeps requests at standard speed", async () => {
+    const f = fixture();
+    try {
+      (f.settings.providers as any).local.model_metadata["local-model"].supports_fast_mode = true;
+      f.save();
+      const result = await runFx(["ask", "--json", "--no-save", "--fast", "hello"], { cwd: f.workspace, env: f.env, timeoutMs: 20000 });
+      if (result.code !== 0) throw new Error(result.stdout + result.stderr);
+      expect(f.requests).toHaveLength(1);
+      // Fast is a gateway service tier; a chat-completions connection has no
+      // wire form for it, so the request must not carry a tier field.
+      expect(f.requests[0].body.service_tier).toBeUndefined();
+    } finally { f.close(); }
+  }, 25000);
+
+  test("doctor warns once per model without a declared context window", async () => {
+    const f = fixture();
+    try {
+      delete (f.settings.providers as any).local.model_metadata["local-model"].context_window;
+      f.save();
+      const warned = await runFx(["doctor", "--json"], { cwd: f.workspace, env: f.env });
+      if (warned.code !== 0) throw new Error(warned.stdout + warned.stderr);
+      const checks = JSON.parse(warned.stdout).checks as Array<{ name: string; status: string; detail: string }>;
+      const models = checks.filter(check => check.name === "models");
+      expect(models).toHaveLength(1);
+      expect(models[0].status).toBe("warn");
+      expect(models[0].detail).toContain('"local-model"');
+      expect(models[0].detail).toContain('"local"');
+      expect(models[0].detail).toContain("context_window");
+      // The connection that declares a window stays quiet.
+      expect(models.some(check => check.detail.includes("remote-model"))).toBe(false);
+
+      (f.settings.providers as any).local.model_metadata["local-model"].context_window = 262144;
+      f.save();
+      const clean = await runFx(["doctor", "--json"], { cwd: f.workspace, env: f.env });
+      if (clean.code !== 0) throw new Error(clean.stdout + clean.stderr);
+      const cleanChecks = JSON.parse(clean.stdout).checks as Array<{ name: string }>;
+      expect(cleanChecks.some(check => check.name === "models")).toBe(false);
+    } finally { f.close(); }
+  }, 25000);
 });

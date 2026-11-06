@@ -1258,6 +1258,10 @@ pub fn Runtime(comptime App: type) type {
             const capabilities = deps.available_model_capabilities(deps.ctx, job.model);
             const settings = agent.worker.effectiveAgentTurnSettings();
             var provider_options = model_capabilities.resolveProviderOptionsForCapabilities(capabilities, settings.effort, settings.fast_mode);
+            // Fast is a gateway service tier; configured protocols have no
+            // wire form for it, so keep standard speed instead of failing
+            // the summary request at the adapter.
+            if (job.provider != .gateway) provider_options.fast = false;
             provider_options.prompt_caching = provider_capabilities.gateway_prompt_caching;
             if (job.provider == .gateway) {
                 provider_options.provider_order = settings.provider_order;

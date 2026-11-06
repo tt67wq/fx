@@ -3,9 +3,36 @@ const agents = @import("../agents/agents.zig");
 const session_codec = @import("../session/session_codec.zig");
 const builtin = @import("builtin");
 const model_provider = @import("../config/model_provider.zig");
+const configured_provider = @import("../config/configured_provider.zig");
 const http_pool = @import("../shared/http_pool.zig");
 
 const Allocator = std.mem.Allocator;
+
+/// One-line startup warning when the active model on a configured connection
+/// cannot reach the automatic compaction threshold because nothing declares
+/// its context window. Covers both a declared model missing `context_window`
+/// and a model with no `model_metadata` entry at all. Caller owns the
+/// returned text; null for the gateway provider, an unresolvable connection,
+/// or a declared window.
+pub fn missingContextWindowNotice(
+    alloc: Allocator,
+    provider_id: model_provider.ProviderId,
+    definitions: configured_provider.Registry,
+    model_id: []const u8,
+) ?[]u8 {
+    if (provider_id != .configured) return null;
+    const definition = definitions.get(provider_id.label()) orelse return null;
+    const metadata = definition.model(model_id) orelse
+        return alloc.print(
+            "model \"{s}\" on connection \"{s}\" has no model_metadata entry; fx assumes no capabilities, and automatic compaction stays off until the server rejects an oversized request. Declare the model under model_metadata to describe it",
+            .{ model_id, provider_id.label() },
+        ) catch null;
+    if (metadata.context_window != null) return null;
+    return alloc.print(
+        "model \"{s}\" on connection \"{s}\" declares no context_window; automatic compaction stays off until the server rejects an oversized request. Set model_metadata \"{s}\" context_window to enable it",
+        .{ model_id, provider_id.label(), model_id },
+    ) catch null;
+}
 
 pub const Runtime = struct {
     const Self = @This();
@@ -13,7 +40,7 @@ pub const Runtime = struct {
     alloc: Allocator,
     active_provider: model_provider.ProviderId = .gateway,
     model: std.ArrayList(u8) = .empty,
-    definitions: @import("../config/configured_provider.zig").Registry = .{},
+    definitions: configured_provider.Registry = .{},
     model_requests_blocked: bool = false,
     /// Process-long pooled HTTP client for gateway chat traffic. Heap-allocated
     /// so the pointer stays stable when this Runtime is copied by value; null
@@ -215,4 +242,28 @@ test "provider runtime adopts an owned selection without a fallible publication"
     try std.testing.expectEqual(@as(usize, 0), local_model.len);
     try std.testing.expect(runtime.selection().provider.eql(local));
     try std.testing.expectEqualStrings("gpt-model", runtime.selection().model);
+}
+
+test "missing context window notice covers declared and undeclared models" {
+    const alloc = std.testing.allocator;
+    var registry = try configured_provider.Registry.parse_json(alloc,
+        \\{"local":{"protocol":"openai-chat-completions","base_url":"http://localhost:11434/v1","auth":{"type":"none"},"model_metadata":{"windowed":{"context_window":8192},"windowless":{"max_output_tokens":512}}}}
+    );
+    defer registry.deinit(alloc);
+    const local = model_provider.parse("local").?;
+
+    try std.testing.expect(missingContextWindowNotice(alloc, .gateway, registry, "windowless") == null);
+    try std.testing.expect(missingContextWindowNotice(alloc, local, registry, "windowed") == null);
+    try std.testing.expect(missingContextWindowNotice(alloc, model_provider.parse("missing").?, registry, "windowless") == null);
+
+    const declared = missingContextWindowNotice(alloc, local, registry, "windowless").?;
+    defer alloc.free(declared);
+    try std.testing.expect(std.mem.find(u8, declared, "windowless") != null);
+    try std.testing.expect(std.mem.find(u8, declared, "declares no context_window") != null);
+    try std.testing.expect(std.mem.find(u8, declared, "connection \"local\"") != null);
+
+    const undeclared = missingContextWindowNotice(alloc, local, registry, "unknown-model").?;
+    defer alloc.free(undeclared);
+    try std.testing.expect(std.mem.find(u8, undeclared, "unknown-model") != null);
+    try std.testing.expect(std.mem.find(u8, undeclared, "no model_metadata entry") != null);
 }

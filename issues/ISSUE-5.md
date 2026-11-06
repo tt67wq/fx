@@ -44,8 +44,13 @@
 
 ## 处置
 
-- [ ] 给 model_metadata 补 `context_window` 之外的常用维度，或明确写文档说明必须声明
-- [ ] 未声明 context_window 时给出可发现提示，而不是静默不压缩
+- [x] 给 model_metadata 补 `context_window` 之外的常用维度，或明确写文档说明必须声明
+      （2026-11-06 已实现：新增 `supports_fast_mode`、`supports_explicit_caching`、
+      `supports_implicit_caching`、`reasoning_efforts`；reasoning 力度列表非空即隐含
+      支持推理。手册文档更新仍待补。）
+- [x] 未声明 context_window 时给出可发现提示，而不是静默不压缩
+      （2026-11-06 已实现：会话启动时一次性警告（models 域通知），
+      `fx doctor` 新增 models 检查项，文本与 JSON 同一 snapshot。）
 - [ ] 验收通过后置为 closed
 
 ## 备注

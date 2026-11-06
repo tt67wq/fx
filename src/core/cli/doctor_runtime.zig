@@ -5,6 +5,7 @@ const debug_trace = @import("../shared/debug_trace.zig");
 const io_mod = @import("../shared/io.zig");
 const agent_steps = @import("../config/agent_steps.zig");
 const config_runtime = @import("../config/config_runtime.zig");
+const configured_provider = @import("../config/configured_provider.zig");
 const settings_keys = @import("../config/settings_keys.zig");
 const settings_messages = @import("settings_messages.zig");
 const host = @import("../hosts/host.zig");
@@ -131,6 +132,7 @@ pub fn collect(
         .permission_mode = detailed.settings.permission_mode,
         .max_agent_steps = detailed.settings.max_agent_steps,
     }, default_agent_step_limit);
+    try appendModelMetadataChecks(&checks, alloc, detailed.settings.providers);
     try appendStateChecks(&checks, alloc);
     try appendGitCheck(&checks, alloc, snapshot.workspace_root);
     try appendGhCheck(&checks, alloc);
@@ -154,6 +156,27 @@ fn appendConfigDiagnosticChecks(
         try config_runtime.writeDiagnosticMetadata(&detail_writer.writer, diagnostic);
         const detail = try detail_writer.toOwnedSlice();
         try appendCheckOwned(checks, alloc, "config", .warn, detail);
+    }
+}
+
+/// Warns about each configured-provider model without a declared context
+/// window: the automatic compaction threshold stays unset, so a long
+/// conversation compacts only after the server rejects an oversized request.
+fn appendModelMetadataChecks(
+    checks: *std.ArrayList(Check),
+    alloc: Allocator,
+    providers: ?configured_provider.Registry,
+) !void {
+    const registry = providers orelse return;
+    for (registry.definitions) |definition| {
+        for (definition.model_metadata) |metadata| {
+            if (metadata.context_window != null) continue;
+            const detail = try alloc.print(
+                "model \"{s}\" on connection \"{s}\" declares no context_window; automatic compaction stays off until the server rejects an oversized request. Set model_metadata \"{s}\" context_window to enable it",
+                .{ metadata.id, definition.id, metadata.id },
+            );
+            try appendCheckOwned(checks, alloc, "models", .warn, detail);
+        }
     }
 }
 
@@ -760,6 +783,31 @@ test "bounded doctor warnings use existing check stream" {
         checks.items[0].detail,
         "truncated after 64 session directories",
     ) != null);
+}
+
+test "model metadata checks warn once per model without a context window" {
+    const alloc = std.testing.allocator;
+    var registry = try configured_provider.Registry.parse_json(alloc,
+        \\{"local":{"protocol":"openai-chat-completions","base_url":"http://localhost:11434/v1","auth":{"type":"none"},"model_metadata":{"windowed":{"context_window":8192},"windowless":{}}},"other":{"protocol":"openai-chat-completions","base_url":"http://localhost:1234/v1","auth":{"type":"none"},"model_metadata":{"also-windowless":{"max_output_tokens":256}}}}
+    );
+    defer registry.deinit(alloc);
+    var checks: std.ArrayList(Check) = .empty;
+    defer {
+        for (checks.items) |*entry| entry.deinit(alloc);
+        checks.deinit(alloc);
+    }
+
+    try appendModelMetadataChecks(&checks, alloc, registry);
+    try appendModelMetadataChecks(&checks, alloc, null);
+
+    try std.testing.expectEqual(@as(usize, 2), checks.items.len);
+    for (checks.items) |check| {
+        try std.testing.expectEqualStrings("models", check.name);
+        try std.testing.expectEqual(CheckStatus.warn, check.status);
+        try std.testing.expect(std.mem.find(u8, check.detail, "declares no context_window") != null);
+    }
+    try std.testing.expect(std.mem.find(u8, checks.items[0].detail, "\"windowless\" on connection \"local\"") != null);
+    try std.testing.expect(std.mem.find(u8, checks.items[1].detail, "\"also-windowless\" on connection \"other\"") != null);
 }
 
 fn writeDoctorFixtureFile(dir: std.Io.Dir, sub_path: []const u8, text: []const u8) !void {

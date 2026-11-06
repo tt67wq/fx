@@ -282,6 +282,8 @@ pub fn resolveProviderOptionsForCapabilities(
 
 /// Ultrafast is an explicit, catalog-verified OpenAI Gateway opt-in. Unlike Fast,
 /// unsupported or unknown capabilities must not silently downgrade before sending.
+/// Fast itself is a gateway service tier with no wire form on other protocols, so a
+/// non-gateway request keeps standard speed instead of failing at the adapter.
 pub fn resolveUltrafastProviderOptions(
     capabilities: Capabilities,
     provider: model_provider.ProviderId,
@@ -291,6 +293,7 @@ pub fn resolveUltrafastProviderOptions(
     ultrafast_mode: bool,
 ) error{UltrafastUnavailable}!ResolvedProviderOptions {
     var options = resolveProviderOptionsForCapabilities(capabilities, effort, fast_mode);
+    if (provider != .gateway) options.fast = false;
     if (!ultrafast_mode) return options;
     if (provider != .gateway or !std.mem.startsWith(u8, model, "openai/") or !capabilities.supports_ultrafast_mode) {
         return error.UltrafastUnavailable;
@@ -309,6 +312,16 @@ test "Ultrafast requires explicit opt-in and verified OpenAI Gateway capability"
     try std.testing.expectError(error.UltrafastUnavailable, resolveUltrafastProviderOptions(.{}, .gateway, "openai/gpt-6-astra", .auto, false, true));
     try std.testing.expectError(error.UltrafastUnavailable, resolveUltrafastProviderOptions(caps, model_provider.parse("local").?, "openai/gpt-6-astra", .auto, false, true));
     try std.testing.expectError(error.UltrafastUnavailable, resolveUltrafastProviderOptions(caps, .gateway, "anthropic/model", .auto, false, true));
+}
+
+test "non-gateway requests keep standard speed because fast has no wire form there" {
+    const caps = Capabilities{ .supports_fast_mode = true };
+    const local = model_provider.parse("local").?;
+    const options = try resolveUltrafastProviderOptions(caps, local, "local-model", .auto, true, false);
+    try std.testing.expect(!options.fast);
+    try std.testing.expectError(error.UltrafastUnavailable, resolveUltrafastProviderOptions(caps, local, "local-model", .auto, true, true));
+    const gateway = try resolveUltrafastProviderOptions(caps, .gateway, "openai/gpt-6-astra", .auto, true, false);
+    try std.testing.expect(gateway.fast);
 }
 
 test "capabilities infer intrinsic fast identity but not controls from model IDs" {

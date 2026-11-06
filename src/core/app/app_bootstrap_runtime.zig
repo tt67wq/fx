@@ -691,6 +691,16 @@ pub fn Runtime(comptime App: type) type {
                     try app.writeDomainNotice(.{ .topic = "note", .tone = .information, .body = text }, true);
                 }
             }
+            {
+                const definitions = if (comptime @hasField(App, "provider_selection"))
+                    app.provider_selection.definitions
+                else
+                    startup.configured_providers;
+                if (provider_runtime.missingContextWindowNotice(app.alloc, startup.provider, definitions, active_model)) |body| {
+                    defer app.alloc.free(body);
+                    try app.writeDomainNotice(.{ .topic = "models", .tone = .warning, .body = body }, true);
+                }
+            }
             if (comptime @hasField(App, "prompt_history")) {
                 if (prompt_history_unavailable) {
                     try app.writeDomainNotice(.{

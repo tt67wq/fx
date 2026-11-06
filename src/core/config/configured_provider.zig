@@ -1,6 +1,7 @@
 const std = @import("std");
 const testing_allocator = @import("../shared/testing_allocator.zig");
 const text_utils = @import("../shared/text_utils.zig");
+const types = @import("../shared/types.zig");
 const Allocator = std.mem.Allocator;
 
 const max_providers = 32;
@@ -46,6 +47,12 @@ pub const ModelMetadata = struct {
     max_output_tokens: ?u32 = null,
     supports_tool_use: ?bool = null,
     supports_vision: ?bool = null,
+    supports_fast_mode: ?bool = null,
+    supports_explicit_caching: ?bool = null,
+    supports_implicit_caching: ?bool = null,
+    /// Non-empty implies reasoning support; downstream merge derives the
+    /// boolean from the list, so declaring efforts is sufficient.
+    reasoning_efforts: []const types.ReasoningEffort = &.{},
 };
 
 /// Registry owns all slices. Treat definitions as immutable while borrowed by
@@ -98,7 +105,10 @@ pub const Definition = struct {
             .bearer => |env| alloc.free(env),
         }
         if (self.reviewer_model) |id| alloc.free(id);
-        for (self.model_metadata) |metadata| alloc.free(metadata.id);
+        for (self.model_metadata) |metadata| {
+            alloc.free(metadata.id);
+            alloc.free(metadata.reasoning_efforts);
+        }
         alloc.free(self.model_metadata);
     }
 };
@@ -234,29 +244,72 @@ fn parse_metadata(alloc: Allocator, value: std.json.Value) ParseError![]const Mo
     const models = try alloc.alloc(ModelMetadata, value.object.count());
     var initialized: usize = 0;
     errdefer {
-        for (models[0..initialized]) |metadata| alloc.free(metadata.id);
+        for (models[0..initialized]) |metadata| {
+            alloc.free(metadata.id);
+            alloc.free(metadata.reasoning_efforts);
+        }
         alloc.free(models);
     }
     var iterator = value.object.iterator();
     while (iterator.next()) |entry| {
         try validate_model_id(entry.key_ptr.*);
         const metadata = entry.value_ptr.*;
-        try check_fields(metadata, &.{ "context_window", "max_output_tokens", "supports_tool_use", "supports_vision" });
+        try check_fields(metadata, &.{
+            "context_window",
+            "max_output_tokens",
+            "supports_tool_use",
+            "supports_vision",
+            "supports_fast_mode",
+            "supports_explicit_caching",
+            "supports_implicit_caching",
+            "reasoning_efforts",
+        });
         const context = try positive_limit(metadata.object.get("context_window"));
         const output = try positive_limit(metadata.object.get("max_output_tokens"));
         if (context != null and output != null and output.? >= context.?) return error.InvalidModelMetadata;
         const tools = try optional_bool(metadata.object.get("supports_tool_use"));
         const vision = try optional_bool(metadata.object.get("supports_vision"));
+        const fast_mode = try optional_bool(metadata.object.get("supports_fast_mode"));
+        const explicit_caching = try optional_bool(metadata.object.get("supports_explicit_caching"));
+        const implicit_caching = try optional_bool(metadata.object.get("supports_implicit_caching"));
+        const efforts = try parse_efforts(alloc, metadata.object.get("reasoning_efforts"));
+        const id = alloc.dupe(u8, entry.key_ptr.*) catch |err| {
+            alloc.free(efforts);
+            return err;
+        };
         models[initialized] = .{
-            .id = try alloc.dupe(u8, entry.key_ptr.*),
+            .id = id,
             .context_window = context,
             .max_output_tokens = output,
             .supports_tool_use = tools,
             .supports_vision = vision,
+            .supports_fast_mode = fast_mode,
+            .supports_explicit_caching = explicit_caching,
+            .supports_implicit_caching = implicit_caching,
+            .reasoning_efforts = efforts,
         };
         initialized += 1;
     }
     return models;
+}
+
+/// Caller owns the returned slice; registry teardown frees it. Absence
+/// returns an empty slice. Unknown effort names and lists past the option cap
+/// are rejected rather than truncated, so a declared capability is never
+/// silently narrowed.
+fn parse_efforts(alloc: Allocator, value: ?std.json.Value) ParseError![]types.ReasoningEffort {
+    const present = value orelse return &.{};
+    if (present != .array) return error.InvalidModelMetadata;
+    if (present.array.items.len > types.ReasoningEffort.max_options) return error.InvalidModelMetadata;
+    const efforts = try alloc.alloc(types.ReasoningEffort, present.array.items.len);
+    var initialized: usize = 0;
+    errdefer alloc.free(efforts);
+    for (present.array.items) |item| {
+        if (item != .string) return error.InvalidModelMetadata;
+        efforts[initialized] = types.ReasoningEffort.parse(item.string) orelse return error.InvalidModelMetadata;
+        initialized += 1;
+    }
+    return efforts;
 }
 
 fn positive_limit(value: ?std.json.Value) ParseError!?u32 {
@@ -380,7 +433,7 @@ fn hash_part(hash: *std.crypto.hash.sha2.Sha256, part: []const u8) void {
 
 const test_json =
     \\{"local":{"protocol":"openai-chat-completions","base_url":"http://localhost:11434/v1/","auth":{"type":"none"}},
-    \\"router":{"protocol":"openai-chat-completions","base_url":"https://openrouter.ai/api/v1","auth":{"type":"bearer","env":"OPENROUTER_API_KEY"},"tool_choice_mode":"send","reviewer_model":"openai/review","model_metadata":{"openai/gpt-4.1":{"context_window":8192,"max_output_tokens":1024,"supports_tool_use":true,"supports_vision":false},"unknown":{}}}}
+    \\"router":{"protocol":"openai-chat-completions","base_url":"https://openrouter.ai/api/v1","auth":{"type":"bearer","env":"OPENROUTER_API_KEY"},"tool_choice_mode":"send","reviewer_model":"openai/review","model_metadata":{"openai/gpt-4.1":{"context_window":8192,"max_output_tokens":1024,"supports_tool_use":true,"supports_vision":false,"supports_fast_mode":true,"supports_explicit_caching":true,"supports_implicit_caching":false,"reasoning_efforts":["low","high"]},"unknown":{}}}}
 ;
 
 test "configured provider owns definitions and preserves unknown metadata" {
@@ -406,9 +459,18 @@ test "configured provider owns definitions and preserves unknown metadata" {
     try std.testing.expectEqual(@as(?u32, 1024), metadata.max_output_tokens);
     try std.testing.expectEqual(@as(?bool, true), metadata.supports_tool_use);
     try std.testing.expectEqual(@as(?bool, false), metadata.supports_vision);
+    try std.testing.expectEqual(@as(?bool, true), metadata.supports_fast_mode);
+    try std.testing.expectEqual(@as(?bool, true), metadata.supports_explicit_caching);
+    try std.testing.expectEqual(@as(?bool, false), metadata.supports_implicit_caching);
+    try std.testing.expectEqual(@as(usize, 2), metadata.reasoning_efforts.len);
+    try std.testing.expectEqualStrings("low", metadata.reasoning_efforts[0].label());
+    try std.testing.expectEqualStrings("high", metadata.reasoning_efforts[1].label());
     const unknown = router.model("unknown").?;
     try std.testing.expect(unknown.context_window == null and unknown.max_output_tokens == null);
     try std.testing.expect(unknown.supports_tool_use == null and unknown.supports_vision == null);
+    try std.testing.expect(unknown.supports_fast_mode == null and unknown.supports_explicit_caching == null);
+    try std.testing.expect(unknown.supports_implicit_caching == null);
+    try std.testing.expect(unknown.reasoning_efforts.len == 0);
     try std.testing.expect(router.model("missing") == null);
     try std.testing.expect(registry.get("Router") == null);
 }
@@ -487,7 +549,7 @@ test "configured provider allocation failures release partial registry and URLs"
 const test_required_fields = "\"protocol\":\"openai-chat-completions\",\"base_url\":\"https://example.com/v1\",\"auth\":{\"type\":\"none\"}";
 
 test "configured provider invalid schemas fail explicitly" {
-    const cases = [_]struct { json: []const u8, err: ParseError }{
+    const cases = [_]struct { json: []const u8, err: ?ParseError }{
         .{ .json = "{", .err = error.InvalidJson },
         .{ .json = "null", .err = error.InvalidObject },
         .{ .json = "[]", .err = error.InvalidObject },
@@ -524,8 +586,26 @@ test "configured provider invalid schemas fail explicitly" {
         .{ .json = "{\"local\":{" ++ test_required_fields ++ ",\"model_metadata\":{\"m\":{\"supports_tool_use\":1}}}}", .err = error.InvalidModelMetadata },
         .{ .json = "{\"local\":{" ++ test_required_fields ++ ",\"model_metadata\":{\"m\":{\"supports_vision\":null}}}}", .err = error.InvalidModelMetadata },
         .{ .json = "{\"local\":{" ++ test_required_fields ++ ",\"model_metadata\":{\"m\":{\"supports_search\":true}}}}", .err = error.UnknownField },
+        .{ .json = "{\"local\":{" ++ test_required_fields ++ ",\"model_metadata\":{\"m\":{\"supports_fast_mode\":1}}}}", .err = error.InvalidModelMetadata },
+        .{ .json = "{\"local\":{" ++ test_required_fields ++ ",\"model_metadata\":{\"m\":{\"supports_explicit_caching\":null}}}}", .err = error.InvalidModelMetadata },
+        .{ .json = "{\"local\":{" ++ test_required_fields ++ ",\"model_metadata\":{\"m\":{\"supports_implicit_caching\":\"yes\"}}}}", .err = error.InvalidModelMetadata },
+        .{ .json = "{\"local\":{" ++ test_required_fields ++ ",\"model_metadata\":{\"m\":{\"reasoning_efforts\":\"low\"}}}}", .err = error.InvalidModelMetadata },
+        .{ .json = "{\"local\":{" ++ test_required_fields ++ ",\"model_metadata\":{\"m\":{\"reasoning_efforts\":[1]}}}}", .err = error.InvalidModelMetadata },
+        .{ .json = "{\"local\":{" ++ test_required_fields ++ ",\"model_metadata\":{\"m\":{\"reasoning_efforts\":[\"contains space\"]}}}}", .err = error.InvalidModelMetadata },
+        .{ .json = "{\"local\":{" ++ test_required_fields ++ ",\"model_metadata\":{\"m\":{\"reasoning_efforts\":[\"this-effort-name-is-deliberately-longer-than-the-supported-wire-boundary-of-sixty-four-bytes\"]}}}}", .err = error.InvalidModelMetadata },
     };
-    for (cases) |case| try std.testing.expectError(case.err, Registry.parse_json(std.testing.allocator, case.json));
+    for (cases) |case| try std.testing.expectError(case.err.?, Registry.parse_json(std.testing.allocator, case.json));
+}
+
+test "configured provider reasoning efforts accept empty and default lists" {
+    const alloc = std.testing.allocator;
+    for ([_][]const u8{
+        "{\"local\":{" ++ test_required_fields ++ ",\"model_metadata\":{\"m\":{\"reasoning_efforts\":[]}}}}",
+        "{\"local\":{" ++ test_required_fields ++ ",\"model_metadata\":{\"m\":{\"reasoning_efforts\":[\"auto\"]}}}}",
+    }) |json| {
+        var registry = try Registry.parse_json(alloc, json);
+        registry.deinit(alloc);
+    }
 }
 
 test "configured provider auth admits only explicit none or a portable environment slot" {

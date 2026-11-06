@@ -220,13 +220,25 @@ pub fn consume(alloc: Allocator, reader: *std.Io.Reader, request: streams.ModelR
     return codec.consume_stream(alloc, reader, request.data(), limits, request.events, request.cancel_flag, progress);
 }
 
-/// The returned entry borrows its strings; fetch_catalog replaces them with owned copies.
+/// The returned entry borrows its strings and effort list; fetch_catalog
+/// replaces them with owned copies.
 fn metadata_entry(metadata: definitions.ModelMetadata) catalog.ModelCatalogEntry {
     const vision = metadata.supports_vision orelse false;
     return .{
         .id = @constCast(metadata.id),
         .model_type = @constCast("language"),
         .has_tool_use = metadata.supports_tool_use orelse false,
+        .has_reasoning = metadata.reasoning_efforts.len > 0,
+        // Borrowed with capacity zero so deinit frees nothing; fetch_catalog
+        // replaces this with an owned copy before the entry leaves this file.
+        .reasoning_efforts = .{
+            .items = @constCast(metadata.reasoning_efforts),
+            .capacity = 0,
+            .pointer_stability = .{},
+        },
+        .supports_fast_mode = metadata.supports_fast_mode orelse false,
+        .has_explicit_caching = metadata.supports_explicit_caching orelse false,
+        .has_implicit_caching = metadata.supports_implicit_caching orelse false,
         // Chat completions sends images as inline base64 content parts, so
         // vision support implies file input through the same path.
         .has_vision = vision,
@@ -252,6 +264,9 @@ fn fetch_catalog(raw: ?*anyopaque, alloc: Allocator, input: catalog.FetchInput) 
         errdefer alloc.free(entry.id);
         entry.model_type = try alloc.dupe(u8, entry.model_type);
         errdefer alloc.free(entry.model_type);
+        entry.reasoning_efforts = .empty;
+        errdefer entry.reasoning_efforts.deinit(alloc);
+        try entry.reasoning_efforts.appendSlice(alloc, metadata.reasoning_efforts);
         try entries.append(alloc, entry);
     }
     return .{ .catalog = entries };
@@ -260,7 +275,7 @@ fn fetch_catalog(raw: ?*anyopaque, alloc: Allocator, input: catalog.FetchInput) 
 test "configured capability lookup matches catalog projection and preserves unknowns" {
     const alloc = std.testing.allocator;
     var registry = try definitions.Registry.parse_json(alloc,
-        \\{"local":{"protocol":"openai-chat-completions","base_url":"http://localhost:1234/v1","auth":{"type":"none"},"model_metadata":{"small":{"context_window":8192,"max_output_tokens":512,"supports_tool_use":true,"supports_vision":true},"large":{"context_window":32768,"max_output_tokens":1024,"supports_tool_use":false},"partial":{"max_output_tokens":128},"unknown":{}}}}
+        \\{"local":{"protocol":"openai-chat-completions","base_url":"http://localhost:1234/v1","auth":{"type":"none"},"model_metadata":{"small":{"context_window":8192,"max_output_tokens":512,"supports_tool_use":true,"supports_vision":true,"supports_fast_mode":true,"supports_explicit_caching":true,"supports_implicit_caching":true,"reasoning_efforts":["low","high"]},"large":{"context_window":32768,"max_output_tokens":1024,"supports_tool_use":false},"partial":{"max_output_tokens":128},"unknown":{}}}}
     );
     defer registry.deinit(alloc);
     const provider = bundle(registry.get("local").?).model_catalog.?;
@@ -281,6 +296,18 @@ test "configured capability lookup matches catalog projection and preserves unkn
     try std.testing.expect(provider.lookupCapabilities("partial").?.context_window == null);
     try std.testing.expect(provider.lookupCapabilities("unknown").?.max_output_tokens == null);
     try std.testing.expectEqualDeep(model_capabilities.Capabilities{}, provider.lookupCapabilities("missing-fast").?);
+    const small = provider.lookupCapabilities("small").?;
+    try std.testing.expect(small.supports_fast_mode);
+    try std.testing.expect(small.supports_explicit_caching);
+    try std.testing.expect(small.supports_implicit_caching);
+    try std.testing.expect(small.supports_reasoning);
+    try std.testing.expectEqual(@as(usize, 2), small.reasoning_efforts.len);
+    try std.testing.expectEqualStrings("low", small.reasoning_efforts.values[0].label());
+    try std.testing.expectEqualStrings("high", small.reasoning_efforts.values[1].label());
+    const large = provider.lookupCapabilities("large").?;
+    try std.testing.expect(!large.supports_fast_mode);
+    try std.testing.expect(!large.supports_reasoning);
+    try std.testing.expectEqual(@as(usize, 0), large.reasoning_efforts.len);
 }
 
 fn fetch_cli_catalog(raw: ?*anyopaque, alloc: Allocator, input: gateway_provider.CliModelCatalogInput) gateway_provider.CliModelCatalogResult {
