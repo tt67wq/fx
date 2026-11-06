@@ -1,6 +1,6 @@
 # ISSUE-5 — 自定义线路的 model_metadata 契约缺口，且未声明窗口就不主动压缩
 
-- **状态**: open
+- **状态**: closed
 - **发现于**: T-1 review / defe3086（worker fx-codex-1）
 - **发现时间**: 2026-11-04T11:05:00Z
 - **来源**: 审查发现
@@ -51,7 +51,7 @@
 - [x] 未声明 context_window 时给出可发现提示，而不是静默不压缩
       （2026-11-06 已实现：会话启动时一次性警告（models 域通知），
       `fx doctor` 新增 models 检查项，文本与 JSON 同一 snapshot。）
-- [ ] 验收通过后置为 closed
+- [x] 验收通过后置为 closed（2026-11-06 验收：build、全量单测、configured-providers e2e 55 pass、doctor 文本与 JSON、TUI 启动一次性警告均通过）
 
 ## 备注
 
