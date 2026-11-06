@@ -62,6 +62,16 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("build_options", build_options.createModule());
     exe.root_module.addImport("fuzz_corpus", fuzz_corpus);
     exe.root_module.addImport("fuzz_seed", fuzz_seed);
+
+    // QuickJS (quickjs-ng) is linked into the binary but never initialized on
+    // any startup path; the codemode sandbox runtime activates it lazily in a
+    // later phase. Compile flags follow the T-5 size-spike measurement.
+    exe.root_module.addIncludePath(b.path("vendor/quickjs"));
+    exe.root_module.addCSourceFiles(.{
+        .root = b.path("vendor/quickjs"),
+        .files = &.{ "dtoa.c", "libregexp.c", "libunicode.c", "quickjs.c" },
+        .flags = &.{ "-DNDEBUG", "-D_GNU_SOURCE" },
+    });
     const session_manager = addSessionManager(b, exe.root_module, target, optimize, null, fuzz_corpora);
     session_manager.sanitize_thread = sanitize_thread;
 
