@@ -725,11 +725,17 @@ fn executeWorkspaceToolCallInner(
     }
 
     var command_backend = RunCommandBackendState{ .runtime = ctx };
+    var codemode_host = CodemodeHostState{
+        .runtime = ctx,
+        .script_call = call,
+        .script_location = "",
+    };
     var dispatch_metadata: DispatchMetadata = .{};
     var dispatch_ctx = typedDispatchContextForCall(ctx, arena, call);
     dispatch_metadata.attach(&dispatch_ctx);
     dispatch_ctx.execution_authority = authority;
     dispatch_ctx.captured_command_host = spec.captured_command_host;
+    dispatch_ctx.codemode_host = &codemode_host;
     dispatch_ctx.run_command_backend = .{
         .ctx = &command_backend,
         .execute_fn = executeRunCommandBackend,
@@ -830,6 +836,11 @@ fn executeRegisteredTool(
     var selected_dynamic_tool_sink = SelectedDynamicToolSinkState{ .allocator = arena };
     var context_notice_sink = ContextNoticeSinkState{ .allocator = arena };
     var command_backend = RunCommandBackendState{ .runtime = ctx };
+    var codemode_host = CodemodeHostState{
+        .runtime = ctx,
+        .script_call = call,
+        .script_location = "",
+    };
     var vision_provider = VisionProviderState{
         .runtime = ctx,
         .authorized_image_catalog = authorized_image_catalog,
@@ -849,6 +860,7 @@ fn executeRegisteredTool(
     var result_commit_token: ?result_commit.Token = null;
     dispatch_ctx.result_commit_sink = &result_commit_token;
     dispatch_ctx.execution_authority = authority;
+    dispatch_ctx.codemode_host = &codemode_host;
     dispatch_ctx.mcp_call_options = .{
         .observer = ctx.observer,
         .call_id = call.id,
@@ -1260,6 +1272,16 @@ const RunCommandBackendState = struct {
     runtime: Context,
     completion: ?ToolExecutionResult = null,
     execution_error: ?anyerror = null,
+};
+
+pub const CodemodeHostState = struct {
+    runtime: Context,
+    script_call: ToolCall,
+    script_location: []const u8,
+
+    pub fn cancelled(self: CodemodeHostState) bool {
+        return self.runtime.worker.worker_cancel_requested.load(.seq_cst);
+    }
 };
 
 fn executeRunCommandBackend(
@@ -2810,6 +2832,26 @@ const TestRuntime = struct {
         };
     }
 };
+
+test "codemode host cancel query reads the worker cancel flag" {
+    var rt = TestRuntime{};
+    defer rt.deinit(std.testing.allocator);
+
+    const host = CodemodeHostState{
+        .runtime = rt.context(),
+        .script_call = .{
+            .id = "codemode-call",
+            .name = "codemode",
+            .arguments_json = "{}",
+        },
+        .script_location = "",
+    };
+    try std.testing.expect(!host.cancelled());
+    try std.testing.expect(rt.cancel_flag == null);
+
+    rt.worker.worker_cancel_requested.store(true, .seq_cst);
+    try std.testing.expect(host.cancelled());
+}
 
 const CancelTestCommandOnOutput = struct {
     flag: *std.atomic.Value(bool),

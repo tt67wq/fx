@@ -35,6 +35,7 @@ const terminal_client_runtime = @import("../terminal/client.zig");
 const terminal_contracts = @import("../terminal/contracts.zig");
 const tool_args = @import("tool_args.zig");
 const result_commit = @import("result_commit.zig");
+const tool_runtime = @import("tool_runtime.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -256,6 +257,7 @@ pub const DispatchContext = struct {
     captured_command_host: command_environment.Host = .native,
     run_command_backend: ?RunCommandBackend = null,
     subagent_provider: ?subagent_tool_provider.Provider = null,
+    codemode_host: ?*tool_runtime.CodemodeHostState = null,
     vision_provider: ?VisionProvider = null,
     ask_question_ctx: ?*anyopaque = null,
     observer: ?*observation.Observer = null,
@@ -1473,6 +1475,7 @@ test "DispatchContext command runner fields default to inactive values" {
     try std.testing.expect(ctx.command_timeout_ms == null);
     try std.testing.expect(ctx.run_command_backend == null);
     try std.testing.expect(ctx.subagent_provider == null);
+    try std.testing.expect(ctx.codemode_host == null);
     try std.testing.expect(ctx.ask_question_ctx == null);
     try std.testing.expect(ctx.ask_question_batch == null);
     try std.testing.expect(!ctx.tool_capabilities.web_search_runtime_ready);
