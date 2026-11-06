@@ -248,6 +248,7 @@ pub const ProvenBindings = struct {
 pub const ReviewOrigin = enum {
     root,
     subagent,
+    codemode,
 };
 
 const ReviewView = enum {
@@ -1454,6 +1455,7 @@ test "prepared mutations serialize exact action without operational packet field
 
 fn selectReviewView(request: ReviewRequest) ReviewView {
     if (request.review_turn.origin == .subagent) return .contextual;
+    if (request.review_turn.origin == .codemode) return .contextual;
     return switch (request.action) {
         .command, .shell_input => .contextual,
         .file_mutation => .normal,
@@ -1515,6 +1517,46 @@ test "review view selection uses only normalized action and origin facts" {
     try std.testing.expectEqual(ReviewView.contextual, selectReviewView(request));
 
     request.review_turn.origin = .root;
+    request.action = .{ .shell_input = .{ .arguments_json = "{}" } };
+    try std.testing.expectEqual(ReviewView.contextual, selectReviewView(request));
+}
+
+test "codemode origin review always uses the contextual view" {
+    var review = try diff_mod.FileReview.init(std.testing.allocator, "before\n", "after\n");
+    defer review.deinit(std.testing.allocator);
+    var request = ReviewRequest{
+        .review_turn = .{
+            .model = "openai/gpt-test",
+            .pending_assistant = .{ .role = .assistant },
+            .target_call_id = "target",
+            .origin = .codemode,
+        },
+        .targets = &.{},
+        .action = .{ .command = .{
+            .command = "rm -rf dist",
+            .resolved_cwd = "/tmp/workspace",
+            .background = false,
+            .target_os = .linux,
+        } },
+    };
+    try std.testing.expectEqual(ReviewView.contextual, selectReviewView(request));
+
+    request.action = .{ .file_mutation = .{
+        .tool_name = "write_file",
+        .display_path = "report.md",
+        .preimage = .absent,
+        .additions = 0,
+        .deletions = 0,
+        .review = review,
+    } };
+    try std.testing.expectEqual(ReviewView.contextual, selectReviewView(request));
+
+    request.action = .{ .tool = .{
+        .tool_name = "web_fetch",
+        .arguments_json = "{}",
+    } };
+    try std.testing.expectEqual(ReviewView.contextual, selectReviewView(request));
+
     request.action = .{ .shell_input = .{ .arguments_json = "{}" } };
     try std.testing.expectEqual(ReviewView.contextual, selectReviewView(request));
 }
