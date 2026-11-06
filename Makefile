@@ -2,6 +2,8 @@
 
 .PHONY: build test fmt fmt-check check e2e evals tla smoke clean
 
+JOBS := $(shell getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu || nproc || echo 4)
+
 build:
 	zig build
 
@@ -31,10 +33,12 @@ e2e:
 evals:
 	cd tests/evals && bun install && bun test
 
-# Model-check one TLA+ folder, e.g. make tla DIR=recovery, or all: make tla
+# Model-check one TLA+ folder, e.g. make tla DIR=recovery, or all in parallel: make tla
 tla:
-	@if [ -z "$(DIR)" ]; then set -e; for d in tests/tla/*/; do \
-		[ -x "$$d/check.sh" ] && (cd "$$d" && ./check.sh) || true; done; exit 0; fi
+	@if [ -z "$(DIR)" ]; then \
+		find tests/tla -mindepth 2 -name check.sh -perm +111 | xargs -P $(JOBS) -I{} sh -c \
+			'dir=$$(dirname {}); echo "==> $$dir"; (cd "$$dir" && ./check.sh) || echo "FAIL $$dir"'; \
+		exit 0; fi
 	cd tests/tla/$(DIR) && ./check.sh
 
 smoke: build
