@@ -453,14 +453,14 @@ pub const resolved_keys = [_][]const u8{
 /// Keys `fx config` shows as the files set them: objects fx checks with its
 /// own rules, model choices, editor hints, and values fx manages itself.
 const files_only_keys = [_][]const u8{
-    "$schema",                   "additional_directories",
-    "context_limits",            "credential_source",
-    "disabledMcpjsonServers",    "enableAllProjectMcpServers",
-    "enabledMcpjsonServers",     "fast_mode_model_bound",
-    "model",                     "models",
-    "permission",                "providers",
-    "skill_symlink_authorities", "workspaces",
-    "yolo_acknowledged",
+    "$schema",                "additional_directories",
+    "context_limits",         "credential_source",
+    "disabledMcpjsonServers", "enableAllProjectMcpServers",
+    "enabledMcpjsonServers",  "fast_mode_model_bound",
+    "experimental",           "model",
+    "models",                 "permission",
+    "providers",              "skill_symlink_authorities",
+    "workspaces",             "yolo_acknowledged",
 };
 
 /// The value a run uses for `key`, read from a state that

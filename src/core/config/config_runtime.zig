@@ -68,6 +68,9 @@ pub const Settings = struct {
     theme: ?[]const u8 = null,
     startup_scrollback: ?bool = null,
     prompt_history_enabled: ?bool = null,
+    /// Whether the experimental codemode tool bridge is on. Profile-only;
+    /// default off. Read with codemodeEnabled.
+    codemode_enabled: ?bool = null,
     effort: ?types.ReasoningEffort = null,
     /// Optional review-model override for automatic permission review. Owned by
     /// this Settings; freed in deinit. Null keeps the provider's default.
@@ -194,6 +197,11 @@ pub fn resolveContextLimits(settings: *const Settings, command_line: []const con
     return values;
 }
 
+/// Whether the experimental codemode tool bridge is enabled. Default off;
+/// only an explicit experimental.codemode true in the profile turns it on.
+pub fn codemodeEnabled(settings: *const Settings) bool {
+    return settings.codemode_enabled orelse false;
+}
 pub const PermissionSourceViews = struct {
     user: types.PermissionRuleSet = .{},
     local: types.PermissionRuleSet = .{},
@@ -1851,6 +1859,13 @@ fn parseProfileOnlyFields(
             settings.prompt_history_enabled = enabled.bool;
         }
     }
+    if (root.object.get("experimental")) |experimental_value| {
+        if (experimental_value != .object) return error.InvalidExperimentalType;
+        if (experimental_value.object.get("codemode")) |codemode| {
+            if (codemode != .bool) return error.InvalidExperimentalCodemodeType;
+            settings.codemode_enabled = codemode.bool;
+        }
+    }
 
     if (root.object.get("effort")) |effort_value| {
         const value = effort_value;
@@ -2062,6 +2077,7 @@ fn mergeSettings(target: *Settings, incoming: *Settings, alloc: Allocator) !void
         incoming.skill_symlink_authorities = null;
     }
     if (incoming.prompt_history_enabled) |value| target.prompt_history_enabled = value;
+    if (incoming.codemode_enabled) |value| target.codemode_enabled = value;
     if (incoming.effort) |value| target.effort = value;
     if (incoming.review_model) |value| {
         if (target.review_model) |old| alloc.free(old);
@@ -2705,6 +2721,38 @@ test "max_agent_steps absence and explicit values resolve distinctly" {
     defer positive.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 50), positive.max_agent_steps.?);
     try std.testing.expectEqual(@as(usize, 50), agent_steps.resolveMaxAgentSteps(positive.max_agent_steps, 25));
+}
+
+test "codemode gate defaults off and turns on only with an explicit profile value" {
+    var absent = try parseSettingsJson(std.testing.allocator, "{}");
+    defer absent.deinit(std.testing.allocator);
+    try std.testing.expect(absent.codemode_enabled == null);
+    try std.testing.expectEqual(false, codemodeEnabled(&absent));
+
+    var off = try parseSettingsJson(std.testing.allocator, "{\"experimental\":{\"codemode\":false}}");
+    defer off.deinit(std.testing.allocator);
+    try std.testing.expectEqual(false, codemodeEnabled(&off));
+
+    var on = try parseSettingsJson(std.testing.allocator, "{\"experimental\":{\"codemode\":true}}");
+    defer on.deinit(std.testing.allocator);
+    try std.testing.expectEqual(true, codemodeEnabled(&on));
+}
+
+test "codemode gate is profile only and type checked" {
+    const alloc = std.testing.allocator;
+    try std.testing.expectError(
+        error.InvalidExperimentalCodemodeType,
+        parseSettingsJson(alloc, "{\"experimental\":{\"codemode\":\"yes\"}}"),
+    );
+    try std.testing.expectError(
+        error.InvalidExperimentalType,
+        parseSettingsJson(alloc, "{\"experimental\":true}"),
+    );
+
+    var project = try parseSettingsJsonForLayer(alloc, "{\"experimental\":{\"codemode\":true}}", .project);
+    defer project.deinit(alloc);
+    try std.testing.expect(project.codemode_enabled == null);
+    try std.testing.expectEqual(false, codemodeEnabled(&project));
 }
 
 test "provider settings keep independent provider models" {

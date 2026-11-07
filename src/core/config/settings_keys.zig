@@ -118,6 +118,7 @@ pub const keys = [_]Key{
     .{ .name = "effort", .where = .profile, .kind = .string_or_null, .description = "Reasoning effort: auto or a name the model supports; null means auto" },
     .{ .name = "enableAllProjectMcpServers", .where = .profile, .kind = .boolean, .workspace_only = true, .description = "Approve every server in this workspace's .mcp.json; manage it with fx mcp approve and reject" },
     .{ .name = "enabledMcpjsonServers", .where = .profile, .kind = .strings, .workspace_only = true, .description = "Project MCP servers approved in this workspace; manage them with fx mcp approve and reject" },
+    .{ .name = "experimental", .where = .profile, .kind = .switches, .children = &.{"codemode"}, .child_descriptions = &.{"Run JavaScript through the codemode tool bridge"}, .description = "Experimental features" },
     .{ .name = "fast_mode", .where = .profile, .kind = .boolean, .description = "Use faster inference when the model supports it" },
     .{ .name = "fast_mode_model_bound", .where = .profile, .kind = .boolean, .description = "Managed by fx alongside fast_mode" },
     .{ .name = "first_call_tool_choice", .where = .profile, .kind = .string, .values = &.{ "auto", "none" }, .description = "Tool choice for the first request of a turn" },
@@ -421,6 +422,34 @@ test "project files ignore profile keys but not project-safe or retired ones" {
     try std.testing.expect(!ignoredInProject("provider_order"));
     try std.testing.expect(!ignoredInProject("maxxing_mode"));
     try std.testing.expect(!ignoredInProject("not_a_setting"));
+}
+
+test "experimental children are known in the profile and ignored in projects" {
+    const alloc = std.testing.allocator;
+    const text =
+        \\{"experimental":{"codemode":true},"workspaces":{"/w":{"experimental":{"codemode":false}}}}
+    ;
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, text, .{});
+    defer parsed.deinit();
+    const unknown = try findUnknown(alloc, parsed.value, .profile);
+    defer alloc.free(unknown);
+    try std.testing.expectEqual(@as(usize, 0), unknown.len);
+
+    var stray = try std.json.parseFromSlice(
+        std.json.Value,
+        alloc,
+        \\{"experimental":{"codemod":true}}
+    ,
+        .{},
+    );
+    defer stray.deinit();
+    const stray_unknown = try findUnknown(alloc, stray.value, .profile);
+    defer alloc.free(stray_unknown);
+    try std.testing.expectEqual(@as(usize, 1), stray_unknown.len);
+    try std.testing.expectEqualStrings("codemod", stray_unknown[0].name);
+    try std.testing.expectEqualStrings("experimental", stray_unknown[0].parent.?);
+
+    try std.testing.expect(ignoredInProject("experimental"));
 }
 
 test "unknown keys are found at the top level, in fixed objects, and in workspace overrides" {
