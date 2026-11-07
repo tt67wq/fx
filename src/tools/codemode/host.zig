@@ -9,16 +9,19 @@ const c = @import("quickjs");
 const Allocator = std.mem.Allocator;
 
 // translate-c's JS_MKVAL constants trip over extern unions at comptime, so
-// the two values the host returns are built directly.
+// the values the host returns are built directly.
 const js_undefined: c.JSValue = .{ .u = .{ .uint64 = 0 }, .tag = c.JS_TAG_UNDEFINED };
+const js_false: c.JSValue = .{ .u = .{ .uint64 = 0 }, .tag = c.JS_TAG_BOOL };
 const js_exception: c.JSValue = .{ .u = .{ .uint64 = 0 }, .tag = c.JS_TAG_EXCEPTION };
 
 pub const default_memory_limit_bytes: usize = 64 * 1024 * 1024;
 pub const default_timeout_ms: u64 = 30_000;
+pub const default_output_buffer_bytes: usize = 64 * 1024;
 
 pub const Options = struct {
     memory_limit_bytes: usize = default_memory_limit_bytes,
     timeout_ms: u64 = default_timeout_ms,
+    output_buffer_bytes: usize = default_output_buffer_bytes,
 };
 
 pub const EvalError = error{
@@ -236,8 +239,14 @@ fn textCallback(ctx: ?*c.JSContext, _: c.JSValue, argc: c_int, argv: [*c]c.JSVal
     const context = ctx orelse return js_exception;
     const host: *Host = @ptrCast(@alignCast(c.JS_GetContextOpaque(context) orelse return js_exception));
     if (argc > 0) {
-        const appended = appendValue(host, context, &host.text_buf, argv[0]);
-        if (c.JS_IsException(appended)) return appended;
+        var len: usize = 0;
+        const ptr = c.JS_ToCStringLen(context, &len, argv[0]) orelse return js_exception;
+        defer c.JS_FreeCString(context, ptr);
+        switch (appendCapped(host, &host.text_buf, ptr[0..len])) {
+            .complete => {},
+            .truncated => return js_false,
+            .out_of_memory => return c.JS_ThrowOutOfMemory(context),
+        }
     }
     return js_undefined;
 }
@@ -245,16 +254,31 @@ fn textCallback(ctx: ?*c.JSContext, _: c.JSValue, argc: c_int, argv: [*c]c.JSVal
 fn consoleLogCallback(ctx: ?*c.JSContext, _: c.JSValue, argc: c_int, argv: [*c]c.JSValue) callconv(.c) c.JSValue {
     const context = ctx orelse return js_exception;
     const host: *Host = @ptrCast(@alignCast(c.JS_GetContextOpaque(context) orelse return js_exception));
+    var truncated = false;
     var index: c_int = 0;
     while (index < argc) : (index += 1) {
         if (index > 0) {
-            host.console_buf.append(host.allocator, ' ') catch return c.JS_ThrowOutOfMemory(context);
+            switch (appendCapped(host, &host.console_buf, " ")) {
+                .complete => {},
+                .truncated => truncated = true,
+                .out_of_memory => return c.JS_ThrowOutOfMemory(context),
+            }
         }
-        const appended = appendValue(host, context, &host.console_buf, argv[@intCast(index)]);
-        if (c.JS_IsException(appended)) return appended;
+        var len: usize = 0;
+        const ptr = c.JS_ToCStringLen(context, &len, argv[@intCast(index)]) orelse return js_exception;
+        defer c.JS_FreeCString(context, ptr);
+        switch (appendCapped(host, &host.console_buf, ptr[0..len])) {
+            .complete => {},
+            .truncated => truncated = true,
+            .out_of_memory => return c.JS_ThrowOutOfMemory(context),
+        }
     }
-    host.console_buf.append(host.allocator, '\n') catch return c.JS_ThrowOutOfMemory(context);
-    return js_undefined;
+    switch (appendCapped(host, &host.console_buf, "\n")) {
+        .complete => {},
+        .truncated => truncated = true,
+        .out_of_memory => return c.JS_ThrowOutOfMemory(context),
+    }
+    return if (truncated) js_false else js_undefined;
 }
 
 fn toolsListCallback(ctx: ?*c.JSContext, _: c.JSValue, _: c_int, _: [*c]c.JSValue) callconv(.c) c.JSValue {
@@ -332,17 +356,19 @@ fn toolsCallCallback(ctx: ?*c.JSContext, _: c.JSValue, argc: c_int, argv: [*c]c.
     return c.JS_NewStringLen(context, result.ptr, result.len);
 }
 
-fn appendValue(
-    host: *Host,
-    ctx: *c.JSContext,
-    out: *std.ArrayList(u8),
-    value: c.JSValue,
-) c.JSValue {
-    var len: usize = 0;
-    const ptr = c.JS_ToCStringLen(ctx, &len, value) orelse return js_exception;
-    defer c.JS_FreeCString(ctx, ptr);
-    out.appendSlice(host.allocator, ptr[0..len]) catch return c.JS_ThrowOutOfMemory(ctx);
-    return js_undefined;
+const AppendOutcome = enum { complete, truncated, out_of_memory };
+
+/// Appends what fits under the output cap and reports dropped bytes.
+/// text and console.log return false in that case so a script can notice
+/// truncation without the eval failing. These buffers live on the host
+/// allocator, so JS_SetMemoryLimit does not bound them.
+fn appendCapped(host: *Host, out: *std.ArrayList(u8), bytes: []const u8) AppendOutcome {
+    if (bytes.len == 0) return .complete;
+    const remaining = host.options.output_buffer_bytes -| out.items.len;
+    if (remaining == 0) return .truncated;
+    const take = @min(bytes.len, remaining);
+    out.appendSlice(host.allocator, bytes[0..take]) catch return .out_of_memory;
+    return if (take < bytes.len) .truncated else .complete;
 }
 
 fn isOutOfMemory(host: *Host, ctx: *c.JSContext, exception: c.JSValue) bool {
@@ -416,6 +442,37 @@ test "codemode console.log captures every argument" {
     try std.testing.expectEqualStrings("ok", result.value);
     try std.testing.expectEqualStrings("a 1 true\n\n", result.console);
     try std.testing.expectEqualStrings("", result.text);
+}
+
+test "codemode text stops at the output buffer cap" {
+    var host = Host.init(std.testing.allocator, .{ .output_buffer_bytes = 32 });
+    defer host.deinit();
+
+    var result = try host.eval(
+        \\let drops = 0;
+        \\for (let i = 0; i < 3; i++) if (text("x".repeat(100)) === false) drops++;
+        \\drops;
+    );
+    defer result.deinit();
+    // text reports truncation, but the script still finishes normally.
+    try std.testing.expectEqualStrings("3", result.value);
+    try std.testing.expectEqual(@as(usize, 32), result.text.len);
+    for (result.text) |byte| try std.testing.expectEqual(@as(u8, 'x'), byte);
+}
+
+test "codemode console.log stops at the output buffer cap" {
+    var host = Host.init(std.testing.allocator, .{ .output_buffer_bytes = 32 });
+    defer host.deinit();
+
+    var result = try host.eval(
+        \\let drops = 0;
+        \\for (let i = 0; i < 3; i++) if (console.log("x".repeat(100)) === false) drops++;
+        \\drops;
+    );
+    defer result.deinit();
+    try std.testing.expectEqualStrings("3", result.value);
+    try std.testing.expectEqual(@as(usize, 32), result.console.len);
+    for (result.console) |byte| try std.testing.expectEqual(@as(u8, 'x'), byte);
 }
 
 test "codemode exposes no host globals" {

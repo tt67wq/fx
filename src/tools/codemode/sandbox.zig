@@ -142,7 +142,9 @@ pub const Sandbox = struct {
             self.work_available.broadcast(io_mod.getIo());
             self.mutex.unlock(io_mod.getIo());
             // The sandbox thread exits only while no script is mid-flight,
-            // so joining here waits for an in-flight eval to unwind.
+            // so joining here waits for an in-flight eval to unwind. When a
+            // script is stuck, the interrupt handler's deadline bounds that
+            // wait to one host timeout period (30s by default).
             thread.join();
             self.thread = null;
         }
