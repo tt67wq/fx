@@ -5256,6 +5256,7 @@ test {
     _ = @import("tools/web/content.zig");
     _ = @import("tools/web/html_to_markdown.zig");
     _ = @import("tools/filesystem/read_file.zig");
+    _ = @import("tools/codemode/fuzz.zig");
     _ = @import("tools/codemode/host.zig");
     _ = @import("tools/session/read_tool_result.zig");
     _ = @import("tools/skills/install_skill.zig");

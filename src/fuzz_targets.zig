@@ -39,6 +39,7 @@ test {
     _ = @import("gateway/client.zig");
     _ = @import("gateway/sse.zig");
     _ = @import("tools/agent/ask_user_question.zig");
+    _ = @import("tools/codemode/fuzz.zig");
     _ = @import("tools/web/http_fetch.zig");
     _ = @import("tools/web/url_policy.zig");
     _ = @import("ui/resize_tests.zig");
