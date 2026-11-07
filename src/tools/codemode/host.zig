@@ -1,5 +1,6 @@
 const std = @import("std");
 const io_mod = @import("../../core/shared/io.zig");
+const bindings = @import("bindings.zig");
 
 // Zig 0.17 removed @cImport; build.zig translates the vendored public header
 // into this module.
@@ -59,6 +60,9 @@ pub const Host = struct {
     /// &worker.worker_cancel_requested. Read only from the interrupt handler
     /// and eval, both on the host's own thread; the writer is any thread.
     cancel_flag: ?*const std.atomic.Value(bool) = null,
+    /// The injected owner of real tool execution; the host only forwards
+    /// JSON text across the bridge.
+    tool_backend: ?bindings.Backend = null,
     text_buf: std.ArrayList(u8) = .empty,
     console_buf: std.ArrayList(u8) = .empty,
 
@@ -86,6 +90,15 @@ pub const Host = struct {
     /// True when the last eval stopped because the cancel flag was set.
     pub fn cancelled(self: Host) bool {
         return self.cancelled_flag;
+    }
+
+    pub fn setToolBackend(self: *Host, backend: bindings.Backend) void {
+        self.tool_backend = backend;
+    }
+
+    fn cancelRequested(self: Host) bool {
+        const flag = self.cancel_flag orelse return self.cancelled_flag;
+        return flag.load(.seq_cst);
     }
 
     pub fn eval(self: *Host, script: []const u8) (EvalError || Allocator.Error)!Result {
@@ -161,6 +174,28 @@ pub const Host = struct {
             return error.BindingFailed;
         }
         if (c.JS_SetPropertyStr(ctx, global, "console", console_obj) < 0) return error.BindingFailed;
+
+        const tools_obj = c.JS_NewObject(ctx);
+        if (c.JS_IsException(tools_obj)) return error.BindingFailed;
+        const list_fn = c.JS_NewCFunction(ctx, toolsListCallback, "list", 0);
+        if (c.JS_IsException(list_fn)) {
+            c.JS_FreeValue(ctx, tools_obj);
+            return error.BindingFailed;
+        }
+        if (c.JS_SetPropertyStr(ctx, tools_obj, "list", list_fn) < 0) {
+            c.JS_FreeValue(ctx, tools_obj);
+            return error.BindingFailed;
+        }
+        const call_fn = c.JS_NewCFunction(ctx, toolsCallCallback, "call", 2);
+        if (c.JS_IsException(call_fn)) {
+            c.JS_FreeValue(ctx, tools_obj);
+            return error.BindingFailed;
+        }
+        if (c.JS_SetPropertyStr(ctx, tools_obj, "call", call_fn) < 0) {
+            c.JS_FreeValue(ctx, tools_obj);
+            return error.BindingFailed;
+        }
+        if (c.JS_SetPropertyStr(ctx, global, "tools", tools_obj) < 0) return error.BindingFailed;
     }
 
     fn stringify(self: *Host, ctx: *c.JSContext, value: c.JSValueConst) (EvalError || Allocator.Error)![]u8 {
@@ -220,6 +255,81 @@ fn consoleLogCallback(ctx: ?*c.JSContext, _: c.JSValue, argc: c_int, argv: [*c]c
     }
     host.console_buf.append(host.allocator, '\n') catch return c.JS_ThrowOutOfMemory(context);
     return js_undefined;
+}
+
+fn toolsListCallback(ctx: ?*c.JSContext, _: c.JSValue, _: c_int, _: [*c]c.JSValue) callconv(.c) c.JSValue {
+    const context = ctx orelse return js_exception;
+    const array = c.JS_NewArray(context);
+    if (c.JS_IsException(array)) return array;
+    for (bindings.tools, 0..) |tool, index| {
+        const name = c.JS_NewStringLen(context, tool.name.ptr, tool.name.len);
+        if (c.JS_IsException(name)) {
+            c.JS_FreeValue(context, array);
+            return name;
+        }
+        if (c.JS_SetPropertyUint32(context, array, @intCast(index), name) < 0) {
+            c.JS_FreeValue(context, array);
+            return js_exception;
+        }
+    }
+    return array;
+}
+
+fn toolsCallCallback(ctx: ?*c.JSContext, _: c.JSValue, argc: c_int, argv: [*c]c.JSValue) callconv(.c) c.JSValue {
+    const context = ctx orelse return js_exception;
+    const host: *Host = @ptrCast(@alignCast(c.JS_GetContextOpaque(context) orelse return js_exception));
+
+    // A cancelled script must not start another tool call. The interrupt
+    // handler covers code between calls; this covers the call entry itself.
+    if (host.cancelRequested()) {
+        host.cancelled_flag = true;
+        return c.JS_ThrowPlainError(context, "codemode cancelled");
+    }
+    if (io_mod.milliTimestamp() >= host.deadline_ms) {
+        host.timed_out = true;
+        return c.JS_ThrowPlainError(context, "codemode timed out");
+    }
+    if (argc < 2) {
+        return c.JS_ThrowTypeError(context, "tools.call requires a tool name and a JSON string");
+    }
+
+    var name_len: usize = 0;
+    const name_ptr = c.JS_ToCStringLen(context, &name_len, argv[0]) orelse return js_exception;
+    defer c.JS_FreeCString(context, name_ptr);
+    const name = name_ptr[0..name_len];
+    const tool = bindings.find(name) orelse {
+        var message_buf: [256]u8 = undefined;
+        const message: [:0]const u8 = std.mem.printSentinel(&message_buf, "unknown codemode tool: {s}", .{name}, 0) catch
+            "unknown codemode tool";
+        return c.JS_ThrowTypeError(context, "%s", message.ptr);
+    };
+
+    var args_len: usize = 0;
+    const args_ptr = c.JS_ToCStringLen(context, &args_len, argv[1]) orelse return js_exception;
+    defer c.JS_FreeCString(context, args_ptr);
+
+    const backend = host.tool_backend orelse {
+        var message_buf: [256]u8 = undefined;
+        const message: [:0]const u8 = std.mem.printSentinel(
+            &message_buf,
+            "codemode tool {s} has no backend",
+            .{tool.name},
+            0,
+        ) catch "codemode tool has no backend";
+        return c.JS_ThrowPlainError(context, "%s", message.ptr);
+    };
+    const result = backend.call(backend.ctx, host.allocator, tool, args_ptr[0..args_len]) catch |err| {
+        var message_buf: [256]u8 = undefined;
+        const message: [:0]const u8 = std.mem.printSentinel(
+            &message_buf,
+            "codemode tool {s} failed: {s}",
+            .{ tool.name, @errorName(err) },
+            0,
+        ) catch "codemode tool call failed";
+        return c.JS_ThrowPlainError(context, "%s", message.ptr);
+    };
+    defer host.allocator.free(result);
+    return c.JS_NewStringLen(context, result.ptr, result.len);
 }
 
 fn appendValue(
@@ -313,10 +423,10 @@ test "codemode exposes no host globals" {
     defer host.deinit();
 
     var result = try host.eval(
-        \\[typeof std, typeof os, typeof require, typeof process].join(",");
+        \\[typeof std, typeof os, typeof require, typeof process, typeof tools, typeof tools.list, typeof tools.call].join(",");
     );
     defer result.deinit();
-    try std.testing.expectEqualStrings("undefined,undefined,undefined,undefined", result.value);
+    try std.testing.expectEqualStrings("undefined,undefined,undefined,undefined,object,function,function", result.value);
 }
 
 test "codemode reports script exceptions" {
@@ -351,6 +461,8 @@ test "codemode timeout interrupts a tight loop" {
 }
 
 test {
-    // Pull the sandbox thread model and its tests into every test build.
+    // Pull the sandbox thread model and the tool bridge tests into every
+    // test build.
+    _ = @import("bindings_tests.zig");
     _ = @import("sandbox.zig");
 }
