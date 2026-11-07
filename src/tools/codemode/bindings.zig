@@ -6,11 +6,14 @@ pub const Tool = struct {
     name: []const u8,
 };
 
-/// Read-only trio first. Later stages append shell and other tools here.
+/// Three read-only tools first, then run_command, which is not read-only:
+/// its admission and permission review are wired in 3.3. The registry only
+/// decides which names the sandbox may forward to the injected Backend.
 pub const tools = [_]Tool{
     .{ .name = "glob_files" },
     .{ .name = "grep_files" },
     .{ .name = "read_file" },
+    .{ .name = "run_command" },
 };
 
 pub fn find(name: []const u8) ?Tool {
