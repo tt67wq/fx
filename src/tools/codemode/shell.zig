@@ -1,7 +1,7 @@
 const std = @import("std");
 
 /// In-script cap for one shell result. The model-facing path keeps its own
-/// 50KB truncation; this budget only bounds the host-allocated bridge string
+/// 64KiB truncation; this budget only bounds the host-allocated bridge string
 /// that tools.call returns to a codemode script.
 pub const default_script_shell_budget_bytes: usize = 1024 * 1024;
 
