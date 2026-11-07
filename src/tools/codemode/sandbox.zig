@@ -28,10 +28,12 @@ const Result = host_mod.Result;
 pub const Sandbox = struct {
     allocator: Allocator,
     host: Host,
-    /// Written by any thread through cancel(); read by the host interrupt
-    /// handler on the sandbox thread. Phase 3 wires this to the same
-    /// worker_cancel_requested atomic instead of a second source.
-    cancel_flag: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    /// The one cancel source: the owner points this at the same atomic the
+    /// worker path sets (worker_cancel_requested), so Escape and every other
+    /// cancel route reach the interrupt handler without a second flag.
+    /// Read by the host interrupt handler on the sandbox thread; written by
+    /// the worker through its own cancel path. Set before start().
+    cancel_flag: ?*const std.atomic.Value(bool) = null,
 
     mutex: std.Io.Mutex = .init,
     work_available: std.Io.Condition = .init,
@@ -56,6 +58,7 @@ pub const Sandbox = struct {
     pub const EvalError = error{
         Shutdown,
         ThreadSpawnFailed,
+        CancelSourceMissing,
     } || Outcome.Error;
 
     /// The host is created lazily by the first eval on the sandbox thread,
@@ -69,7 +72,8 @@ pub const Sandbox = struct {
 
     pub fn start(self: *Sandbox) EvalError!void {
         if (self.thread != null) return;
-        self.host.cancel_flag = &self.cancel_flag;
+        if (self.cancel_flag == null) return error.CancelSourceMissing;
+        self.host.cancel_flag = self.cancel_flag.?;
         self.thread = std.Thread.spawn(.{}, run, .{self}) catch return error.ThreadSpawnFailed;
     }
 
@@ -110,16 +114,19 @@ pub const Sandbox = struct {
     /// script at its next check and eval returns once the engine unwound.
     /// Callers waiting in eval keep blocking until then.
     pub fn cancel(self: *Sandbox) void {
-        self.cancel_flag.store(true, .seq_cst);
+        const flag: ?*std.atomic.Value(bool) = @constCast(self.cancel_flag);
+        if (flag) |target| target.store(true, .seq_cst);
     }
 
     /// Clears the cancel flag so the sandbox can be reused after a cancel.
     pub fn resetCancel(self: *Sandbox) void {
-        self.cancel_flag.store(false, .seq_cst);
+        const flag: ?*std.atomic.Value(bool) = @constCast(self.cancel_flag);
+        if (flag) |target| target.store(false, .seq_cst);
     }
 
     pub fn cancelRequested(self: *const Sandbox) bool {
-        return self.cancel_flag.load(.seq_cst);
+        const flag = self.cancel_flag orelse return false;
+        return flag.load(.seq_cst);
     }
 
     /// True while a script is mid-flight on the sandbox thread.

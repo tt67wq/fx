@@ -19,21 +19,25 @@ const FakeBackend = struct {
     last_tool: []const u8 = "",
     last_args: [256]u8 = undefined,
     last_args_len: usize = 0,
+    last_location: []const u8 = "",
     fail: bool = false,
     request_cancel: ?*std.atomic.Value(bool) = null,
     shell_exit_code: i64 = 0,
     shell_output: []const u8 = "ok\n",
     shell_budget: usize = shell.default_script_shell_budget_bytes,
+    shell_upstream_truncated: bool = false,
 
     fn call(
         raw_ctx: ?*anyopaque,
         allocator: std.mem.Allocator,
         tool: bindings.Tool,
         args_json: []const u8,
+        location: []const u8,
     ) anyerror![]u8 {
         const self: *FakeBackend = @ptrCast(@alignCast(raw_ctx.?));
         self.calls += 1;
         self.last_tool = tool.name;
+        self.last_location = location;
         self.last_args_len = @min(args_json.len, self.last_args.len);
         @memcpy(self.last_args[0..self.last_args_len], args_json[0..self.last_args_len]);
         if (self.request_cancel) |flag| flag.store(true, .seq_cst);
@@ -43,7 +47,7 @@ const FakeBackend = struct {
         var parsed = try std.json.parseFromSlice(std.json.Value, allocator, args_json, .{});
         defer parsed.deinit();
         if (std.mem.eql(u8, tool.name, "run_command")) {
-            return shell.encodeResultJson(allocator, self.shell_exit_code, self.shell_output, self.shell_budget);
+            return shell.encodeResultJson(allocator, self.shell_exit_code, self.shell_output, self.shell_budget, self.shell_upstream_truncated);
         }
         return allocator.dupe(u8, "{\"ok\":true}");
     }
@@ -203,4 +207,84 @@ test "codemode run_command bridge keeps the head and tail over the budget" {
     var marker_buf: [64]u8 = undefined;
     const marker = try std.mem.print(&marker_buf, "{} bytes omitted", .{omitted});
     try std.testing.expect(std.mem.find(u8, output, marker) != null);
+}
+
+test "codemode tools.call captures the script line of the call site" {
+    var host = Host.init(std.testing.allocator, .{});
+    defer host.deinit();
+    var fake = FakeBackend{};
+    host.setToolBackend(.{ .ctx = &fake, .call = FakeBackend.call });
+
+    var result = try host.eval("var a = 1;\ntools.call(\"read_file\", JSON.stringify({ path: \"notes.txt\" }));");
+    defer result.deinit();
+    // The call sits on the second line of the evaluated script.
+    try std.testing.expectEqualStrings("2", fake.last_location);
+}
+
+test "codemode run_command bridge merges upstream truncation alone" {
+    var host = Host.init(std.testing.allocator, .{});
+    defer host.deinit();
+    var fake = FakeBackend{ .shell_output = "hello\n", .shell_upstream_truncated = true };
+    host.setToolBackend(.{ .ctx = &fake, .call = FakeBackend.call });
+
+    var result = try host.eval(
+        \\tools.call("run_command", JSON.stringify({ command: "echo hello" }));
+    );
+    defer result.deinit();
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, result.value, .{});
+    defer parsed.deinit();
+    const object = parsed.value.object;
+    try std.testing.expectEqual(true, object.get("truncated").?.bool);
+    try std.testing.expectEqualStrings("hello\n", object.get("output").?.string);
+}
+
+test "codemode run_command bridge merges upstream and budget truncation together" {
+    const budget = 16;
+    var big: [128]u8 = undefined;
+    @memset(&big, 'x');
+
+    var host = Host.init(std.testing.allocator, .{});
+    defer host.deinit();
+    var fake = FakeBackend{ .shell_output = &big, .shell_budget = budget, .shell_upstream_truncated = true };
+    host.setToolBackend(.{ .ctx = &fake, .call = FakeBackend.call });
+
+    var result = try host.eval(
+        \\tools.call("run_command", JSON.stringify({ command: "yes" }));
+    );
+    defer result.deinit();
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, result.value, .{});
+    defer parsed.deinit();
+    const object = parsed.value.object;
+    try std.testing.expectEqual(true, object.get("truncated").?.bool);
+    var marker_buf: [64]u8 = undefined;
+    const marker = try std.mem.print(&marker_buf, "{} bytes omitted", .{big.len - budget});
+    try std.testing.expect(std.mem.find(u8, object.get("output").?.string, marker) != null);
+}
+
+test "codemode run_command captures more than the direct-path budget without truncation" {
+    // The script budget aligns with default_script_shell_budget_bytes (1MiB),
+    // so output well past the direct run_command capture limit flows through
+    // with truncation false.
+    const size = 128 * 1024;
+    const big = try std.testing.allocator.alloc(u8, size);
+    defer std.testing.allocator.free(big);
+    @memset(big, 'a');
+
+    var host = Host.init(std.testing.allocator, .{});
+    defer host.deinit();
+    var fake = FakeBackend{ .shell_output = big };
+    host.setToolBackend(.{ .ctx = &fake, .call = FakeBackend.call });
+
+    var result = try host.eval(
+        \\tools.call("run_command", JSON.stringify({ command: "yes" }));
+    );
+    defer result.deinit();
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, result.value, .{});
+    defer parsed.deinit();
+    const object = parsed.value.object;
+    try std.testing.expectEqual(false, object.get("truncated").?.bool);
+    try std.testing.expectEqual(@as(usize, size), object.get("output").?.string.len);
 }

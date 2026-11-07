@@ -27,6 +27,7 @@ const skill_impl = @import("../tools/skills/skill.zig");
 const capability_search_impl = @import("../tools/capabilities/capability_search.zig");
 const web_fetch_impl = @import("../tools/web/fetch.zig");
 const web_search_impl = @import("../tools/web/search.zig");
+const codemode_impl = @import("../tools/codemode/codemode_tool.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -728,6 +729,36 @@ pub const read_tool_result = ToolSpec{
     .irreversible_fn = read_tool_result_impl.isIrreversible,
 };
 
+pub const codemode_description =
+    "Run JavaScript in a sandbox for multi-step work in one call. Use tools.call(\"read_file\", ...) and the other file and command tools to search, read, and run, then return a short summary. A script that only wraps one tool call is slower than calling the tool directly.";
+
+pub const codemode = ToolSpec{
+    .name = "codemode",
+    .description = codemode_description,
+    .model_schema = .{
+        .name = "codemode",
+        .description = codemode_description,
+        .input_schema = .{
+            .properties = &.{
+                .{ .name = "script", .json_type = .string, .description = "JavaScript source. Call fx tools with await tools.call(\"tool_name\", \"{json args}\")" },
+            },
+            .required = &.{"script"},
+            .additional_properties = false,
+        },
+    },
+    .executor_kind = .codemode,
+    .activity_kind = .read,
+    .requires_approval = false,
+    .action_label = "Running script",
+    .completed_action_label = "Ran script",
+    .permission_target_kind = .none,
+    .decode = codemode_impl.decode,
+    .validate = codemode_impl.validate,
+    .call = codemode_impl.call,
+    .reads_only_fn = codemode_impl.readsOnly,
+    .irreversible_fn = codemode_impl.isIrreversible,
+};
+
 pub const all = [_]tool_dispatch.Tool{
     glob_files,
     grep_files,
@@ -784,6 +815,27 @@ pub const advertisement_set = tool_set_contract.ToolSet{
     .order = advertisement_order[0..],
     .read_only_tool_names = read_only_tool_names[0..],
 };
+
+/// The registry and order the codemode gate adds to. The base set is shared;
+/// the gated set only appends the codemode tool so an off gate changes nothing.
+pub const gated_all = all ++ [_]tool_dispatch.Tool{codemode};
+
+pub const gated_registry = tool_dispatch.Registry{ .tools = gated_all[0..] };
+
+pub const gated_advertisement_order = advertisement_order ++ [_][]const u8{"codemode"};
+
+pub const gated_advertisement_set = tool_set_contract.ToolSet{
+    .registry = gated_registry,
+    .order = gated_advertisement_order[0..],
+    .read_only_tool_names = read_only_tool_names[0..],
+};
+
+/// The single reader of the experimental.codemode gate: off keeps the base
+/// set untouched, on appends codemode. main.zig resolves the setting and
+/// passes the boolean here.
+pub fn gatedToolSet(enabled: bool) tool_set_contract.ToolSet {
+    return if (enabled) gated_advertisement_set else advertisement_set;
+}
 
 pub fn lookup(name: []const u8) ?ToolSpec {
     const spec = registry.lookup(name) orelse return null;
@@ -1752,4 +1804,17 @@ test "production registry keeps vision route-filtered from ordinary projections"
     inline for (&.{ &full, &read_only }) |projection| {
         try std.testing.expect(!tool_projection.containsName(projection.advertised_names, "vision"));
     }
+}
+
+test "codemode tool is invisible while the gate is off and advertised when on" {
+    const base = advertisement_set;
+    try std.testing.expect(base.registry.lookup("codemode") == null);
+    for (base.order) |name| try std.testing.expect(!std.mem.eql(u8, name, "codemode"));
+
+    const gated = gatedToolSet(true);
+    try std.testing.expect(gated.registry.lookup("codemode") != null);
+    try std.testing.expect(std.mem.eql(u8, gated.order[gated.order.len - 1], "codemode"));
+    // Gating on changes nothing else: every base tool keeps its slot.
+    try std.testing.expectEqual(base.order.len + 1, gated.order.len);
+    try std.testing.expectEqual(base.registry.tools.len + 1, gated.registry.tools.len);
 }

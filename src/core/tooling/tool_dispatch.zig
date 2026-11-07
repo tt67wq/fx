@@ -386,6 +386,7 @@ pub const ExecutorKind = enum {
     mcp_select_tool,
     ask_user_question,
     vision,
+    codemode,
 };
 
 pub const ApprovalPolicy = enum {

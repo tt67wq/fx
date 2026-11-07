@@ -496,6 +496,8 @@ const App = struct {
     /// The `/credits` lookup in flight, if any.
     credits_lookup: credits_lookup.Lookup = .{},
     workspace_root: []u8 = &.{},
+    /// Resolved experimental.codemode gate, cached after the first read.
+    codemode_gate: ?bool = null,
     workspace_identity: statusline_identity.Runtime = .{},
     workspace: app_workspace_runtime.State = .{},
     permission_engine: PermissionEngine = .{},
@@ -1830,11 +1832,26 @@ const App = struct {
         return self.mcp.snapshotModelCatalog(alloc, self.alloc);
     }
 
-    fn effectiveToolSet(_: *const App, agent: *const agents.Agent) tool_set_contract.ToolSet {
+    fn effectiveToolSet(self: *const App, agent: *const agents.Agent) tool_set_contract.ToolSet {
         if (comptime host_profile.tools) {
-            return agent.profile_tools orelse builtin_tools.advertisement_set;
+            return agent.profile_tools orelse builtin_tools.gatedToolSet(self.codemodeGate());
         }
         return tool_set_contract.empty;
+    }
+
+    /// The one runtime reader of the experimental.codemode gate. Read on
+    /// demand from merged profile settings and cached for the app's life: a
+    /// half-open gate mid-session would advertise a tool dispatch cannot
+    /// answer (or vice versa).
+    fn codemodeGate(self: *const App) bool {
+        if (self.codemode_gate) |enabled| return enabled;
+        const enabled = blk: {
+            var settings = config_runtime.loadMergedSettings(self.alloc, self.workspace_root) catch break :blk false;
+            defer settings.deinit(self.alloc);
+            break :blk config_runtime.codemodeEnabled(&settings);
+        };
+        @constCast(self).codemode_gate = enabled;
+        return enabled;
     }
 
     pub fn toolRegistry(self: *const App, agent: *const agents.Agent) tool_dispatch.Registry {
@@ -1847,8 +1864,8 @@ const App = struct {
 
     /// fx's tools before any agent profile narrows them: what a profile that
     /// sets tools chooses from.
-    pub fn baseToolSet(_: *const App) tool_set_contract.ToolSet {
-        if (comptime host_profile.tools) return builtin_tools.advertisement_set;
+    pub fn baseToolSet(self: *const App) tool_set_contract.ToolSet {
+        if (comptime host_profile.tools) return builtin_tools.gatedToolSet(self.codemodeGate());
         return tool_set_contract.empty;
     }
 

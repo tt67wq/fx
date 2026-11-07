@@ -149,9 +149,12 @@ pub const Host = struct {
         const ctx = c.JS_NewContext(rt) orelse return error.ContextInitFailed;
         errdefer c.JS_FreeContext(ctx);
         c.JS_SetContextOpaque(ctx, self);
-        c.JS_SetInterruptHandler(rt, interruptHandler, self);
 
         try installBindings(ctx);
+        // The interrupt handler is installed after the bindings: the shim
+        // install below evaluates JS while deadline_ms is still 0, and a
+        // handler would see every check as past the deadline.
+        c.JS_SetInterruptHandler(rt, interruptHandler, self);
 
         self.runtime = rt;
         self.context = ctx;
@@ -189,16 +192,73 @@ pub const Host = struct {
             c.JS_FreeValue(ctx, tools_obj);
             return error.BindingFailed;
         }
-        const call_fn = c.JS_NewCFunction(ctx, toolsCallCallback, "call", 2);
+        const call_fn = c.JS_NewCFunction(ctx, toolsCallCallback, "__codemode_native_call", 3);
         if (c.JS_IsException(call_fn)) {
             c.JS_FreeValue(ctx, tools_obj);
             return error.BindingFailed;
         }
-        if (c.JS_SetPropertyStr(ctx, tools_obj, "call", call_fn) < 0) {
+        if (c.JS_SetPropertyStr(ctx, tools_obj, "__codemode_native_call", call_fn) < 0) {
             c.JS_FreeValue(ctx, tools_obj);
             return error.BindingFailed;
         }
-        if (c.JS_SetPropertyStr(ctx, global, "tools", tools_obj) < 0) return error.BindingFailed;
+        // The visible tools.call is a shim that captures the script line the
+        // call was made from and forwards it to the native entry. Line
+        // numbers travel in a separate argument, never inside the review
+        // origin or the call id. The shim reads the global tools object, so
+        // it must be installed on the global first.
+        if (c.JS_SetPropertyStr(ctx, global, "tools", tools_obj) < 0) {
+            c.JS_FreeValue(ctx, tools_obj);
+            return error.BindingFailed;
+        }
+        if (installCallShim(ctx, tools_obj) != 0) return error.BindingFailed;
+    }
+
+    /// Evaluates the tools.call shim against `tools_obj` and returns 0 on
+    /// success. The shim throws from inside itself to read Error.stack, skips
+    /// its own frames, and takes the first user-script frame's line number.
+    fn installCallShim(ctx: *c.JSContext, tools_obj: c.JSValue) c_int {
+        const shim =
+            \\(function (tools, native) {
+            \\    "use strict";
+            \\    function call(name, args) {
+            \\        var line = "";
+            \\        try {
+            \\            null.x();
+            \\        } catch (e) {
+            \\            var frames = String(e.stack || "").split("\n");
+            \\            for (var i = 0; i < frames.length; i++) {
+            \\                if (frames[i].indexOf("codemode-shim") >= 0) continue;
+            \\                var m = frames[i].match(/:(\d+)(?::\d+)?\)?\s*$/);
+            \\                if (m) {
+            \\                    line = m[1];
+            \\                    break;
+            \\                }
+            \\            }
+            \\        }
+            \\        return native(name, args, line);
+            \\    }
+            \\    tools.call = call;
+            \\})(tools, tools.__codemode_native_call);
+        ;
+        const script_len: usize = shim.len;
+        const result = c.JS_Eval(
+            ctx,
+            shim.ptr,
+            script_len,
+            "codemode-shim",
+            c.JS_EVAL_TYPE_GLOBAL,
+        );
+        if (c.JS_IsException(result)) {
+            c.JS_FreeValue(ctx, result);
+            return -1;
+        }
+        c.JS_FreeValue(ctx, result);
+        // Drop the native entry so scripts cannot bypass the line capture.
+        const native_atom = c.JS_NewAtomLen(ctx, "__codemode_native_call", "__codemode_native_call".len);
+        if (native_atom == c.JS_ATOM_NULL) return -1;
+        defer c.JS_FreeAtom(ctx, native_atom);
+        if (c.JS_DeleteProperty(ctx, tools_obj, native_atom, 0) < 0) return -1;
+        return 0;
     }
 
     fn stringify(self: *Host, ctx: *c.JSContext, value: c.JSValueConst) (EvalError || Allocator.Error)![]u8 {
@@ -220,7 +280,9 @@ pub const Host = struct {
 
 fn interruptHandler(_: ?*c.JSContext, opaque_ptr: ?*anyopaque) callconv(.c) c_int {
     const host: *Host = @ptrCast(@alignCast(opaque_ptr orelse return 0));
-    if (io_mod.milliTimestamp() >= host.deadline_ms) {
+    // A zero deadline means no eval is in flight (bindings still installing);
+    // only the cancel source may interrupt then.
+    if (host.deadline_ms != 0 and io_mod.milliTimestamp() >= host.deadline_ms) {
         host.timed_out = true;
         return 1;
     }
@@ -332,6 +394,14 @@ fn toolsCallCallback(ctx: ?*c.JSContext, _: c.JSValue, argc: c_int, argv: [*c]c.
     const args_ptr = c.JS_ToCStringLen(context, &args_len, argv[1]) orelse return js_exception;
     defer c.JS_FreeCString(context, args_ptr);
 
+    var location: []const u8 = "";
+    if (argc >= 3) {
+        var location_len: usize = 0;
+        const location_ptr = c.JS_ToCStringLen(context, &location_len, argv[2]) orelse return js_exception;
+        defer c.JS_FreeCString(context, location_ptr);
+        location = location_ptr[0..location_len];
+    }
+
     const backend = host.tool_backend orelse {
         var message_buf: [256]u8 = undefined;
         const message: [:0]const u8 = std.mem.printSentinel(
@@ -342,7 +412,7 @@ fn toolsCallCallback(ctx: ?*c.JSContext, _: c.JSValue, argc: c_int, argv: [*c]c.
         ) catch "codemode tool has no backend";
         return c.JS_ThrowPlainError(context, "%s", message.ptr);
     };
-    const result = backend.call(backend.ctx, host.allocator, tool, args_ptr[0..args_len]) catch |err| {
+    const result = backend.call(backend.ctx, host.allocator, tool, args_ptr[0..args_len], location) catch |err| {
         var message_buf: [256]u8 = undefined;
         const message: [:0]const u8 = std.mem.printSentinel(
             &message_buf,

@@ -25,7 +25,9 @@ pub fn find(name: []const u8) ?Tool {
 
 /// Runs one whitelisted tool. The host injects the implementation; direct
 /// tool execution never lives in the sandbox. The returned slice is allocated
-/// with `allocator` and owned by the caller.
+/// with `allocator` and owned by the caller. `location` is the script line
+/// number the call was made from, empty when unknown; the admission path
+/// reports it separately from the review origin.
 pub const Backend = struct {
     ctx: ?*anyopaque = null,
     call: *const fn (
@@ -33,5 +35,6 @@ pub const Backend = struct {
         allocator: std.mem.Allocator,
         tool: Tool,
         args_json: []const u8,
+        location: []const u8,
     ) anyerror![]u8,
 };

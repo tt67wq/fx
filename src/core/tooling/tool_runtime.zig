@@ -86,7 +86,7 @@ const ChatMessage = types.ChatMessage;
 const PermissionGrant = types.PermissionGrant;
 const PermissionMode = types.PermissionMode;
 const ToolPermissionDecision = types.ToolPermissionDecision;
-const ToolExecutionResult = tool_contracts.ToolExecutionResult;
+pub const ToolExecutionResult = tool_contracts.ToolExecutionResult;
 const SessionRuntime = session_runtime.SessionRuntime;
 const WorkerRuntime = worker_runtime.WorkerRuntime;
 
@@ -1278,6 +1278,9 @@ pub const CodemodeHostState = struct {
     runtime: Context,
     script_call: ToolCall,
     script_location: []const u8,
+    /// Counts nested tool calls a codemode script made through the bridge;
+    /// each gets a distinct nested call id.
+    call_sequence: usize = 0,
 
     pub fn cancelled(self: CodemodeHostState) bool {
         return self.runtime.worker.worker_cancel_requested.load(.seq_cst);

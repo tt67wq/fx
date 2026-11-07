@@ -7,6 +7,8 @@ const Sandbox = sandbox_mod.Sandbox;
 
 test "sandbox runs evals to completion on the dedicated thread" {
     var sandbox = Sandbox.init(std.testing.allocator, .{ .timeout_ms = 5_000 });
+    var cancel_flag = std.atomic.Value(bool).init(false);
+    sandbox.cancel_flag = &cancel_flag;
     defer sandbox.deinit();
     try sandbox.start();
 
@@ -29,6 +31,8 @@ test "sandbox runs evals to completion on the dedicated thread" {
 
 test "sandbox cancel interrupts a tight loop and discards the value" {
     var sandbox = Sandbox.init(std.testing.allocator, .{ .timeout_ms = 60_000 });
+    var cancel_flag = std.atomic.Value(bool).init(false);
+    sandbox.cancel_flag = &cancel_flag;
     defer sandbox.deinit();
     try sandbox.start();
 
@@ -62,8 +66,48 @@ test "sandbox cancel interrupts a tight loop and discards the value" {
     try std.testing.expect(sandbox.cancelRequested());
 }
 
+test "sandbox cancel flows through the worker cancel atomic, not a second source" {
+    var sandbox = Sandbox.init(std.testing.allocator, .{ .timeout_ms = 60_000 });
+    // Stands in for the owning worker's worker_cancel_requested: the sandbox
+    // holds a pointer to it and never owns the storage.
+    var worker_cancel_requested = std.atomic.Value(bool).init(false);
+    sandbox.cancel_flag = &worker_cancel_requested;
+    defer sandbox.deinit();
+    try sandbox.start();
+
+    const Evaluator = struct {
+        fn run(sb: *Sandbox, done: *std.atomic.Value(bool)) void {
+            _ = sb.eval("while (true) {}") catch {};
+            done.store(true, .seq_cst);
+        }
+    };
+    var done = std.atomic.Value(bool).init(false);
+    const thread = try std.Thread.spawn(.{}, Evaluator.run, .{ &sandbox, &done });
+    defer thread.join();
+
+    var waited: usize = 0;
+    while (!sandbox.isBusy() and waited < 5_000) {
+        io_mod.sleep(1 * std.time.ns_per_ms);
+        waited += 1;
+    }
+    try std.testing.expect(sandbox.isBusy());
+
+    // The worker path writes its own atomic; the sandbox interrupt handler
+    // observes it with no sandbox.cancel() call in between.
+    worker_cancel_requested.store(true, .seq_cst);
+    var settled: usize = 0;
+    while (!done.load(.seq_cst) and settled < 5_000) {
+        io_mod.sleep(1 * std.time.ns_per_ms);
+        settled += 1;
+    }
+    try std.testing.expect(done.load(.seq_cst));
+    try std.testing.expect(sandbox.cancelRequested());
+}
+
 test "sandbox cancelled eval returns error.Cancelled and never a value" {
     var sandbox = Sandbox.init(std.testing.allocator, .{ .timeout_ms = 60_000 });
+    var cancel_flag = std.atomic.Value(bool).init(false);
+    sandbox.cancel_flag = &cancel_flag;
     defer sandbox.deinit();
     try sandbox.start();
 
@@ -82,6 +126,8 @@ test "sandbox cancelled eval returns error.Cancelled and never a value" {
 
 test "sandbox timeout still returns error.Timeout distinct from cancellation" {
     var sandbox = Sandbox.init(std.testing.allocator, .{ .timeout_ms = 50 });
+    var cancel_flag = std.atomic.Value(bool).init(false);
+    sandbox.cancel_flag = &cancel_flag;
     defer sandbox.deinit();
     try sandbox.start();
 
@@ -95,6 +141,8 @@ test "sandbox timeout still returns error.Timeout distinct from cancellation" {
 
 test "sandbox deinit waits for an in-flight eval to unwind" {
     var sandbox = Sandbox.init(std.testing.allocator, .{ .timeout_ms = 60_000 });
+    var cancel_flag = std.atomic.Value(bool).init(false);
+    sandbox.cancel_flag = &cancel_flag;
     try sandbox.start();
 
     const Evaluator = struct {
@@ -128,6 +176,8 @@ test "sandbox deinit waits for an in-flight eval to unwind" {
 
 test "sandbox host cancel flag reads through to host.cancelled" {
     var sandbox = Sandbox.init(std.testing.allocator, .{ .timeout_ms = 60_000 });
+    var cancel_flag = std.atomic.Value(bool).init(false);
+    sandbox.cancel_flag = &cancel_flag;
     defer sandbox.deinit();
     try sandbox.start();
     try std.testing.expect(!sandbox.cancelRequested());
@@ -139,6 +189,8 @@ test "sandbox host cancel flag reads through to host.cancelled" {
 
 test "sandbox eval before start reports shutdown" {
     var sandbox = Sandbox.init(std.testing.allocator, .{});
+    var cancel_flag = std.atomic.Value(bool).init(false);
+    sandbox.cancel_flag = &cancel_flag;
     defer sandbox.deinit();
     try std.testing.expectError(error.Shutdown, sandbox.eval("1"));
 }

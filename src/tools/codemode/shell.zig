@@ -16,6 +16,9 @@ pub const default_script_shell_budget_bytes: usize = 1024 * 1024;
 /// Above `budget_bytes`, keeps the first half and last half of the output
 /// joined by a marker that names the omitted byte count, and sets
 /// `truncated`. At or below the budget the whole output passes through.
+/// `upstream_truncated` merges the model-facing capture truncation flag into
+/// the same field, so the script sees one truncation signal whichever layer
+/// dropped bytes.
 ///
 /// The returned slice is allocated with `allocator` and owned by the caller.
 /// It stays bounded: one budget's worth of payload plus the marker, plus
@@ -25,11 +28,13 @@ pub fn encodeResultJson(
     exit_code: i64,
     output: []const u8,
     budget_bytes: usize,
+    upstream_truncated: bool,
 ) ![]u8 {
-    const truncated = output.len > budget_bytes;
+    const budget_truncated = output.len > budget_bytes;
+    const truncated = upstream_truncated or budget_truncated;
     var payload: std.ArrayList(u8) = .empty;
     defer payload.deinit(allocator);
-    const body = if (truncated) blk: {
+    const body = if (budget_truncated) blk: {
         const head_len = budget_bytes / 2;
         const tail_len = budget_bytes - head_len;
         const omitted = output.len - head_len - tail_len;
