@@ -27,6 +27,7 @@ pub const EvalError = error{
     ScriptError,
     Timeout,
     MemoryLimit,
+    Cancelled,
 };
 
 pub const Result = struct {
@@ -53,6 +54,11 @@ pub const Host = struct {
     context: ?*c.JSContext = null,
     deadline_ms: i64 = 0,
     timed_out: bool = false,
+    cancelled_flag: bool = false,
+    /// Cancel source shared with the caller, typically
+    /// &worker.worker_cancel_requested. Read only from the interrupt handler
+    /// and eval, both on the host's own thread; the writer is any thread.
+    cancel_flag: ?*const std.atomic.Value(bool) = null,
     text_buf: std.ArrayList(u8) = .empty,
     console_buf: std.ArrayList(u8) = .empty,
 
@@ -77,6 +83,11 @@ pub const Host = struct {
         return self.runtime != null;
     }
 
+    /// True when the last eval stopped because the cancel flag was set.
+    pub fn cancelled(self: Host) bool {
+        return self.cancelled_flag;
+    }
+
     pub fn eval(self: *Host, script: []const u8) (EvalError || Allocator.Error)!Result {
         try self.ensureRuntime();
         const ctx = self.context.?;
@@ -84,6 +95,7 @@ pub const Host = struct {
         self.text_buf.clearRetainingCapacity();
         self.console_buf.clearRetainingCapacity();
         self.timed_out = false;
+        self.cancelled_flag = false;
         const timeout_ms: i64 = std.math.cast(i64, self.options.timeout_ms) orelse std.math.maxInt(i64);
         self.deadline_ms = io_mod.milliTimestamp() +| timeout_ms;
 
@@ -161,6 +173,7 @@ pub const Host = struct {
     fn takeExceptionError(self: *Host, ctx: *c.JSContext) EvalError {
         const exception = c.JS_GetException(ctx);
         defer c.JS_FreeValue(ctx, exception);
+        if (self.cancelled_flag) return error.Cancelled;
         if (self.timed_out) return error.Timeout;
         if (isOutOfMemory(self, ctx, exception)) return error.MemoryLimit;
         return error.ScriptError;
@@ -172,6 +185,14 @@ fn interruptHandler(_: ?*c.JSContext, opaque_ptr: ?*anyopaque) callconv(.c) c_in
     if (io_mod.milliTimestamp() >= host.deadline_ms) {
         host.timed_out = true;
         return 1;
+    }
+    // The cancel flag is the same atomic the worker path sets, so Escape and
+    // every other cancel route stop the script through one source.
+    if (host.cancel_flag) |flag| {
+        if (flag.load(.seq_cst)) {
+            host.cancelled_flag = true;
+            return 1;
+        }
     }
     return 0;
 }
@@ -327,4 +348,9 @@ test "codemode timeout interrupts a tight loop" {
     var result = try host.eval("1 + 1");
     defer result.deinit();
     try std.testing.expectEqualStrings("2", result.value);
+}
+
+test {
+    // Pull the sandbox thread model and its tests into every test build.
+    _ = @import("sandbox.zig");
 }
