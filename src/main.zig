@@ -630,7 +630,7 @@ const App = struct {
 
         if (launch.modifiers.profile_name) |name| {
             if (comptime host_profile.tools) {
-                try ProfileAppRuntime.applyLaunchProfile(&app, name, builtin_context.prompt_policy.system_prompt, builtin_tools.advertisement_set);
+                try ProfileAppRuntime.applyLaunchProfile(&app, name, builtin_context.prompt_policy.system_prompt, builtin_tools.gatedToolSet(app.codemodeGate()));
             }
         }
         const launch_profile = &app.main_agent.profile.profile;
@@ -1846,7 +1846,10 @@ const App = struct {
     fn codemodeGate(self: *const App) bool {
         if (self.codemode_gate) |enabled| return enabled;
         const enabled = blk: {
-            var settings = config_runtime.loadMergedSettings(self.alloc, self.workspace_root) catch break :blk false;
+            // The launch profile applies before bootstrap sets workspace_root,
+            // so an empty root reads the working directory instead.
+            const root = if (self.workspace_root.len > 0) self.workspace_root else ".";
+            var settings = config_runtime.loadMergedSettings(self.alloc, root) catch break :blk false;
             defer settings.deinit(self.alloc);
             break :blk config_runtime.codemodeEnabled(&settings);
         };
@@ -3272,7 +3275,7 @@ const App = struct {
     /// Applies profile `name` to instance `agent`.
     pub fn applyInstanceProfile(self: *App, agent: *agents.Agent, name: []const u8) !void {
         if (comptime host_profile.tools) {
-            try ProfileAppRuntime.applyProfile(self, agent, name, builtin_context.prompt_policy.system_prompt, builtin_tools.advertisement_set);
+            try ProfileAppRuntime.applyProfile(self, agent, name, builtin_context.prompt_policy.system_prompt, builtin_tools.gatedToolSet(self.codemodeGate()));
             try ProfileAppRuntime.reportProfile(self, agent, "instance");
         }
     }
@@ -3281,7 +3284,7 @@ const App = struct {
     /// `--profile` would have: its tools, prompt, and permission mode.
     pub fn applyFirstInstanceProfile(self: *App, name: []const u8) !void {
         if (comptime host_profile.tools) {
-            try ProfileAppRuntime.applyLaunchProfile(self, name, builtin_context.prompt_policy.system_prompt, builtin_tools.advertisement_set);
+            try ProfileAppRuntime.applyLaunchProfile(self, name, builtin_context.prompt_policy.system_prompt, builtin_tools.gatedToolSet(self.codemodeGate()));
             try ProfileAppRuntime.applyLaunchMode(self);
         }
     }
