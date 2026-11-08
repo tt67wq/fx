@@ -117,11 +117,9 @@ test "sandbox cancelled eval returns error.Cancelled and never a value" {
     try std.testing.expectError(error.Cancelled, sandbox.eval("while (true) {}"));
     try std.testing.expect(!sandbox.isBusy());
 
-    // Reset and confirm the host still evaluates cleanly.
-    sandbox.resetCancel();
-    var result = try sandbox.eval("2 + 3");
-    defer result.deinit();
-    try std.testing.expectEqualStrings("5", result.value);
+    // No reset API: a cancelled sandbox stays cancelled by design. The host
+    // that needs further work creates a fresh sandbox with a fresh flag.
+    try std.testing.expect(sandbox.cancelRequested());
 }
 
 test "sandbox timeout still returns error.Timeout distinct from cancellation" {
@@ -183,8 +181,6 @@ test "sandbox host cancel flag reads through to host.cancelled" {
     try std.testing.expect(!sandbox.cancelRequested());
     sandbox.cancel();
     try std.testing.expect(sandbox.cancelRequested());
-    sandbox.resetCancel();
-    try std.testing.expect(!sandbox.cancelRequested());
 }
 
 test "sandbox eval before start reports shutdown" {

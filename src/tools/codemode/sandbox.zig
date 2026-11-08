@@ -118,12 +118,6 @@ pub const Sandbox = struct {
         if (flag) |target| target.store(true, .seq_cst);
     }
 
-    /// Clears the cancel flag so the sandbox can be reused after a cancel.
-    pub fn resetCancel(self: *Sandbox) void {
-        const flag: ?*std.atomic.Value(bool) = @constCast(self.cancel_flag);
-        if (flag) |target| target.store(false, .seq_cst);
-    }
-
     pub fn cancelRequested(self: *const Sandbox) bool {
         const flag = self.cancel_flag orelse return false;
         return flag.load(.seq_cst);

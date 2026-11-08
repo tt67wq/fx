@@ -725,10 +725,14 @@ fn executeWorkspaceToolCallInner(
     }
 
     var command_backend = RunCommandBackendState{ .runtime = ctx };
+    // The host state is injected unconditionally, including when the
+    // experimental.codemode gate is off. Gate-off enforcement lives only in
+    // the advertisement layer (builtin_tools.gatedToolSet); the registry is
+    // what keeps a gated-off script from existing, so do not admit tools by
+    // this handle's presence alone.
     var codemode_host = CodemodeHostState{
         .runtime = ctx,
         .script_call = call,
-        .script_location = "",
     };
     var dispatch_metadata: DispatchMetadata = .{};
     var dispatch_ctx = typedDispatchContextForCall(ctx, arena, call);
@@ -836,10 +840,11 @@ fn executeRegisteredTool(
     var selected_dynamic_tool_sink = SelectedDynamicToolSinkState{ .allocator = arena };
     var context_notice_sink = ContextNoticeSinkState{ .allocator = arena };
     var command_backend = RunCommandBackendState{ .runtime = ctx };
+    // Injected unconditionally; with the gate off, enforcement stays in the
+    // advertisement layer and this handle admits nothing by itself.
     var codemode_host = CodemodeHostState{
         .runtime = ctx,
         .script_call = call,
-        .script_location = "",
     };
     var vision_provider = VisionProviderState{
         .runtime = ctx,
@@ -1277,7 +1282,6 @@ const RunCommandBackendState = struct {
 pub const CodemodeHostState = struct {
     runtime: Context,
     script_call: ToolCall,
-    script_location: []const u8,
     /// Counts nested tool calls a codemode script made through the bridge;
     /// each gets a distinct nested call id.
     call_sequence: usize = 0,
@@ -2847,7 +2851,6 @@ test "codemode host cancel query reads the worker cancel flag" {
             .name = "codemode",
             .arguments_json = "{}",
         },
-        .script_location = "",
     };
     try std.testing.expect(!host.cancelled());
     try std.testing.expect(rt.cancel_flag == null);

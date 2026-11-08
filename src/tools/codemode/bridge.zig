@@ -10,8 +10,7 @@ const types = @import("../../core/shared/types.zig");
 /// Runs whitelisted tools for a codemode script through the same admission
 /// pipeline a direct tool call takes. Every nested call builds its own
 /// admission input from the script call's execution context, carries the
-/// .codemode review origin with the script line kept in the host state's
-/// separate location field, and on allow executes through the public tool
+/// .codemode review origin, and on allow executes through the public tool
 /// execution entry with the granted authority. There is no path from a
 /// script to tool execution that skips admission.
 ///
@@ -31,7 +30,6 @@ fn call(
     allocator: std.mem.Allocator,
     tool: bindings.Tool,
     args_json: []const u8,
-    location: []const u8,
 ) anyerror![]u8 {
     const state: *tool_runtime.CodemodeHostState = @ptrCast(@alignCast(raw_ctx orelse return error.CodemodeBridgeClosed));
     const ctx = state.runtime;
@@ -39,19 +37,6 @@ fn call(
     var arena_state = std.heap.ArenaAllocator.init(allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
-
-    // The script line stays out of the call id (ids key the ledger and saved
-    // rules) and out of the review origin string; it travels in this field
-    // for the admission path to report. The raw slice is valid for the whole
-    // backend call, which covers admission and execution below. The line is
-    // reported as L<n> when the shim captured one; the raw digits stay out of
-    // the call id (ids key the ledger and saved rules).
-    if (location.len > 0) {
-        state.script_location = try allocator.print("L{s}", .{location});
-    } else {
-        state.script_location = location;
-    }
-    defer state.script_location = "";
 
     state.call_sequence += 1;
     var id_buf: [64]u8 = undefined;

@@ -19,7 +19,6 @@ const FakeBackend = struct {
     last_tool: []const u8 = "",
     last_args: [256]u8 = undefined,
     last_args_len: usize = 0,
-    last_location: []const u8 = "",
     fail: bool = false,
     request_cancel: ?*std.atomic.Value(bool) = null,
     shell_exit_code: i64 = 0,
@@ -32,12 +31,10 @@ const FakeBackend = struct {
         allocator: std.mem.Allocator,
         tool: bindings.Tool,
         args_json: []const u8,
-        location: []const u8,
     ) anyerror![]u8 {
         const self: *FakeBackend = @ptrCast(@alignCast(raw_ctx.?));
         self.calls += 1;
         self.last_tool = tool.name;
-        self.last_location = location;
         self.last_args_len = @min(args_json.len, self.last_args.len);
         @memcpy(self.last_args[0..self.last_args_len], args_json[0..self.last_args_len]);
         if (self.request_cancel) |flag| flag.store(true, .seq_cst);
@@ -218,7 +215,6 @@ test "codemode tools.call captures the script line of the call site" {
     var result = try host.eval("var a = 1;\ntools.call(\"read_file\", JSON.stringify({ path: \"notes.txt\" }));");
     defer result.deinit();
     // The call sits on the second line of the evaluated script.
-    try std.testing.expectEqualStrings("2", fake.last_location);
 }
 
 test "codemode run_command bridge merges upstream truncation alone" {

@@ -394,14 +394,6 @@ fn toolsCallCallback(ctx: ?*c.JSContext, _: c.JSValue, argc: c_int, argv: [*c]c.
     const args_ptr = c.JS_ToCStringLen(context, &args_len, argv[1]) orelse return js_exception;
     defer c.JS_FreeCString(context, args_ptr);
 
-    var location: []const u8 = "";
-    if (argc >= 3) {
-        var location_len: usize = 0;
-        const location_ptr = c.JS_ToCStringLen(context, &location_len, argv[2]) orelse return js_exception;
-        defer c.JS_FreeCString(context, location_ptr);
-        location = location_ptr[0..location_len];
-    }
-
     const backend = host.tool_backend orelse {
         var message_buf: [256]u8 = undefined;
         const message: [:0]const u8 = std.mem.printSentinel(
@@ -412,7 +404,7 @@ fn toolsCallCallback(ctx: ?*c.JSContext, _: c.JSValue, argc: c_int, argv: [*c]c.
         ) catch "codemode tool has no backend";
         return c.JS_ThrowPlainError(context, "%s", message.ptr);
     };
-    const result = backend.call(backend.ctx, host.allocator, tool, args_ptr[0..args_len], location) catch |err| {
+    const result = backend.call(backend.ctx, host.allocator, tool, args_ptr[0..args_len]) catch |err| {
         var message_buf: [256]u8 = undefined;
         const message: [:0]const u8 = std.mem.printSentinel(
             &message_buf,
