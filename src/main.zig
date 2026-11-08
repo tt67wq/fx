@@ -3705,10 +3705,17 @@ fn runNonBenchmark(raw_args: []const [*:0]const u8, raw_env: RawEnviron, cli_arg
     };
     const cfg = if (cli_args.len == 0)
         emptyEntryConfig(auth_mode)
-    else if (needsFullEntryConfig(cli_args))
-        fullEntryConfig(auth_mode)
-    else
-        localEntryConfig(auth_mode);
+    else if (needsFullEntryConfig(cli_args)) blk: {
+        // ask, pr, and issue run agent turns, so they may pay one settings
+        // read to resolve experimental.codemode. The fast paths (help and
+        // friends) keep their static config and the startup latency budget.
+        const enabled = blk2: {
+            var settings = config_runtime.loadMergedSettings(alloc, ".") catch break :blk2 false;
+            defer settings.deinit(alloc);
+            break :blk2 config_runtime.codemodeEnabled(&settings);
+        };
+        break :blk fullEntryConfig(auth_mode, enabled);
+    } else localEntryConfig(auth_mode);
 
     var early_threaded: ?std.Io.Threaded = null;
     defer if (early_threaded) |*threaded| threaded.deinit();
@@ -4222,7 +4229,7 @@ test "native app preserves the built-in tool set without workspace metadata" {
     try std.testing.expectEqual(builtin_tools.advertisement_set.order.len, advertised.order.len);
 }
 
-fn fullEntryConfig(auth_mode: credentials.AuthMode) app_entry_runtime.Config {
+fn fullEntryConfig(auth_mode: credentials.AuthMode, codemode_enabled: bool) app_entry_runtime.Config {
     return .{
         .version = version,
         .revision = build_options.git_commit,
@@ -4251,7 +4258,7 @@ fn fullEntryConfig(auth_mode: credentials.AuthMode) app_entry_runtime.Config {
         .max_history_turns = max_history_turns,
         .context_registry = default_context_registry,
         .mode_registry = builtin_modes.registry,
-        .tool_set = builtin_tools.advertisement_set,
+        .tool_set = builtin_tools.gatedToolSet(codemode_enabled),
         .inspect_mcp_profile_config = builtin_mcp.inspectProfileConfig,
         .inspect_mcp_local_config = builtin_mcp.inspectLocalConfig,
         .load_mcp_host = builtin_mcp.loadHost,

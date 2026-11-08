@@ -145,5 +145,6 @@
         "./codemode-cancel.test.ts"
       ],
       "test_file": "codemode-cancel.test.ts"
-    }]
+    },
+    {"name": "verify-codemode-admission", "argv": ["bun", "test", "--max-concurrency", "1", "./codemode-admission.test.ts"], "test_file": "codemode-admission.test.ts"}]
 }

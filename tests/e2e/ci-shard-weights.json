@@ -73,5 +73,6 @@
   { "file": "web-search-live.test.ts", "weight": 1 },
   { "file": "web-search-permission-progress.test.ts", "weight": 11 },
   { "file": "yolo-permission-mode.test.ts", "weight": 29 },
+  { "file": "codemode-admission.test.ts", "weight": 4 },
   { "file": "codemode-cancel.test.ts", "weight": 2 }
 ]

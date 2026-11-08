@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -12,14 +12,16 @@ import {
   tmuxAvailable,
 } from "./tmux-helpers";
 
-// TUI cancel-disposition coverage for a long-running tool submission.
+// TUI cancel-disposition coverage for long-running tool submissions.
 //
-// The codemode sandbox (src/tools/codemode/sandbox.zig) joins the same
-// worker-cancel path this file exercises: the worker's cancel atomic is
-// set, the in-flight work unwinds, the partial result is discarded, and fx
-// returns to a responsive composer with a truthful cancelled status. The
-// deterministic driver here is a prepared script that loops forever, so
-// the scenario does not depend on the codemode tool bridge.
+// The first test is the generic prepared-shell worker path: a command loops
+// forever, the worker cancel atomic is set, the in-flight work unwinds, and
+// fx returns to a responsive composer with a truthful cancelled status.
+//
+// The second test drives the real codemode tool bridge: the script itself is
+// an endless loop inside the sandbox (src/tools/codemode/sandbox.zig), the
+// sandbox polls the same worker cancel atomic, error.Cancelled unwinds the
+// eval, and the trace records the codemode call's cancellation.
 
 const SKIP = !tmuxAvailable();
 const TIMEOUT = 30_000;
@@ -53,7 +55,7 @@ async function waitForCondition(predicate: () => boolean, description: string): 
 
 describe.skipIf(SKIP)("tui: codemode cancel", () => {
   test(
-    "Escape cancels an endless script and fx returns to a responsive composer",
+    "prepared shell worker cancel: Escape stops an endless command and fx answers again",
     async () => {
       root = realpathSync(mkdtempSync(join(tmpdir(), "fx-codemode-cancel-")));
       const home = join(root, "home");
@@ -128,12 +130,13 @@ describe.skipIf(SKIP)("tui: codemode cancel", () => {
 
 
   test(
-    "Escape cancels an endless codemode script and fx returns to a responsive composer",
+    "codemode sandbox cancel: Escape stops an endless script and fx answers again",
     async () => {
       root = realpathSync(mkdtempSync(join(tmpdir(), "fx-codemode-cancel-tool-")));
       const home = join(root, "home");
       const workspace = join(root, "workspace");
       const stderrPath = join(root, "stderr.log");
+      const tracePath = join(root, "trace.log");
       mkdirSync(join(home, ".fx"), { recursive: true });
       mkdirSync(workspace, { recursive: true });
       const workspaceRoot = realpathSync(workspace);
@@ -165,6 +168,8 @@ describe.skipIf(SKIP)("tui: codemode cancel", () => {
           FX_GATEWAY_CHAT_URL: gateway.chatUrl,
           FX_TEST_GATEWAY_CHAT_URL: gateway.chatUrl,
           FX_MODEL: FAKE_GATEWAY_MODEL,
+          FX_TRACE_LOG: tracePath,
+          FX_TRACE_SCOPES: "tool,interrupt",
         },
       });
       await session.waitForComposer(TIMEOUT);
@@ -172,6 +177,8 @@ describe.skipIf(SKIP)("tui: codemode cancel", () => {
 
       // The codemode activity row proves the tool is gated in and running.
       await session.waitForText("Running script", TIMEOUT);
+      expect(gateway.requestCount()).toBe(1);
+      expect(gateway.classifierRequests).toHaveLength(0);
 
       // Two-stroke cancel, then fx must come back promptly and truthfully.
       const cancelStartedAt = Date.now();
@@ -182,10 +189,26 @@ describe.skipIf(SKIP)("tui: codemode cancel", () => {
       const cancellation = await session.waitForText("What can fx do differently?", TIMEOUT);
       expect(Date.now() - cancelStartedAt).toBeLessThan(5_000);
       expect(cancellation).toContain("▪ Cancelled");
+      expect(cancellation).not.toContain("system: cancelled");
+      // The worker cancel atomic diverts the codemode eval before the
+      // serial tool result is published, so the standard after_tool_execution
+      // line never runs. Attribution comes from the interrupt-scope events:
+      // the cancel observed an active tool, and the tool persisted as aborted
+      // is this codemode call. Its returned error.Cancelled is what set the
+      // cancelled disposition (src/tools/codemode/codemode_tool.zig).
+      const trace = readFileSync(tracePath, "utf8");
+      expect(trace).toMatch(
+        /event=before_tool_execution .*call_id=codemode-cancel-hold name=codemode/,
+      );
+      expect(trace).toMatch(/event=cancel_observed .*active_tool_known=true/);
+      expect(trace).toMatch(
+        /event=aborted_tool_persisted .*call_id=codemode-cancel-hold name=codemode/,
+      );
 
       // The composer answers a new prompt, so the turn is responsive again.
       await session.sendText("Confirm the session still responds.");
       await session.waitForText(FOLLOW_UP_TEXT, TIMEOUT);
+      expect((await session.capturePaneGrid()).join("\n")).not.toContain("Cancelling");
     },
     TIMEOUT * 3,
   );

@@ -4,6 +4,7 @@ const shell = @import("shell.zig");
 const tool_runtime = @import("../../core/tooling/tool_runtime.zig");
 const tool_admission = @import("../../core/tooling/tool_admission.zig");
 const auto_classifier_context = @import("../../core/permissions/auto_classifier_context.zig");
+const command_admission = @import("../../core/permissions/command_admission.zig");
 const types = @import("../../core/shared/types.zig");
 
 /// Runs whitelisted tools for a codemode script through the same admission
@@ -56,10 +57,17 @@ fn call(
     var id_buf: [64]u8 = undefined;
     const nested_id = try std.mem.print(&id_buf, "codemode-nested-{d}", .{state.call_sequence});
 
+    // The script-facing name `run_command` is the shell tool's
+    // captured-command compatibility name; the registered tool the model
+    // calls directly is `shell` with action "run". Canonicalizing here makes
+    // both paths build the same admission payload and execute the same tool.
+    // Without it the nested call reaches admission and dispatch under a name
+    // no registered tool carries.
+    const canonical = try canonicalNestedCall(arena, tool, args_json);
     const nested_call: types.ToolCall = .{
         .id = nested_id,
-        .name = tool.name,
-        .arguments_json = args_json,
+        .name = canonical.name,
+        .arguments_json = canonical.arguments_json,
     };
 
     var check = ctx;
@@ -87,8 +95,7 @@ fn call(
         check.session_grants,
     );
     if (outcome.decision.isDenied() or outcome.tool_failure != null) {
-        return deniedResult(allocator, outcome.feedback orelse outcome.tool_failure orelse
-            try arena.print("Permission to run {s} was not granted ({s}).", .{ tool.name, @tagName(outcome.decision) }));
+        return deniedResult(allocator, try deniedReason(arena, tool.name, outcome));
     }
 
     const result = try tool_runtime.executeToolCallAuthorized(check, .{
@@ -111,6 +118,71 @@ fn call(
         return shellResult(allocator, arena, result);
     }
     return allocator.dupe(u8, result.model_output);
+}
+
+const CanonicalCall = struct {
+    name: []const u8,
+    arguments_json: []const u8,
+};
+
+/// Maps the script's `run_command` call onto the registered `shell` tool's
+/// `action: "run"` form. The action goes first so the bytes match a direct
+/// model call that names the same action and command; every other script
+/// field keeps its original order. Other whitelisted tools pass through.
+fn canonicalNestedCall(
+    arena: std.mem.Allocator,
+    tool: bindings.Tool,
+    args_json: []const u8,
+) !CanonicalCall {
+    if (!std.mem.eql(u8, tool.name, "run_command")) {
+        return .{ .name = tool.name, .arguments_json = args_json };
+    }
+
+    const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, args_json, .{}) catch
+        return error.InvalidToolArguments;
+    if (parsed != .object) return error.InvalidToolArguments;
+    const object = parsed.object;
+
+    if (object.get("action")) |action| {
+        if (action != .string or !std.mem.eql(u8, action.string, "run")) {
+            return error.InvalidToolArguments;
+        }
+    }
+    const command = object.get("command") orelse return error.InvalidToolArguments;
+    if (command != .string) return error.InvalidToolArguments;
+
+    var out: std.Io.Writer.Allocating = .init(arena);
+    try out.writer.writeAll("{\"action\":\"run\"");
+    var fields = object.iterator();
+    while (fields.next()) |entry| {
+        if (std.mem.eql(u8, entry.key_ptr.*, "action")) continue;
+        try out.writer.writeByte(',');
+        try std.json.Stringify.value(entry.key_ptr.*, .{}, &out.writer);
+        try out.writer.writeByte(':');
+        try std.json.Stringify.value(entry.value_ptr.*, .{}, &out.writer);
+    }
+    try out.writer.writeByte('}');
+    return .{
+        .name = "shell",
+        .arguments_json = try out.toOwnedSlice(),
+    };
+}
+
+/// A denied nested call reports the permission pipeline's specific reason,
+/// matching the direct tool result's `reason` value when one exists, and
+/// falls back to the decision name for paths that carry no denial reason.
+fn deniedReason(
+    arena: std.mem.Allocator,
+    tool_name: []const u8,
+    outcome: command_admission.PermissionOutcome,
+) ![]const u8 {
+    if (outcome.feedback) |feedback| return feedback;
+    if (outcome.tool_failure) |failure| return failure;
+    const reason = if (outcome.denial_reason) |reason|
+        @tagName(reason)
+    else
+        @tagName(outcome.decision);
+    return arena.print("Permission to run {s} was not granted ({s}).", .{ tool_name, reason });
 }
 
 /// Encodes one nested run_command result for the script: exit code and
@@ -162,4 +234,106 @@ test "denied result json carries the reason as a script value" {
     const encoded = try deniedResult(allocator, "not allowed");
     defer allocator.free(encoded);
     try std.testing.expectEqualStrings("{\"denied\":true,\"reason\":\"not allowed\"}", encoded);
+}
+
+test "run_command canonicalizes to the registered shell run call" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const canonical = try canonicalNestedCall(
+        arena_state.allocator(),
+        .{ .name = "run_command" },
+        "{\"command\":\"./parity-probe.sh\"}",
+    );
+    try std.testing.expectEqualStrings("shell", canonical.name);
+    try std.testing.expectEqualStrings(
+        "{\"action\":\"run\",\"command\":\"./parity-probe.sh\"}",
+        canonical.arguments_json,
+    );
+}
+
+test "run_command canonicalization keeps field order and an explicit run action" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const canonical = try canonicalNestedCall(
+        arena_state.allocator(),
+        .{ .name = "run_command" },
+        "{\"action\":\"run\",\"command\":\"make\",\"cwd\":\"src\",\"timeout_ms\":600000}",
+    );
+    try std.testing.expectEqualStrings(
+        "{\"action\":\"run\",\"command\":\"make\",\"cwd\":\"src\",\"timeout_ms\":600000}",
+        canonical.arguments_json,
+    );
+}
+
+test "run_command canonicalization refuses another shell action" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    try std.testing.expectError(
+        error.InvalidToolArguments,
+        canonicalNestedCall(
+            arena_state.allocator(),
+            .{ .name = "run_command" },
+            "{\"action\":\"interact\",\"command\":\"true\"}",
+        ),
+    );
+}
+
+test "run_command canonicalization requires an object with a string command" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    try std.testing.expectError(
+        error.InvalidToolArguments,
+        canonicalNestedCall(arena, .{ .name = "run_command" }, "[]"),
+    );
+    try std.testing.expectError(
+        error.InvalidToolArguments,
+        canonicalNestedCall(arena, .{ .name = "run_command" }, "{}"),
+    );
+    try std.testing.expectError(
+        error.InvalidToolArguments,
+        canonicalNestedCall(arena, .{ .name = "run_command" }, "{\"command\":5}"),
+    );
+}
+
+test "other whitelisted tools keep their exact arguments" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const canonical = try canonicalNestedCall(
+        arena_state.allocator(),
+        .{ .name = "read_file" },
+        "{\"path\":\"notes.txt\"}",
+    );
+    try std.testing.expectEqualStrings("read_file", canonical.name);
+    try std.testing.expectEqualStrings("{\"path\":\"notes.txt\"}", canonical.arguments_json);
+}
+
+test "denied reason prefers the permission pipeline's specific denial" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    try std.testing.expectEqualStrings("human feedback", try deniedReason(arena, "run_command", .{
+        .decision = .deny,
+        .denial_reason = .user_denied,
+        .feedback = "human feedback",
+    }));
+    try std.testing.expectEqualStrings(
+        "Permission to run run_command was not granted (user_denied).",
+        try deniedReason(arena, "run_command", .{
+            .decision = .deny,
+            .denial_reason = .user_denied,
+        }),
+    );
+    try std.testing.expectEqualStrings(
+        "Permission to run run_command was not granted (review_caution).",
+        try deniedReason(arena, "run_command", .{
+            .decision = .deny,
+            .denial_reason = .review_caution,
+        }),
+    );
+    try std.testing.expectEqualStrings(
+        "Permission to run run_command was not granted (permission_required).",
+        try deniedReason(arena, "run_command", .{ .decision = .permission_required }),
+    );
 }
