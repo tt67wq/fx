@@ -498,6 +498,7 @@ const App = struct {
     workspace_root: []u8 = &.{},
     /// Resolved experimental.codemode gate, cached after the first read.
     codemode_gate: ?bool = null,
+    codemode_gate_from_cwd: bool = false,
     workspace_identity: statusline_identity.Runtime = .{},
     workspace: app_workspace_runtime.State = .{},
     permission_engine: PermissionEngine = .{},
@@ -1845,16 +1846,46 @@ const App = struct {
     /// answer (or vice versa).
     fn codemodeGate(self: *const App) bool {
         if (self.codemode_gate) |enabled| return enabled;
+        // The launch profile applies before bootstrap sets workspace_root,
+        // so an empty root reads the working directory instead. A gate
+        // resolved that way re-resolves once bootstrap names the real
+        // workspace (see reresolveCodemodeGateAfterBootstrap).
+        const from_cwd = self.workspace_root.len == 0;
+        const root = if (from_cwd) "." else self.workspace_root;
         const enabled = blk: {
-            // The launch profile applies before bootstrap sets workspace_root,
-            // so an empty root reads the working directory instead.
-            const root = if (self.workspace_root.len > 0) self.workspace_root else ".";
             var settings = config_runtime.loadMergedSettings(self.alloc, root) catch break :blk false;
             defer settings.deinit(self.alloc);
             break :blk config_runtime.codemodeEnabled(&settings);
         };
         @constCast(self).codemode_gate = enabled;
+        @constCast(self).codemode_gate_from_cwd = from_cwd;
         return enabled;
+    }
+
+    /// Re-resolves the gate once when it was cached before bootstrap named
+    /// the real workspace root: a workspace-scoped override keyed by the
+    /// repository root misses when fx launches from a subdirectory, and the
+    /// cached false would otherwise lock the whole session.
+    pub fn reresolveCodemodeGateAfterBootstrap(self: *App) void {
+        if (self.codemode_gate == null or !self.codemode_gate_from_cwd) return;
+        if (self.workspace_root.len == 0) return;
+        self.codemode_gate = null;
+        self.codemode_gate_from_cwd = false;
+        _ = self.codemodeGate();
+        // A launch profile narrowed against the pre-bootstrap base already
+        // froze its tool set; narrow it again against the resolved root, or
+        // a workspace-scoped gate stays invisible to the profile.
+        const held = &self.main_agent.profile;
+        if (held.arena == null) return;
+        const arena = &held.arena.?;
+        self.main_agent.profile_tools = tool_set_contract.narrow(
+            arena.allocator(),
+            builtin_tools.gatedToolSet(self.codemode_gate.?),
+            app_profile_runtime.ProfileTools{
+                .profile = &held.profile,
+                .role = .main,
+            },
+        ) catch null;
     }
 
     pub fn toolRegistry(self: *const App, agent: *const agents.Agent) tool_dispatch.Registry {

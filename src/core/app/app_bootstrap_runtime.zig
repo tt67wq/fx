@@ -440,6 +440,9 @@ pub fn Runtime(comptime App: type) type {
             }
 
             app.workspace_root = startup.takeWorkspaceRoot();
+            if (comptime @hasDecl(App, "reresolveCodemodeGateAfterBootstrap")) {
+                app.reresolveCodemodeGateAfterBootstrap();
+            }
             if (comptime @hasDecl(App, "adoptWorkspaceAccess")) {
                 app.adoptWorkspaceAccess(startup.takeWorkspaceAccess());
             }
