@@ -30,7 +30,7 @@ pub fn parseRichResult(alloc: Allocator, bytes: []const u8, text_limit: usize, i
     return .{ .rich = .{ .text = body, .images = images, .is_error = is_error } };
 }
 
-/// Names each image a libfx host stored before it sent the result: one whose
+/// Names each image a host stored before it sent the result: one whose
 /// decoded bytes hash to a `stored` mark the result carries. A mark that
 /// matches no image leaves the images inline.
 fn nameStoredImages(alloc: Allocator, images: []types.ToolImage, values: []const std.json.Value) Allocator.Error!void {

@@ -1376,12 +1376,12 @@ pub const ToolImage = struct {
     mime_type: []u8,
     /// Owned opaque host reference, never filesystem or network authority.
     source_ref: ?[]u8 = null,
-    /// The image's name in a libfx host's store, the lowercase hex SHA-256
+    /// The image's name in a host's store, the lowercase hex SHA-256
     /// of its decoded bytes, when the host stored them before it sent the
     /// result. Writers that name stored images write this instead of `data`.
     name: ?[64]u8 = null,
 
-    /// Whether the session no longer holds this image: a libfx session with
+    /// Whether the session no longer holds this image: an in-memory session with
     /// an image store keeps only its newest images, and an older one keeps
     /// its name, without its bytes.
     pub fn droppedFromSession(self: ToolImage) bool {
@@ -1565,7 +1565,7 @@ pub const ImageAttachment = struct {
     snapshot_path: ?[]u8 = null,
     snapshot_sha256: ?[]u8 = null,
     /// Owned decoded image bytes for sessions without a filesystem snapshot
-    /// backend (libfx kernel sessions on native and wasm). When set, the
+    /// backend (in-memory sessions). When set, the
     /// attachment loads from memory instead of `snapshot_path`, and durable
     /// serializers embed the bytes so checkpoint/restore round-trips them.
     inline_data: ?[]u8 = null,
@@ -1579,7 +1579,7 @@ pub const ImageAttachment = struct {
     /// path.
     blob_path: ?[]u8 = null,
 
-    /// Whether the session no longer holds this image: a libfx session with
+    /// Whether the session no longer holds this image: an in-memory session with
     /// an image store keeps only its newest images, and an older one keeps
     /// its digest, which names it in the host's store, without its bytes.
     pub fn droppedFromSession(self: ImageAttachment) bool {

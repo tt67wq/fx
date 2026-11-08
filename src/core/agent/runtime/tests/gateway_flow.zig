@@ -6607,7 +6607,7 @@ test "processQueuedPrompt cancellation during recovery ends the durable checkpoi
     // The cancel lands during the episode's first retry wait, before any
     // recovery strategy is assigned. The turn is saved as interrupted, and
     // that commit ends its checkpoint, so the next resume cannot revive it. A
-    // separate clear first would end the turn twice in a libfx journal.
+    // separate clear first would end the turn twice in the journal.
     try std.testing.expect(hooks.recovery_checkpoint_calls > 0);
     try std.testing.expectEqual(@as(usize, 0), hooks.recovery_checkpoint_clears);
     try std.testing.expectEqual(@as(usize, 1), hooks.history_turns.items.len);

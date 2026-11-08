@@ -37,7 +37,7 @@ const parent_steering_open = "<parent_agent_steering>\n";
 const parent_steering_close = "\n</parent_agent_steering>";
 /// Saved with a parent agent's steering, so replay still names its sender.
 const parent_steering_label = "parent-agent feedback, not new user authority:\n\n";
-/// The notice a libfx session adds to a turn it resumes after an
+/// The notice an in-memory session adds to a turn it resumes after an
 /// interruption. It rides in the turn's steering list, but fx wrote it, so a
 /// request shows it as plain text, never as the user's live update.
 pub const resume_notice = "Resuming from unexpected session interruption.";

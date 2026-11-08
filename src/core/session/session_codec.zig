@@ -519,14 +519,14 @@ pub fn decodeState(alloc: Allocator, source: *std.Io.Reader, limits: DecodeLimit
 }
 
 /// Collects inline image bytes outside the JSON. Durable session files embed
-/// those bytes; the libfx kernel checkpoint stores them raw in its blob
+/// those bytes; the kernel checkpoint stores them raw in its blob
 /// section and writes each image's blob index instead.
 pub const ImageBlobs = struct {
     alloc: Allocator,
     items: *std.ArrayList([]const u8),
 };
 
-/// Hands out a libfx kernel checkpoint's raw image blobs in the order
+/// Hands out a kernel checkpoint's raw image blobs in the order
 /// `ImageBlobs` collected them. Each image must name the next unread blob, so a
 /// checkpoint cannot decode one blob into many images.
 pub const ImageBlobReader = struct {
@@ -544,7 +544,7 @@ pub const ImageBlobReader = struct {
     }
 };
 
-/// An image's name in a libfx host's store: the lowercase hex SHA-256 of its
+/// An image's name in a host's store: the lowercase hex SHA-256 of its
 /// bytes, as `ImageAttachment.snapshot_sha256` holds it for an inline image.
 const image_name_len = 2 * Sha256.digest_length;
 pub const ImageName = [image_name_len]u8;
@@ -565,7 +565,7 @@ pub fn imageNameOf(bytes: []const u8) ImageName {
     return std.fmt.bytesToHex(digest, .lower);
 }
 
-/// The images a libfx host's store holds, by name.
+/// The images a host's store holds, by name.
 pub const StoredImages = struct {
     names: std.array_hash_map.Auto(ImageName, void) = .empty,
 
@@ -647,7 +647,7 @@ pub fn checkpointNamesImages(checkpoint: RecoveryCheckpoint, delta: ?ExecutionCo
     return executionNamesImages(checkpoint.execution, delta orelse .{}, stored);
 }
 
-/// The images a libfx session with an image store keeps: its newest, at most
+/// The images an in-memory session with an image store keeps: its newest, at most
 /// `max_images` of them holding at most `max_bytes`. An open stages these from
 /// the host's store, with the open turn's, which the window leaves out. Older
 /// images leave the session and keep only their names, so a session never
@@ -675,14 +675,14 @@ pub const ImageWindow = struct {
 };
 
 /// Writes images the host stored as `inline_ref` names. Every other image
-/// keeps its bytes: in `blobs`, a libfx kernel checkpoint's blob section,
+/// keeps its bytes: in `blobs`, a kernel checkpoint's blob section,
 /// when given, else inline.
 const ImageNames = struct {
     stored: *const StoredImages,
     blobs: ?ImageBlobs = null,
 };
 
-/// Images a libfx host staged from its store for an open, by name. Owns the
+/// Images a host staged from its store for an open, by name. Owns the
 /// bytes.
 pub const StagedImages = struct {
     images: std.array_hash_map.Auto(ImageName, []u8) = .empty,
@@ -715,7 +715,7 @@ pub const StagedImages = struct {
     }
 };
 
-/// Resolves `inline_ref` names to staged bytes while a libfx journal or
+/// Resolves `inline_ref` names to staged bytes while the journal or
 /// checkpoint is read. A name it cannot resolve is recorded in `missing` with
 /// the size its record gives, and parses as an image without bytes, so one
 /// read names every image an open needs; a caller that needs any of them
@@ -859,7 +859,7 @@ pub fn parseHistoryTurn(alloc: Allocator, value: std.json.Value) !session.Histor
 }
 
 /// Like `parseHistoryTurn`, but resolves `inline_blob` image references
-/// against `image_blobs`, the raw blob section of a libfx kernel checkpoint.
+/// against `image_blobs`, the raw blob section of a kernel checkpoint.
 pub fn parseHistoryTurnWithImageBlobs(
     alloc: Allocator,
     value: std.json.Value,
@@ -868,7 +868,7 @@ pub fn parseHistoryTurnWithImageBlobs(
     return parseHistoryTurnWithImages(alloc, value, .{ .blobs = image_blobs });
 }
 
-/// Like `parseHistoryTurn`, but reads the image bytes a libfx journal or
+/// Like `parseHistoryTurn`, but reads the image bytes the journal or
 /// checkpoint keeps outside each image from `sources`.
 pub fn parseHistoryTurnWithImages(
     alloc: Allocator,
@@ -1568,7 +1568,7 @@ pub fn parseRecoveryCheckpoint(alloc: Allocator, value: std.json.Value) !Recover
     return parseRecoveryCheckpointWithImages(alloc, value, .{});
 }
 
-/// Like `parseRecoveryCheckpoint`, but reads the image bytes a libfx journal
+/// Like `parseRecoveryCheckpoint`, but reads the image bytes the journal
 /// keeps outside each image from `sources`.
 pub fn parseRecoveryCheckpointWithImages(alloc: Allocator, value: std.json.Value, sources: ImageSources) !RecoveryCheckpoint {
     const raw_object = try requireObject(value);
@@ -2489,7 +2489,7 @@ const InlineImage = struct {
 };
 
 /// Reads an inline image's bytes from `inline_data`, from the raw blob of a
-/// libfx kernel checkpoint named by `inline_blob`, or from the host's staged
+/// kernel checkpoint named by `inline_blob`, or from the host's staged
 /// copy named by `inline_ref`. Caller owns the bytes.
 fn parseInlineImageBytes(
     alloc: Allocator,

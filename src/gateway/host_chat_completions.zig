@@ -1,5 +1,5 @@
 //! A configured OpenAI-compatible provider's requests sent through a host
-//! transport, for runtimes such as libfx whose network access belongs to the
+//! transport, for runtimes whose network access belongs to the host: the
 //! host. The request, the declared models and the reply parsing are the CLI's
 //! own; only the HTTP client differs. The host adds the API key, if any.
 const std = @import("std");
@@ -112,7 +112,7 @@ const test_provider =
 ;
 
 const reply_sse =
-    "data: {\"id\":\"chat-1\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"libfx on a custom provider\"},\"finish_reason\":null}]}\n\n" ++
+    "data: {\"id\":\"chat-1\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"app on a custom provider\"},\"finish_reason\":null}]}\n\n" ++
     "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" ++
     "data: [DONE]\n\n";
 
@@ -134,7 +134,7 @@ test "host chat completions posts the CLI's request to the provider's base URL w
         fake.headers[0],
     );
     try std.testing.expectEqualStrings(fake.prepared_body, fake.bodies[0]);
-    try std.testing.expectEqualStrings("libfx on a custom provider", result.completed.completion.content.?);
+    try std.testing.expectEqualStrings("app on a custom provider", result.completed.completion.content.?);
     try std.testing.expectEqual(@as(usize, 1), fake.consumed);
     try std.testing.expectEqual(fake.calls, fake.closed);
 }
