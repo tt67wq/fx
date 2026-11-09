@@ -11,7 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runFx } from "../evals/eval-helpers";
+import { FX_BIN, runFx } from "../evals/eval-helpers";
 import {
   FAKE_GATEWAY_MODEL,
   fakeGatewayFinalText,
@@ -473,5 +473,77 @@ describe.skipIf(!tmuxAvailable())("tui: codemode nested permission slots", () =>
       expect(gateway.classifierRequests).toHaveLength(0);
     },
     TIMEOUT * 3,
+  );
+
+  test(
+    "codemode-only profile narrows the model surface, not the script surface",
+    async () => {
+      const root = createIsolatedRoot();
+      writeFileSync(
+        join(root.workspace, "README.md"),
+        "PROFILE_SURFACE_README" + "\n",
+      );
+      const profileDir = join(root.home, ".fx", "agents", "codemode-only");
+      mkdirSync(profileDir, { recursive: true });
+      writeFileSync(
+        join(profileDir, "profile.json"),
+        JSON.stringify({ description: "codemode-only", tools: ["codemode"] }) + "\n",
+      );
+      writeFileSync(
+        join(profileDir, "prompt.md"),
+        "Drive everything through codemode scripts." + "\n",
+      );
+      const gateway = startGateway([
+        fakeGatewayToolCall("profile-nested-read", "codemode", {
+          script:
+            'const r = await tools.call("read_file", { path: "README.md" });' + 
+            "\ntext(r);",
+        }),
+        fakeGatewayFinalText("PROFILE_READ_DONE"),
+        fakeGatewayToolCall("profile-value", "codemode", { script: "1 + 1" }),
+        fakeGatewayFinalText("PROFILE_VALUE_DONE"),
+      ]);
+      const session = await TmuxSession.create({
+        cmd: FX_BIN + " --profile codemode-only",
+        cwd: root.workspace,
+        env: gatewayEnv(root, gateway),
+        stderrPath: join(root.root, "profile-stderr.log"),
+        width: 140,
+        height: 50,
+      });
+      activeSession = session;
+      await session.waitForComposer(TIMEOUT);
+
+      await session.sendText("read through a script");
+      await session.waitForText("PROFILE_READ_DONE", TIMEOUT);
+      await session.sendText("compute a value");
+      await session.waitForText("PROFILE_VALUE_DONE", TIMEOUT);
+
+      // The model saw the codemode-only surface: no bare read_file call.
+      const readBody = JSON.parse(gateway.requests[1]!.body);
+      expect(readBody.tools.map((t: { name: string }) => t.name)).toEqual(["codemode"]);
+      // The nested object-argument call resolved against the full registry.
+      // TUI request order may interleave title requests; scan for the call.
+      const findResult = (callId: string): string | undefined => {
+        for (const request of gateway.requests) {
+          const body = JSON.parse(request.body) as {
+            prompt?: Array<{ content?: Array<Record<string, unknown>> }>;
+          };
+          const part = (body.prompt ?? [])
+            .flatMap((message) => message.content ?? [])
+            .find((p) => p.type === "tool-result" && p.toolCallId === callId);
+          if (part) return JSON.stringify((part as { output: unknown }).output);
+        }
+        return undefined;
+      };
+      const read = findResult("profile-nested-read");
+      expect(read).toBeDefined();
+      expect(read!).toContain("PROFILE_SURFACE_README");
+      // A bare expression completion value reaches the model.
+      const value = findResult("profile-value");
+      expect(JSON.parse(value!).value).toBe("2\n");
+      expect(gateway.classifierRequests).toHaveLength(0);
+    },
+    TIMEOUT * 2,
   );
 });

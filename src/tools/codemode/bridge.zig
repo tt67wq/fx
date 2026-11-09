@@ -6,6 +6,7 @@ const tool_admission = @import("../../core/tooling/tool_admission.zig");
 const auto_classifier_context = @import("../../core/permissions/auto_classifier_context.zig");
 const command_admission = @import("../../core/permissions/command_admission.zig");
 const types = @import("../../core/shared/types.zig");
+const builtin_tools = @import("../../builtins/tools.zig");
 
 /// Runs whitelisted tools for a codemode script through the same admission
 /// pipeline a direct tool call takes. Every nested call builds its own
@@ -56,6 +57,13 @@ fn call(
     };
 
     var check = ctx;
+    // Nested calls resolve against the full built-in registry, not the
+    // profile-narrowed one: a codemode-only profile advertises codemode to
+    // the model, while the script-facing whitelist (read_file, glob_files,
+    // grep_files, run_command) stays available to the script. Each nested
+    // call still passes the admission pipeline below, so narrowing the
+    // model's surface never bypasses a review.
+    check.tool_registry = builtin_tools.registry;
     // In-script capture shares the shell result budget so one script cannot
     // hold more command output than one direct run_command call reports.
     check.max_command_output_bytes = shell.default_script_shell_budget_bytes;

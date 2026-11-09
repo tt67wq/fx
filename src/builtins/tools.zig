@@ -730,7 +730,7 @@ pub const read_tool_result = ToolSpec{
 };
 
 pub const codemode_description =
-    "Run JavaScript in a sandbox for multi-step work in one call. Use tools.call(\"read_file\", ...) and the other file and command tools to search, read, and run, then return a short summary. A script that only wraps one tool call is slower than calling the tool directly.";
+    "Run JavaScript in a sandbox for multi-step work in one call. Use tools.call(\"read_file\", ...) and the other file and command tools to search, read, and run, finish with text(your short summary); top-level return is not valid script syntax. A script that only wraps one tool call is slower than calling the tool directly.";
 
 pub const codemode = ToolSpec{
     .name = "codemode",

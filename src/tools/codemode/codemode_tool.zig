@@ -99,6 +99,15 @@ pub fn call(ctx: tool_dispatch.DispatchContext, erased: tool_dispatch.ToolInput)
     if (result.text.len > 0 and !std.mem.endsWith(u8, result.text, "\n")) {
         text.writer.writeAll("\n") catch return error.OutOfMemory;
     }
+    // A script completion value is the result when the script called
+    // neither text() nor console.log: "1 + 1" must answer "2", not an
+    // empty output the model reads as silence and retries against.
+    if (text.written().len == 0 and result.value.len > 0 and
+        !std.mem.eql(u8, result.value, "undefined"))
+    {
+        text.writer.writeAll(result.value) catch return error.OutOfMemory;
+        text.writer.writeAll("\n") catch return error.OutOfMemory;
+    }
     return .{ .success = text.toOwnedSlice() catch return error.OutOfMemory };
 }
 

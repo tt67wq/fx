@@ -297,6 +297,31 @@ test "codemode top-level await works and tools.call results are values" {
     try std.testing.expectEqual(@as(usize, 1), backend.calls);
 }
 
+test "tools.call accepts an object argument without JSON.stringify" {
+    var host = Host.init(std.testing.allocator, .{});
+    defer host.deinit();
+    var backend = FakeBackend{};
+    host.setToolBackend(.{ .ctx = &backend, .call = FakeBackend.call });
+    var r = try host.eval("await tools.call('read_file', { path: 'README.md' })");
+    defer r.deinit();
+    try std.testing.expectEqual(@as(usize, 1), backend.calls);
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, backend.last_args[0..backend.last_args_len], .{});
+    defer parsed.deinit();
+    try std.testing.expect(parsed.value == .object);
+    try std.testing.expectEqualStrings("README.md", parsed.value.object.get("path").?.string);
+}
+
+test "tools.call object argument that cannot stringify reports the error" {
+    var host = Host.init(std.testing.allocator, .{});
+    defer host.deinit();
+    var backend = FakeBackend{};
+    host.setToolBackend(.{ .ctx = &backend, .call = FakeBackend.call });
+    try std.testing.expectError(error.ScriptError, host.eval("const a = {}; a.self = a; await tools.call('read_file', a)"));
+    const message = host.lastExceptionMessage() orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, message, "circular") != null);
+    try std.testing.expectEqual(@as(usize, 0), backend.calls);
+}
+
 test "codemode script exceptions carry the message to the tool result" {
     var host = Host.init(std.testing.allocator, .{});
     defer host.deinit();

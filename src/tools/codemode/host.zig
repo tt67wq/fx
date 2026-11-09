@@ -448,8 +448,21 @@ fn toolsCallCallback(ctx: ?*c.JSContext, _: c.JSValue, argc: c_int, argv: [*c]c.
         return c.JS_ThrowTypeError(context, "%s", message.ptr);
     };
 
+    // The schema shows an object argument; stringify objects here so the
+    // model does not need to remember JSON.stringify for every call.
+    // JS_JSONStringify uses the real JSON implementation, so a script
+    // cannot shadow it, and the single defer owns the one held value.
+    var args_value = argv[1];
+    var args_from_object = false;
+    if (c.JS_IsObject(argv[1])) {
+        args_value = c.JS_JSONStringify(context, argv[1], js_undefined, js_undefined);
+        if (c.JS_IsException(args_value)) return js_exception;
+        args_from_object = true;
+    }
+    defer if (args_from_object) c.JS_FreeValue(context, args_value);
     var args_len: usize = 0;
-    const args_ptr = c.JS_ToCStringLen(context, &args_len, argv[1]) orelse return js_exception;
+    const args_ptr = c.JS_ToCStringLen(context, &args_len, args_value) orelse
+        return js_exception;
     defer c.JS_FreeCString(context, args_ptr);
 
     const backend = host.tool_backend orelse {
