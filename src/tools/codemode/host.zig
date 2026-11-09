@@ -307,9 +307,14 @@ pub const Host = struct {
         return 0;
     }
 
+    /// Renders a completion value for the tool result: objects come out as
+    /// JSON so the model can read a nested tool result without calling
+    /// JSON.stringify itself. Serialization that fails, such as a circular
+    /// reference, clears the pending exception and falls back to the plain
+    /// string form so the engine stays healthy for later evals.
     fn stringify(self: *Host, ctx: *c.JSContext, value: c.JSValueConst) (EvalError || Allocator.Error)![]u8 {
         var len: usize = 0;
-        const ptr = c.JS_ToCStringLen(ctx, &len, value) orelse return self.takeExceptionError(ctx);
+        const ptr = renderCValue(self, ctx, value, &len) orelse return self.takeExceptionError(ctx);
         defer c.JS_FreeCString(ctx, ptr);
         return self.allocator.dupe(u8, ptr[0..len]);
     }
@@ -360,7 +365,7 @@ fn textCallback(ctx: ?*c.JSContext, _: c.JSValue, argc: c_int, argv: [*c]c.JSVal
     const host: *Host = @ptrCast(@alignCast(c.JS_GetContextOpaque(context) orelse return js_exception));
     if (argc > 0) {
         var len: usize = 0;
-        const ptr = c.JS_ToCStringLen(context, &len, argv[0]) orelse return js_exception;
+        const ptr = renderCValue(host, context, argv[0], &len) orelse return js_exception;
         defer c.JS_FreeCString(context, ptr);
         switch (appendCapped(host, &host.text_buf, ptr[0..len])) {
             .complete => {},
@@ -385,7 +390,7 @@ fn consoleLogCallback(ctx: ?*c.JSContext, _: c.JSValue, argc: c_int, argv: [*c]c
             }
         }
         var len: usize = 0;
-        const ptr = c.JS_ToCStringLen(context, &len, argv[@intCast(index)]) orelse return js_exception;
+        const ptr = renderCValue(host, context, argv[@intCast(index)], &len) orelse return js_exception;
         defer c.JS_FreeCString(context, ptr);
         switch (appendCapped(host, &host.console_buf, ptr[0..len])) {
             .complete => {},
@@ -504,6 +509,38 @@ fn appendCapped(host: *Host, out: *std.ArrayList(u8), bytes: []const u8) AppendO
     return if (take < bytes.len) .truncated else .complete;
 }
 
+/// Renders one script value for text(), console.log, or the completion
+/// value: objects are JSON-stringified first so the model reads real
+/// content instead of "[object Object]". JS_JSONStringify uses the real
+/// JSON implementation, so a script cannot shadow it. The returned c-string
+/// view stays valid until the caller calls JS_FreeCString; on the fallback
+/// path it is the plain ToCString form. Returns null only when the value
+/// itself failed to convert, which means an exception is pending and the
+/// caller reports it through its own error path.
+fn renderCValue(host: *Host, ctx: *c.JSContext, value: c.JSValueConst, len: *usize) ?[*:0]const u8 {
+    if (c.JS_IsObject(value)) {
+        const json = c.JS_JSONStringify(ctx, value, js_undefined, js_undefined);
+        if (!c.JS_IsException(json)) {
+            defer c.JS_FreeValue(ctx, json);
+            const ptr = c.JS_ToCStringLen(ctx, len, json);
+            return ptr;
+        }
+        // The value cannot be JSON, typically a circular reference or a
+        // BigInt: drop the pending exception so it cannot leak into a later
+        // eval, then fall back to the plain string form. At the memory limit
+        // the fallback would fail too, so the exception goes back to the
+        // engine instead and the caller's error path keeps the MemoryLimit
+        // classification that a plain ScriptError would lose.
+        const pending = c.JS_GetException(ctx);
+        if (isOutOfMemory(host, ctx, pending)) {
+            _ = c.JS_Throw(ctx, pending);
+            return null;
+        }
+        c.JS_FreeValue(ctx, pending);
+    }
+    return c.JS_ToCStringLen(ctx, len, value);
+}
+
 fn isOutOfMemory(host: *Host, ctx: *c.JSContext, exception: c.JSValue) bool {
     if (c.JS_IsUninitialized(exception)) return memoryLimitReached(host);
     var len: usize = 0;
@@ -575,6 +612,105 @@ test "codemode console.log captures every argument" {
     try std.testing.expectEqualStrings("ok", result.value);
     try std.testing.expectEqualStrings("a 1 true\n\n", result.console);
     try std.testing.expectEqualStrings("", result.text);
+}
+
+test "codemode text renders object arguments as JSON" {
+    var host = Host.init(std.testing.allocator, .{});
+    defer host.deinit();
+
+    var result = try host.eval(
+        \\text({a: 1});
+        \\"done";
+    );
+    defer result.deinit();
+    try std.testing.expectEqualStrings("done", result.value);
+    try std.testing.expectEqualStrings("{\"a\":1}", result.text);
+}
+
+test "codemode text renders a circular reference as its fallback form" {
+    var host = Host.init(std.testing.allocator, .{});
+    defer host.deinit();
+
+    var result = try host.eval(
+        \\const o = {};
+        \\o.self = o;
+        \\text(o);
+        \\"recovered";
+    );
+    defer result.deinit();
+    try std.testing.expectEqualStrings("recovered", result.value);
+    try std.testing.expectEqualStrings("[object Object]", result.text);
+}
+
+test "codemode console.log renders object arguments as JSON" {
+    var host = Host.init(std.testing.allocator, .{});
+    defer host.deinit();
+
+    var result = try host.eval(
+        \\console.log({a: 1});
+        \\console.log(1, {a: 1});
+        \\"ok";
+    );
+    defer result.deinit();
+    try std.testing.expectEqualStrings("ok", result.value);
+    try std.testing.expectEqualStrings("{\"a\":1}\n1 {\"a\":1}\n", result.console);
+}
+
+test "codemode console.log renders a circular reference as its fallback form" {
+    var host = Host.init(std.testing.allocator, .{});
+    defer host.deinit();
+
+    var result = try host.eval(
+        \\const o = {};
+        \\o.self = o;
+        \\console.log(o);
+        \\"recovered";
+    );
+    defer result.deinit();
+    try std.testing.expectEqualStrings("recovered", result.value);
+    try std.testing.expectEqualStrings("[object Object]\n", result.console);
+}
+
+test "codemode renders an object completion value as JSON" {
+    var host = Host.init(std.testing.allocator, .{});
+    defer host.deinit();
+
+    var result = try host.eval("({a: 1, nested: {b: \"x\"}})");
+    defer result.deinit();
+    try std.testing.expectEqualStrings("{\"a\":1,\"nested\":{\"b\":\"x\"}}", result.value);
+}
+
+test "codemode renders a circular completion value as its fallback form and keeps the engine healthy" {
+    var host = Host.init(std.testing.allocator, .{});
+    defer host.deinit();
+
+    var result = try host.eval(
+        \\const o = {};
+        \\o.self = o;
+        \\o;
+    );
+    defer result.deinit();
+    try std.testing.expectEqualStrings("[object Object]", result.value);
+
+    // The pending exception from the failed stringify must not leak into a
+    // later eval.
+    var next = try host.eval("1 + 1");
+    defer next.deinit();
+    try std.testing.expectEqualStrings("2", next.value);
+}
+test "codemode text renders a BigInt as its plain string form" {
+    var host = Host.init(std.testing.allocator, .{});
+    defer host.deinit();
+
+    var result = try host.eval(
+        \\text(1n);
+        \\"recovered";
+    );
+    defer result.deinit();
+    try std.testing.expectEqualStrings("recovered", result.value);
+    // JSON.stringify rejects BigInt, and the ToCString fallback renders
+    // it as its digits, so the model still reads a usable value.
+    try std.testing.expectEqualStrings("1", result.text);
 }
 
 test "codemode text stops at the output buffer cap" {
