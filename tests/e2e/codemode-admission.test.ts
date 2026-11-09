@@ -260,6 +260,43 @@ describe("codemode nested admission parity", () => {
   );
 
   test(
+    "65 nested run_command calls do not exhaust the execution capacity",
+    async () => {
+      const root = createIsolatedRoot();
+      const script = [
+        "var last = null;",
+        "for (var i = 0; i < 65; i += 1) {",
+        '  last = tools.call("run_command", JSON.stringify({ command: "echo CAPACITY_PROBE_" + i }));',
+        "}",
+        "text(last);",
+      ].join("\n");
+      const gateway = startGateway([
+        fakeGatewayToolCall("capacity-probe-call", "codemode", { script }),
+        fakeGatewayFinalText("CAPACITY_DONE"),
+      ]);
+
+      const run = await runFx(
+        ["ask", "--quiet", "--json", "--no-save", USER_PROMPT],
+        {
+          cwd: root.workspace,
+          env: gatewayEnv(root, gateway),
+          timeoutMs: TIMEOUT,
+        },
+      );
+      expect(run.code, `stdout: ${run.stdout}\nstderr: ${run.stderr}`).toBe(0);
+      expect(run.stderr).not.toContain("panic");
+      expect(run.stderr).not.toContain("error:");
+      // The 65th nested call must succeed: before the delivery-token commit
+      // fix every nested run_command leaked one execution slot and the
+      // capacity admission rejected later calls with ExecutionCapacityExceeded.
+      expect(toolResultText(gateway.requests[1]!.body, "capacity-probe-call")).toContain(
+        "CAPACITY_PROBE_64",
+      );
+      expect(run.stdout).not.toContain("ExecutionCapacityExceeded");
+    },
+    TIMEOUT,
+  );
+  test(
     "a review caution denies both paths with the same script-visible reason",
     async () => {
       const root = createIsolatedRoot();

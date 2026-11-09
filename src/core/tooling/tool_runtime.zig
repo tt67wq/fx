@@ -864,6 +864,10 @@ fn executeRegisteredTool(
     dispatch_metadata.attach(&dispatch_ctx);
     var result_commit_token: ?result_commit.Token = null;
     dispatch_ctx.result_commit_sink = &result_commit_token;
+    // Token hygiene only: an error exit after the sink assignment must not
+    // leave the reservation dangling. This does not reclaim the execution
+    // slot; only a commit tombstones a terminal entry.
+    errdefer if (result_commit_token) |token| token.cancel();
     dispatch_ctx.execution_authority = authority;
     dispatch_ctx.codemode_host = &codemode_host;
     dispatch_ctx.mcp_call_options = .{

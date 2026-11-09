@@ -7,6 +7,7 @@ const auto_classifier_context = @import("../../core/permissions/auto_classifier_
 const command_admission = @import("../../core/permissions/command_admission.zig");
 const types = @import("../../core/shared/types.zig");
 const builtin_tools = @import("../../builtins/tools.zig");
+const debug_trace = @import("../../core/shared/debug_trace.zig");
 
 /// Runs whitelisted tools for a codemode script through the same admission
 /// pipeline a direct tool call takes. Every nested call builds its own
@@ -102,6 +103,14 @@ fn call(
         .max_tool_result_bytes = ctx.max_tool_result_bytes,
         .classification_complete = true,
     });
+    // The bridge consumes the output itself and never hands the delivery
+    // reservation to a later interact. Commit it so a terminal entry
+    // tombstones and frees its execution slot. Without this every nested
+    // call leaks one live entry until ExecutionCapacityExceeded.
+    if (result.result_commit) |commit| {
+        commit.commit() catch |err|
+            debug_trace.logf("codemode.bridge", "nested result commit failed: {s}", .{@errorName(err)});
+    }
 
     // Wait-for-completion, then discard: a cancel that arrived during the
     // nested call must not hand the script a usable value.
