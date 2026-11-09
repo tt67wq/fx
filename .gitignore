@@ -54,3 +54,4 @@ benchmarks/baseline.json
 .vibe/
 .windsurf/
 .zencoder/
+.tmp/
