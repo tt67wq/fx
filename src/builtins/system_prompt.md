@@ -49,6 +49,7 @@
 # Tools and verification
 
 - Choose the smallest suitable available capability.
+- When the experimental rtk integration is enabled, shell output may arrive already compressed by rtk. Treat it as the command result. Run the command with an explicit rtk prefix, such as rtk git status, when the full uncompressed output is needed.
 - When several tool calls do not depend on each other, make them together in one step instead of one at a time.
 - After code changes, verify the relevant behavior with direct checks such as formatting, a focused test, build, CLI run, or eval before claiming it works. Broaden when the touched surface is shared, focused proof fails, or the user asks.
 - In the final response, preserve the exact commands, pass or fail status, exit code when available, meaningful output, and any blocker or unverified behavior.

@@ -71,6 +71,9 @@ pub const Settings = struct {
     /// Whether the experimental codemode tool bridge is on. Profile-only;
     /// default off. Read with codemodeEnabled.
     codemode_enabled: ?bool = null,
+    /// Whether the experimental rtk output-compression hook is on. Profile-only;
+    /// default off. Read with rtkEnabled.
+    rtk_enabled: ?bool = null,
     effort: ?types.ReasoningEffort = null,
     /// Optional review-model override for automatic permission review. Owned by
     /// this Settings; freed in deinit. Null keeps the provider's default.
@@ -201,6 +204,12 @@ pub fn resolveContextLimits(settings: *const Settings, command_line: []const con
 /// only an explicit experimental.codemode true in the profile turns it on.
 pub fn codemodeEnabled(settings: *const Settings) bool {
     return settings.codemode_enabled orelse false;
+}
+
+/// Whether the experimental rtk output-compression hook is enabled. Default
+/// off; only an explicit experimental.rtk true in the profile turns it on.
+pub fn rtkEnabled(settings: *const Settings) bool {
+    return settings.rtk_enabled orelse false;
 }
 pub const PermissionSourceViews = struct {
     user: types.PermissionRuleSet = .{},
@@ -1865,6 +1874,10 @@ fn parseProfileOnlyFields(
             if (codemode != .bool) return error.InvalidExperimentalCodemodeType;
             settings.codemode_enabled = codemode.bool;
         }
+        if (experimental_value.object.get("rtk")) |rtk| {
+            if (rtk != .bool) return error.InvalidExperimentalRtkType;
+            settings.rtk_enabled = rtk.bool;
+        }
     }
 
     if (root.object.get("effort")) |effort_value| {
@@ -2078,6 +2091,7 @@ fn mergeSettings(target: *Settings, incoming: *Settings, alloc: Allocator) !void
     }
     if (incoming.prompt_history_enabled) |value| target.prompt_history_enabled = value;
     if (incoming.codemode_enabled) |value| target.codemode_enabled = value;
+    if (incoming.rtk_enabled) |value| target.rtk_enabled = value;
     if (incoming.effort) |value| target.effort = value;
     if (incoming.review_model) |value| {
         if (target.review_model) |old| alloc.free(old);
@@ -2753,6 +2767,34 @@ test "codemode gate is profile only and type checked" {
     defer project.deinit(alloc);
     try std.testing.expect(project.codemode_enabled == null);
     try std.testing.expectEqual(false, codemodeEnabled(&project));
+}
+
+test "rtk gate defaults off and turns on only with an explicit profile value" {
+    var absent = try parseSettingsJson(std.testing.allocator, "{}");
+    defer absent.deinit(std.testing.allocator);
+    try std.testing.expect(absent.rtk_enabled == null);
+    try std.testing.expectEqual(false, rtkEnabled(&absent));
+
+    var off = try parseSettingsJson(std.testing.allocator, "{\"experimental\":{\"rtk\":false}}");
+    defer off.deinit(std.testing.allocator);
+    try std.testing.expectEqual(false, rtkEnabled(&off));
+
+    var on = try parseSettingsJson(std.testing.allocator, "{\"experimental\":{\"rtk\":true}}");
+    defer on.deinit(std.testing.allocator);
+    try std.testing.expectEqual(true, rtkEnabled(&on));
+}
+
+test "rtk gate is profile only and type checked" {
+    const alloc = std.testing.allocator;
+    try std.testing.expectError(
+        error.InvalidExperimentalRtkType,
+        parseSettingsJson(alloc, "{\"experimental\":{\"rtk\":\"yes\"}}"),
+    );
+
+    var project = try parseSettingsJsonForLayer(alloc, "{\"experimental\":{\"rtk\":true}}", .project);
+    defer project.deinit(alloc);
+    try std.testing.expect(project.rtk_enabled == null);
+    try std.testing.expectEqual(false, rtkEnabled(&project));
 }
 
 test "provider settings keep independent provider models" {

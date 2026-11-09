@@ -682,6 +682,54 @@ describe("cli: status", () => {
   );
 
   test(
+    "experimental.rtk with no rtk binary keeps status and doctor clean",
+    async () => {
+      const root = realpathSync(mkdtempSync(join(tmpdir(), "fx-e2e-rtk-absent-")));
+      try {
+        const home = join(root, "home");
+        const cwd = join(root, "workspace");
+        mkdirSync(join(home, ".fx"), { recursive: true });
+        mkdirSync(cwd);
+        // An isolated PATH with no rtk in it: the gate is on but the binary is absent.
+        const isolatedBin = join(root, "bin");
+        mkdirSync(isolatedBin);
+        writeFileSync(
+          join(home, ".fx", "settings.json"),
+          JSON.stringify({
+            $schema: "https://fx.sh/schemas/settings.json",
+            experimental: { rtk: true },
+          }) + "\n",
+          { mode: 0o600 },
+        );
+        const env = {
+          ...NO_GATEWAY_AUTH,
+          HOME: home,
+          FX_DISABLE_KEYCHAIN: "1",
+          PATH: isolatedBin,
+        };
+
+        const doctor = await runFx(["doctor", "--json"], { cwd, env });
+        expect(doctor.code).toBe(0);
+        // The rtk gate key must be recognized: no unknown-setting warning names it.
+        const configChecks = JSON.parse(doctor.stdout).checks.filter(
+          (check: { name: string; detail: string }) => check.name === "config",
+        );
+        expect(configChecks.length).toBeGreaterThan(0);
+        for (const check of configChecks) {
+          expect(check.detail).not.toContain("rtk");
+        }
+
+        const status = await runFx(["status"], { cwd, env });
+        expect(status.code).toBe(0);
+        expect(status.stderr).toBe("");
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    TIMEOUT,
+  );
+
+  test(
     "doctor names unknown settings keys while status stays quiet",
     async () => {
       const root = realpathSync(mkdtempSync(join(tmpdir(), "fx-e2e-unknown-settings-")));

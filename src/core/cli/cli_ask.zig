@@ -1,5 +1,6 @@
 const std = @import("std");
 const command_specs = @import("../slash_commands/command_specs.zig");
+const builtin_rtk = @import("../../builtins/hooks/rtk.zig");
 const testing_allocator = @import("../shared/testing_allocator.zig");
 const std_builtin = @import("builtin");
 const command_admission = @import("../permissions/command_admission.zig");
@@ -686,6 +687,8 @@ const AskContext = struct {
     web_search_runtime: web_search_runtime.Runtime,
     capability_resolver: gateway_provider.CapabilityResolver = .{},
     lifecycle_runtime: hooks.Runtime,
+    rtk_hook: builtin_rtk.State = .{},
+    rtk_gate: ?bool = null,
     lifecycle_view: hooks.RuntimeView,
     active_turn_id: u64 = 0,
     notification_player: ?notification_sound.Player = null,
@@ -726,6 +729,18 @@ const AskContext = struct {
         turn_end: bool,
         attention_required: bool,
     ) !void {
+        if (self.rtk_gate == null) {
+            var settings = config_runtime.loadMergedSettings(self.alloc, self.workspace_root) catch null;
+            if (settings) |*loaded| {
+                defer loaded.deinit(self.alloc);
+                self.rtk_gate = config_runtime.rtkEnabled(loaded);
+            } else {
+                self.rtk_gate = false;
+            }
+        }
+        if (self.rtk_gate orelse false) {
+            try builtin_rtk.registerIn(self.alloc, &self.lifecycle_runtime, &self.rtk_hook);
+        }
         self.notification_player = notification_sound.Player.init(.{
             .ctx = self,
             .emit = emitAskNotificationBell,

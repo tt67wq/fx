@@ -498,6 +498,7 @@ const App = struct {
     workspace_root: []u8 = &.{},
     /// Resolved experimental.codemode gate, cached after the first read.
     codemode_gate: ?bool = null,
+    rtk_gate: ?bool = null,
     codemode_gate_from_cwd: bool = false,
     workspace_identity: statusline_identity.Runtime = .{},
     workspace: app_workspace_runtime.State = .{},
@@ -513,6 +514,7 @@ const App = struct {
     lifecycle_view: hooks.RuntimeView = hooks.RuntimeView.empty(),
     notifications: builtin_hooks.notifications.State = .{},
     herdr: builtin_hooks.Client = .{},
+    rtk_hook: builtin_hooks.rtk.State = .{},
     program_status: ui_program_status.Reporter = .{},
 
     prompt_history: PromptHistoryRuntime = .{},
@@ -719,6 +721,16 @@ const App = struct {
     pub fn configureNotifications(self: *App, agent: *agents.Agent) !void {
         // Register herdr hooks before NotificationAppRuntime.configure freezes
         // the lifecycle runtime (its call to freeze() is the sole freeze site).
+        if (self.rtk_gate == null) {
+            var settings = config_runtime.loadMergedSettings(self.alloc, if (self.workspace_root.len == 0) "." else self.workspace_root) catch null;
+            if (settings) |*loaded| {
+                defer loaded.deinit(self.alloc);
+                self.rtk_gate = config_runtime.rtkEnabled(loaded);
+            } else {
+                self.rtk_gate = false;
+            }
+        }
+        try builtin_hooks.rtk.register(self);
         try HerdrAppRuntime.configure(self, SessionAppRuntime.activeSessionId(agent));
         try NotificationAppRuntime.configure(self);
     }

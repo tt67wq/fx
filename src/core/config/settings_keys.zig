@@ -118,7 +118,7 @@ pub const keys = [_]Key{
     .{ .name = "effort", .where = .profile, .kind = .string_or_null, .description = "Reasoning effort: auto or a name the model supports; null means auto" },
     .{ .name = "enableAllProjectMcpServers", .where = .profile, .kind = .boolean, .workspace_only = true, .description = "Approve every server in this workspace's .mcp.json; manage it with fx mcp approve and reject" },
     .{ .name = "enabledMcpjsonServers", .where = .profile, .kind = .strings, .workspace_only = true, .description = "Project MCP servers approved in this workspace; manage them with fx mcp approve and reject" },
-    .{ .name = "experimental", .where = .profile, .kind = .switches, .children = &.{"codemode"}, .child_descriptions = &.{"Run JavaScript through the codemode tool bridge"}, .description = "Experimental features" },
+    .{ .name = "experimental", .where = .profile, .kind = .switches, .children = &.{ "codemode", "rtk" }, .child_descriptions = &.{ "Run JavaScript through the codemode tool bridge", "Rewrite shell commands through rtk for compact output" }, .description = "Experimental features" },
     .{ .name = "fast_mode", .where = .profile, .kind = .boolean, .description = "Use faster inference when the model supports it" },
     .{ .name = "fast_mode_model_bound", .where = .profile, .kind = .boolean, .description = "Managed by fx alongside fast_mode" },
     .{ .name = "first_call_tool_choice", .where = .profile, .kind = .string, .values = &.{ "auto", "none" }, .description = "Tool choice for the first request of a turn" },
