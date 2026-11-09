@@ -4049,7 +4049,7 @@ fn persistFinalReplyCheckpoint(
 
 /// A checkpoint `persistFinalReplyCheckpoint` saved holds the reply its turn
 /// was ending with. Recovery delivers it as the turn's reply instead of
-/// asking the model again (`tests/tla/durable/Resumption.tla`
+/// asking the model again (`tests/tla/recovery/Resumption.tla`
 /// `SavedAnswerNotRequested`).
 fn deliversSavedResponse(checkpoint: session_codec.RecoveryCheckpoint) bool {
     return checkpoint.action == .delivering_response and

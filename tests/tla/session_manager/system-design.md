@@ -387,7 +387,7 @@ reused as ideas; no v1 code is shared.
   - the bounded lock wait from `session_log.zig:27`;
   - fx's kebab-case flags and `FX_*` environment variables (`FX_MODEL`,
     `FX_PERMISSION_MODE`) for the switch (D26).
-- **Reused unchanged:** the embedder `sessionStore` contract (`sdk/fx-sdk.js:922`).
+- **Reused unchanged:** the embedder `sessionStore` contract, now the native session store.
 
 ### New Mechanism Justification
 
@@ -1278,7 +1278,7 @@ Settled for the converter (2026-10-06):
   family, or fix the listing later.
 
 Settled for removing v1 (2026-10-16):
-- **D63 Decision:** libfx's `createFxTerminal({ sessionStore })` keeps
+- **D63 Decision:** libfx's `createFxTerminal({ sessionStore })` keeps (historical: the libfx SDK was removed from the repo later)
   saving conversations as the snapshots `js_host_session_store` writes
   through `session_codec`, unchanged, and so do the codec parts that
   `sdk/durable.js` uses. Removing v1 removes v1's store on disk, not this

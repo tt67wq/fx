@@ -35,7 +35,7 @@ curl -fL -o ~/.local/share/tla/tla2tools.jar \
   https://github.com/tlaplus/tlaplus/releases/latest/download/tla2tools.jar
 ```
 
-Set `TLA2TOOLS_JAR` to use a jar in another location. The scripts look for Java in `JAVA_HOME`, then in Homebrew's OpenJDK, then on `PATH`. The `mcp/`, `durable/`, and `session_manager/` runners also need Python 3.
+Set `TLA2TOOLS_JAR` to use a jar in another location. The scripts look for Java in `JAVA_HOME`, then in Homebrew's OpenJDK, then on `PATH`. The `mcp/` and `session_manager/` runners also need Python 3.
 
 The drivers need Bun. Most of them also run the binary that `zig build` puts in `zig-out/bin/fx`, and the terminal ones need tmux. They take these settings from the environment:
 

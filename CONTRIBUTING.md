@@ -214,7 +214,6 @@ CI retries a failed end-to-end file once. A file that passes only on the retry g
 - A Zig file with a macOS, BSD, or Linux code path
 - `build.zig`
 - The macOS signing script
-- The native SDK addon
 - An end-to-end file listed in `tests/e2e/macos-platform-tests.json`
 - A shared end-to-end helper that reads the platform
 
