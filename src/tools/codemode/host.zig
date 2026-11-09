@@ -59,6 +59,7 @@ pub const Host = struct {
     deadline_ms: i64 = 0,
     timed_out: bool = false,
     cancelled_flag: bool = false,
+    last_script_error: ?[]u8 = null,
     /// Cancel source shared with the caller, typically
     /// &worker.worker_cancel_requested. Read only from the interrupt handler
     /// and eval, both on the host's own thread; the writer is any thread.
@@ -84,6 +85,15 @@ pub const Host = struct {
         }
         self.text_buf.deinit(self.allocator);
         self.console_buf.deinit(self.allocator);
+        if (self.last_script_error) |message| self.allocator.free(message);
+        self.last_script_error = null;
+    }
+
+    /// The script-visible message of the last ScriptError, for the tool result.
+    /// Borrowed view of the last script-visible exception text; owned by the
+    /// host until the next eval or deinit, so callers must not free it.
+    pub fn lastExceptionMessage(self: *const Host) ?[]const u8 {
+        return self.last_script_error;
     }
 
     pub fn runtimeCreated(self: Host) bool {
@@ -112,20 +122,56 @@ pub const Host = struct {
         self.console_buf.clearRetainingCapacity();
         self.timed_out = false;
         self.cancelled_flag = false;
+        if (self.last_script_error) |message| {
+            self.allocator.free(message);
+            self.last_script_error = null;
+        }
         const timeout_ms: i64 = std.math.cast(i64, self.options.timeout_ms) orelse std.math.maxInt(i64);
         self.deadline_ms = io_mod.milliTimestamp() +| timeout_ms;
-
         const source = try self.allocator.dupeSentinel(u8, script, 0);
         defer self.allocator.free(source);
-
-        // Global mode: the script's last expression is the result, and no
-        // module loader is installed.
-        const value = c.JS_Eval(ctx, source.ptr, script.len, "codemode.js", c.JS_EVAL_TYPE_GLOBAL);
+        // Global mode with the async flag: the script keeps its completion
+        // value as the result, and the top-level await the tool contract
+        // advertises works; eval returns a promise the drain below settles.
+        const value = c.JS_Eval(ctx, source.ptr, script.len, "codemode.js", c.JS_EVAL_TYPE_GLOBAL | c.JS_EVAL_FLAG_ASYNC);
         defer c.JS_FreeValue(ctx, value);
-
         if (c.JS_IsException(value)) return self.takeExceptionError(ctx);
+        // Drain the microtask queue while the eval promise is pending, up
+        // to the deadline or a cancel. A top-level throw rejects the
+        // promise; quickjs-ng's JS_PromiseResult returns the reason as a
+        // plain value (not a JS exception), so the rejected state drives
+        // the error mapping, not JS_IsException.
+        while (true) {
+            if (c.JS_PromiseState(ctx, value) != c.JS_PROMISE_PENDING) break;
+            var job_ctx: ?*c.JSContext = null;
+            const pending = c.JS_ExecutePendingJob(self.runtime.?, &job_ctx);
+            if (pending == 0) return error.Timeout;
+            if (self.cancelRequested()) return error.Cancelled;
+            if (io_mod.milliTimestamp() >= self.deadline_ms) {
+                self.timed_out = true;
+                return error.Timeout;
+            }
+        }
+        const settled = c.JS_PromiseResult(ctx, value);
+        defer c.JS_FreeValue(ctx, settled);
+        if (c.JS_PromiseState(ctx, value) == c.JS_PROMISE_REJECTED) {
+            if (self.cancelRequested()) return error.Cancelled;
+            if (self.timed_out) return error.Timeout;
+            if (isOutOfMemory(self, ctx, settled)) return error.MemoryLimit;
+            self.captureExceptionMessage(ctx, settled);
+            return error.ScriptError;
+        }
+        // With the async flag the engine wraps the program's completion
+        // value in a fresh {value: ...} object before resolving the eval
+        // promise (js_parse_program emits OP_object/OP_put_field for
+        // JS_FUNC_ASYNC), so unwrap it to recover the script result.
+        const result_value = if (c.JS_VALUE_GET_TAG(settled) == c.JS_TAG_OBJECT)
+            c.JS_GetPropertyStr(ctx, settled, "value")
+        else
+            settled;
+        defer if (c.JS_VALUE_GET_TAG(settled) == c.JS_TAG_OBJECT) c.JS_FreeValue(ctx, result_value);
 
-        const rendered = try self.stringify(ctx, value);
+        const rendered = try self.stringify(ctx, result_value);
         errdefer self.allocator.free(rendered);
         const text = try self.text_buf.toOwnedSlice(self.allocator);
         errdefer self.allocator.free(text);
@@ -274,7 +320,19 @@ pub const Host = struct {
         if (self.cancelled_flag) return error.Cancelled;
         if (self.timed_out) return error.Timeout;
         if (isOutOfMemory(self, ctx, exception)) return error.MemoryLimit;
+        self.captureExceptionMessage(ctx, exception);
         return error.ScriptError;
+    }
+
+    /// Keeps the script-visible exception text for the tool result; a bare
+    /// ScriptError name gives the model nothing to correct.
+    fn captureExceptionMessage(self: *Host, ctx: *c.JSContext, exception: c.JSValue) void {
+        if (self.last_script_error) |old_message| self.allocator.free(old_message);
+        self.last_script_error = null;
+        var len: usize = 0;
+        const ptr = c.JS_ToCStringLen(ctx, &len, exception) orelse return;
+        defer c.JS_FreeCString(ctx, ptr);
+        self.last_script_error = self.allocator.dupe(u8, ptr[0..len]) catch null;
     }
 };
 

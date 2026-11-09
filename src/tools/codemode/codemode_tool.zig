@@ -72,6 +72,14 @@ pub fn call(ctx: tool_dispatch.DispatchContext, erased: tool_dispatch.ToolInput)
             // report the cancel through the standard cancelled disposition.
             return error.Cancelled;
         },
+        error.ScriptError => {
+            // The engine keeps the script-visible exception text so the model
+            // can correct the script instead of retrying blind.
+            if (sandbox.host.lastExceptionMessage()) |message| {
+                return .{ .failure = try ctx.allocator.print("codemode script failed: ScriptError: {s}", .{message}) };
+            }
+            return .{ .failure = try ctx.allocator.dupe(u8, "codemode script failed: ScriptError") };
+        },
         else => {
             return .{ .failure = try ctx.allocator.print("codemode script failed: {s}", .{@errorName(err)}) };
         },

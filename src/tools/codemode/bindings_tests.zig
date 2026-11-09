@@ -284,3 +284,25 @@ test "codemode run_command captures more than the direct-path budget without tru
     try std.testing.expectEqual(false, object.get("truncated").?.bool);
     try std.testing.expectEqual(@as(usize, size), object.get("output").?.string.len);
 }
+
+test "codemode top-level await works and tools.call results are values" {
+    var host = Host.init(std.testing.allocator, .{});
+    defer host.deinit();
+    var backend = FakeBackend{};
+    host.setToolBackend(.{ .ctx = &backend, .call = FakeBackend.call });
+
+    var r = try host.eval("const r = await tools.call('read_file', '{}'); typeof r");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("string", r.value);
+    try std.testing.expectEqual(@as(usize, 1), backend.calls);
+}
+
+test "codemode script exceptions carry the message to the tool result" {
+    var host = Host.init(std.testing.allocator, .{});
+    defer host.deinit();
+
+    try std.testing.expectError(error.ScriptError, host.eval("throw new TypeError('bad args shape');"));
+    // The message stays owned by the host until the next eval or deinit.
+    const message = host.lastExceptionMessage() orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, message, "bad args shape") != null);
+}
