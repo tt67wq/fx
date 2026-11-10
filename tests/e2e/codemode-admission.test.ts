@@ -385,6 +385,43 @@ describe("codemode nested admission parity", () => {
   );
 });
 
+  test("tools.list exposes parsed schema objects inside scripts", async () => {
+    const root = createIsolatedRoot();
+    const gateway = startGateway([
+      fakeGatewayToolCall("schema-probe", "codemode", {
+        script:
+          "var list = tools.list();" +
+          "\nvar glob = list.find(t => t.name === 'glob_files');" +
+          "\ntext(JSON.stringify({names: list.map(t => t.name).join(',')," +
+          " kind: typeof glob.parameters," +
+          " pattern: glob.parameters.properties.pattern.type," +
+          " required: glob.parameters.required[0]}));",
+      }),
+      fakeGatewayFinalText("SCHEMA_PROBE_DONE"),
+    ]);
+
+    const result = await runFx(
+      ["ask", "--json", "--yolo", "--no-save", "Introspect the tools."],
+      {
+        cwd: root.workspace,
+        env: gatewayEnv(root, gateway),
+        timeoutMs: TIMEOUT,
+      },
+    );
+    expect(result.code).toBe(0);
+    expect(JSON.parse(result.stdout).output).toBe("SCHEMA_PROBE_DONE");
+
+    // The script saw one schema object per whitelisted tool, with the
+    // inputSchema already parsed: no JSON.parse layer in the script.
+    const report = JSON.parse(
+      toolResultText(gateway.requests[1]!.body, "schema-probe"),
+    );
+    expect(report.names).toBe("glob_files,grep_files,read_file,run_command");
+    expect(report.kind).toBe("object");
+    expect(report.pattern).toBe("string");
+    expect(report.required).toBe("pattern");
+  }, TIMEOUT);
+
 describe.skipIf(!tmuxAvailable())("tui: codemode nested permission slots", () => {
   test(
     "sequential in-script commands reuse one pending permission slot",
@@ -583,4 +620,5 @@ describe.skipIf(!tmuxAvailable())("tui: codemode nested permission slots", () =>
     },
     TIMEOUT * 2,
   );
+
 });

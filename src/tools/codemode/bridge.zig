@@ -331,9 +331,15 @@ pub fn schemas(alloc: std.mem.Allocator, registry: tool_dispatch.Registry) ![]bi
     const out = try alloc.alloc(bindings.ToolSchema, bindings.tools.len);
     for (bindings.tools, 0..) |tool, index| {
         const registered = registry.lookup(registeredName(tool.name)) orelse return error.SchemaMissing;
+        const json = try model_tool_schema.builtinFunctionSchemaJsonAlloc(alloc, registered.model_schema);
+        // JS_ParseJSON requires a NUL-terminated buffer (quickjs.c: 'buf'
+        // must be zero terminated); the writer API does not add one.
+        const terminated = try alloc.alloc(u8, json.len + 1);
+        @memcpy(terminated[0..json.len], json);
+        terminated[json.len] = 0;
         out[index] = .{
             .name = tool.name,
-            .schema_json = try model_tool_schema.builtinFunctionSchemaJsonAlloc(alloc, registered.model_schema),
+            .schema_json = terminated[0..json.len :0],
         };
     }
     return out;
