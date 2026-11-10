@@ -29,6 +29,18 @@ pub fn backend(state: *tool_runtime.CodemodeHostState) bindings.Backend {
     return .{ .ctx = state, .call = call };
 }
 
+/// Caps nested shell runs at the script's wall-clock budget fields. A
+/// stalled command is killed at the budget instead of blocking the
+/// synchronous callback until it recovers on its own; the shell dispatch
+/// path turns the pair into min(requested, remaining) through the ambient
+/// timeout. No recorded budget (tests, direct runs) keeps the previous
+/// never-times-out nesting behavior.
+fn applyAmbientBudget(check: *tool_runtime.Context, state: *const tool_runtime.CodemodeHostState) void {
+    const budget = state.ambient_budget_ms orelse return;
+    check.command_timeout_ms = budget;
+    check.command_timeout_started_ms = state.ambient_started_ms;
+}
+
 fn call(
     raw_ctx: ?*anyopaque,
     allocator: std.mem.Allocator,
@@ -62,12 +74,8 @@ fn call(
     var check = ctx;
     // Cap every nested shell run at the script's remaining wall clock: a
     // stalled command is killed at the budget instead of blocking the
-    // synchronous callback until it recovers on its own. See the ambient
-    // timeout consumed by the shell dispatch path.
-    if (state.ambient_budget_ms) |budget| {
-        check.command_timeout_ms = budget;
-        check.command_timeout_started_ms = state.ambient_started_ms;
-    }
+    // synchronous callback until it recovers on its own.
+    applyAmbientBudget(&check, state);
     // Nested calls resolve against the full built-in registry, not the
     // profile-narrowed one: a codemode-only profile advertises codemode to
     // the model, while the script-facing whitelist (read_file, glob_files,
@@ -411,4 +419,26 @@ test "schemas errors when a whitelisted name is missing from the registry" {
     // A registry without the shell tool cannot back run_command's schema.
     const partial = tool_dispatch.Registry{ .tools = builtin_tools.registry.tools[0..1] };
     try std.testing.expectError(error.SchemaMissing, schemas(arena, partial));
+}
+
+test "bridge caps nested commands with the script budget fields" {
+    var state: tool_runtime.CodemodeHostState = undefined;
+    state.ambient_budget_ms = 30_000;
+    state.ambient_started_ms = 1_000;
+    var check: tool_runtime.Context = undefined;
+    check.command_timeout_ms = null;
+    check.command_timeout_started_ms = null;
+    applyAmbientBudget(&check, &state);
+    try std.testing.expectEqual(@as(?usize, 30_000), check.command_timeout_ms);
+    try std.testing.expectEqual(@as(?i64, 1_000), check.command_timeout_started_ms);
+
+    // Without a recorded budget the fields stay untouched.
+    var unbudgeted: tool_runtime.CodemodeHostState = undefined;
+    unbudgeted.ambient_budget_ms = null;
+    unbudgeted.ambient_started_ms = null;
+    check.command_timeout_ms = null;
+    check.command_timeout_started_ms = null;
+    applyAmbientBudget(&check, &unbudgeted);
+    try std.testing.expectEqual(@as(?usize, null), check.command_timeout_ms);
+    try std.testing.expectEqual(@as(?i64, null), check.command_timeout_started_ms);
 }
