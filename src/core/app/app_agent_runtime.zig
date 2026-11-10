@@ -1670,6 +1670,10 @@ fn formatToolAction(
             activity.detail,
         );
     }
+    if (try tool_presentation.formatCodemodeActivity(arena, ctx.tool_registry, ctx.workspace_root, call)) |detail| {
+        defer arena.free(detail);
+        return formatToolActionValue(arena, specLabel(spec, state, denied_label), detail);
+    }
     if (std.mem.eql(u8, call.name, "write_file") or
         std.mem.eql(u8, call.name, "edit_file"))
     {
@@ -1791,6 +1795,7 @@ const test_gateway_chat_url = "https://gateway.test/chat";
 const test_tools = [_]tool_dispatch.Tool{
     test_builtin_tools.web_search,
     test_builtin_tools.shell,
+    test_builtin_tools.codemode,
     test_builtin_tools.grep_files,
     test_builtin_tools.skill,
     test_builtin_tools.install_skill,
@@ -3563,6 +3568,24 @@ test "app agent runtime queued prompt config uses captured job settings over sta
     try std.testing.expectEqualStrings("test model overlay", config.model_prompt_overlay.?);
     try std.testing.expect(!app.fast_mode);
     try std.testing.expectEqual(types.ReasoningEffort.literal("low"), app.agent().effort);
+}
+
+test "app agent runtime shows the first codemode command in the action row" {
+    const alloc = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(alloc);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var app = try FakeApp.init(alloc);
+    defer app.deinit();
+    const call: ToolCall = .{
+        .id = "1",
+        .name = "codemode",
+        .arguments_json = "{\"script\":\"const out = await tools.call(\\\"run_command\\\", { command: \\\"ls /Users/admin/noxus/skills/tavily-search/\\\" });\"}",
+    };
+    const active = try app.describeToolAction(app.agent(), arena, call);
+    try std.testing.expect(std.mem.find(u8, active, "ls /Users/admin/noxus/skills/tavily-search/") != null);
+    const completed = try app.describeToolActionCompleted(app.agent(), arena, call);
+    try std.testing.expect(std.mem.find(u8, completed, "ls /Users/admin/noxus/skills/tavily-search/") != null);
 }
 
 test "app agent runtime highlights shell command rows over the tool text base" {
