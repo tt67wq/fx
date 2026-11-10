@@ -1,6 +1,7 @@
 const std = @import("std");
 const sandbox_mod = @import("sandbox.zig");
 const bridge = @import("bridge.zig");
+const builtin_tools = @import("../../builtins/tools.zig");
 const tool_dispatch = @import("../../core/tooling/tool_dispatch.zig");
 const tool_args = @import("../../core/tooling/tool_args.zig");
 
@@ -55,12 +56,22 @@ pub fn call(ctx: tool_dispatch.DispatchContext, erased: tool_dispatch.ToolInput)
     };
     const input = erased.as(Input);
 
+    // The schema JSON strings live in this arena: they must outlive every
+    // eval the sandbox runs and are freed when the call ends. The host
+    // borrows the slices and never frees them.
+    var schema_arena_state = std.heap.ArenaAllocator.init(ctx.allocator);
+    defer schema_arena_state.deinit();
+    const tool_schemas = bridge.schemas(schema_arena_state.allocator(), builtin_tools.registry) catch |err| {
+        return .{ .failure = try ctx.allocator.print("codemode schema injection failed: {s}", .{@errorName(err)}) };
+    };
+
     var sandbox = sandbox_mod.Sandbox.init(ctx.allocator, .{});
     defer sandbox.deinit();
     // ISSUE-8: the sandbox has no cancel source of its own. The interrupt
     // handler polls the same atomic the worker cancel path sets.
     sandbox.cancel_flag = &state.runtime.worker.worker_cancel_requested;
     sandbox.host.setToolBackend(bridge.backend(state));
+    sandbox.host.setToolSchemas(tool_schemas);
 
     sandbox.start() catch |err| {
         return .{ .failure = try ctx.allocator.print("codemode script failed: {s}", .{@errorName(err)}) };

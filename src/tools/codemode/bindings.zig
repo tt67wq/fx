@@ -6,6 +6,17 @@ pub const Tool = struct {
     name: []const u8,
 };
 
+/// The model-facing schema of one whitelisted tool, injected by the bridge.
+/// `schema_json` is the tool's full function schema as produced by
+/// builtinFunctionSchemaJsonAlloc; the host borrows both slices and the
+/// injector owns them. The name here is the script-facing whitelist name,
+/// which for run_command differs from the registered tool name (shell).
+pub const ToolSchema = struct {
+    name: []const u8,
+    /// Sentinel-terminated: JS_ParseJSON requires buf[buf_len] == 0.
+    schema_json: [:0]const u8,
+};
+
 /// Three read-only tools first, then run_command, which is not read-only:
 /// its admission and permission review are wired in 3.3. The registry only
 /// decides which names the sandbox may forward to the injected Backend.

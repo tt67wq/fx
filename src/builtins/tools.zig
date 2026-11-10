@@ -730,7 +730,7 @@ pub const read_tool_result = ToolSpec{
 };
 
 pub const codemode_description =
-    "Run JavaScript in a sandbox for multi-step work in one call. Use tools.call(\"read_file\", ...) and the other file and command tools to search, read, and run, finish with text(your short summary); top-level return is not valid script syntax. A script that only wraps one tool call is slower than calling the tool directly.";
+    "Run JavaScript in a sandbox for multi-step work in one call. Use tools.call(\"read_file\", ...) and the other file and command tools to search, read, and run. tools.list() returns each tool's name, description, and parameters schema for introspection. Finish with text(your short summary); top-level return is not valid script syntax. A script that only wraps one tool call is slower than calling the tool directly.";
 
 pub const codemode = ToolSpec{
     .name = "codemode",
@@ -740,7 +740,7 @@ pub const codemode = ToolSpec{
         .description = codemode_description,
         .input_schema = .{
             .properties = &.{
-                .{ .name = "script", .json_type = .string, .description = "JavaScript source. Call fx tools with await tools.call(\"tool_name\", \"{json args}\")" },
+                .{ .name = "script", .json_type = .string, .description = "JavaScript source. Call fx tools with await tools.call(\"tool_name\", \"{json args}\"); tools.list() returns each tool's {name, description, parameters} so scripts can introspect argument shapes" },
             },
             .required = &.{"script"},
             .additional_properties = false,

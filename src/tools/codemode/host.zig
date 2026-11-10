@@ -67,6 +67,9 @@ pub const Host = struct {
     /// The injected owner of real tool execution; the host only forwards
     /// JSON text across the bridge.
     tool_backend: ?bindings.Backend = null,
+    /// The injected model-facing schemas behind tools.list. Borrowed: the
+    /// injector owns the slices and keeps them alive for every eval.
+    tool_schemas: ?[]const bindings.ToolSchema = null,
     text_buf: std.ArrayList(u8) = .empty,
     console_buf: std.ArrayList(u8) = .empty,
 
@@ -107,6 +110,10 @@ pub const Host = struct {
 
     pub fn setToolBackend(self: *Host, backend: bindings.Backend) void {
         self.tool_backend = backend;
+    }
+
+    pub fn setToolSchemas(self: *Host, schemas: []const bindings.ToolSchema) void {
+        self.tool_schemas = schemas;
     }
 
     fn cancelRequested(self: Host) bool {
@@ -406,17 +413,81 @@ fn consoleLogCallback(ctx: ?*c.JSContext, _: c.JSValue, argc: c_int, argv: [*c]c
     return if (truncated) js_false else js_undefined;
 }
 
+/// Each entry is {name, description, parameters} where parameters is the
+/// tool's inputSchema parsed into a real JS object, so scripts never call
+/// JSON.parse on introspection data. The schema JSON itself is produced by
+/// builtinFunctionSchemaJsonAlloc ({"type":"function",...,"inputSchema":{...}});
+/// only description and inputSchema are borrowed from the parsed value, and
+/// name comes from the ToolSchema entry, which carries the script-facing
+/// whitelist name (run_command, not the registered shell). Ownership note:
+/// every JSValue created here is owned by the array once stored; the errdefer
+/// paths free the ones that never made it in.
 fn toolsListCallback(ctx: ?*c.JSContext, _: c.JSValue, _: c_int, _: [*c]c.JSValue) callconv(.c) c.JSValue {
     const context = ctx orelse return js_exception;
+    const host: *Host = @ptrCast(@alignCast(c.JS_GetContextOpaque(context) orelse return js_exception));
+    const schemas = host.tool_schemas orelse &.{};
     const array = c.JS_NewArray(context);
     if (c.JS_IsException(array)) return array;
-    for (bindings.tools, 0..) |tool, index| {
-        const name = c.JS_NewStringLen(context, tool.name.ptr, tool.name.len);
+    for (schemas, 0..) |tool_schema, index| {
+        const parsed = c.JS_ParseJSON(context, tool_schema.schema_json.ptr, tool_schema.schema_json.len, "<tools.list schema>");
+        if (c.JS_IsException(parsed)) {
+            c.JS_FreeValue(context, array);
+            return parsed;
+        }
+        const description = c.JS_GetPropertyStr(context, parsed, "description");
+        const input_schema = c.JS_GetPropertyStr(context, parsed, "inputSchema");
+        // The parsed wrapper is dropped after its two properties move out.
+        // A moved-out property is a plain string/object value, not a
+        // reference into the wrapper, so freeing it here is safe.
+        c.JS_FreeValue(context, parsed);
+        if (c.JS_IsException(description) or c.JS_IsException(input_schema)) {
+            c.JS_FreeValue(context, description);
+            c.JS_FreeValue(context, input_schema);
+            c.JS_FreeValue(context, array);
+            return js_exception;
+        }
+
+        const entry = c.JS_NewObject(context);
+        if (c.JS_IsException(entry)) {
+            c.JS_FreeValue(context, description);
+            c.JS_FreeValue(context, input_schema);
+            c.JS_FreeValue(context, array);
+            return entry;
+        }
+        const name = c.JS_NewStringLen(context, tool_schema.name.ptr, tool_schema.name.len);
         if (c.JS_IsException(name)) {
+            c.JS_FreeValue(context, entry);
+            c.JS_FreeValue(context, description);
+            c.JS_FreeValue(context, input_schema);
             c.JS_FreeValue(context, array);
             return name;
         }
-        if (c.JS_SetPropertyUint32(context, array, @intCast(index), name) < 0) {
+        // From here each JS_SetPropertyStr failure frees the value it was
+        // handed (the property write does not take ownership on failure),
+        // plus every value not yet stored. This closes the leak the old
+        // name-only loop had on its JS_SetPropertyUint32 path.
+        if (c.JS_SetPropertyStr(context, entry, "name", name) < 0) {
+            c.JS_FreeValue(context, entry);
+            c.JS_FreeValue(context, description);
+            c.JS_FreeValue(context, input_schema);
+            c.JS_FreeValue(context, array);
+            return js_exception;
+        }
+        if (c.JS_SetPropertyStr(context, entry, "description", description) < 0) {
+            c.JS_FreeValue(context, entry);
+            c.JS_FreeValue(context, input_schema);
+            c.JS_FreeValue(context, array);
+            return js_exception;
+        }
+        if (c.JS_SetPropertyStr(context, entry, "parameters", input_schema) < 0) {
+            c.JS_FreeValue(context, entry);
+            c.JS_FreeValue(context, array);
+            return js_exception;
+        }
+        // A failed array store leaves ownership of entry with the caller,
+        // so it is freed here like every value the writes rejected.
+        if (c.JS_SetPropertyUint32(context, array, @intCast(index), entry) < 0) {
+            c.JS_FreeValue(context, entry);
             c.JS_FreeValue(context, array);
             return js_exception;
         }
