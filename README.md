@@ -1,139 +1,92 @@
-```
- ⠀⠀⠀⠀⠀⠀⣠⣾⣿⣿⣿⠀⠀⠀⠀⠀⠀⠀⠀
- ⠀⠀⠀⠀⠀⢰⣿⡿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
- ⠀⠀⠀⣠⣶⣿⣿⣷⣶⡶⣶⣶⣆⠀⠀⠀⣴⣶⣶⠆
- ⠀⠀⠀⠉⢹⣿⣿⠉⠉⠀⠘⢿⣿⣧⣀⣾⣿⡿⠃⠀             Tiny, open, embeddable, native coding agent.
- ⠀⠀⠀⠀⣼⣿⡏⠀⠀⠀⠀⠀⠻⣿⣿⣿⠟⠀⠀⠀
- ⠀⠀⠀⢀⣿⣿⠃⠀⠀⠀⠀⢠⣦⠘⢿⣿⣷⡀⠀⠀             curl -fsSL https://fx.sh/setup.sh | bash
- ⠀⠀⠀⣸⣿⡟⠀⠀⠀⠀⣰⣿⣿⠗⠀⠻⣿⣿⣄⠀
- ⠀⠀⠀⣿⣿⠇⠀⠀⠀⠾⠿⠿⠋⠀⠀⠀⠘⠿⠿⠦             ⚠ Status: Experimental. Use at your own risk.
-  ⠀⣸⣿⡿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
- ⣿⣿⣿⠟⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
-```
-
 # fx
 
-fx is a minimal coding agent CLI that still comes with batteries included. It's one native binary written in Zig, so there is no runtime to install, and it runs the same on your laptop, in CI, or inside an agent sandbox. Its output is closer to a Unix shell than an IDE, because the conversation prints into your terminal's scrollback instead of filling the screen.
+fx is a terminal coding agent. It reads your workspace, plans, edits files, runs commands, and verifies its own work, with permission checks on every sensitive action.
 
-fx is meant to be embedded and extended. Scripts call it with `fx ask`. Skills, MCP servers, and your project's `AGENTS.md` add to what the agent knows and can do.
+This is a fork of [vercel-labs/fx](https://github.com/vercel-labs/fx). It adds a JavaScript sandbox for multi-step tool work and an optional shell output-compression hook, and drops the embedding surfaces the upstream carries for external hosts. fx here runs as a terminal application only.
 
-<p>
-  <a href="https://vercel.com/labs#labs-products"><img alt="Vercel Labs Product" src="https://img.shields.io/badge/LABS-PRODUCT-0a0a0a.svg?style=for-the-badge&amp;logo=Vercel&amp;labelColor=000000" height="28"></a>
-  <a href="https://github.com/vercel-labs/fx/releases/latest"><img alt="fx CLI release" src="https://img.shields.io/github/v/release/vercel-labs/fx.svg?style=for-the-badge&amp;labelColor=000000&amp;label=release" height="28"></a>
-  <a href="https://github.com/vercel-labs/fx/blob/main/LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/github/license/vercel-labs/fx.svg?style=for-the-badge&amp;labelColor=000000" height="28"></a>
-</p>
+## Codemode (experimental)
 
-## Features
+One tool that runs JavaScript in a QuickJS sandbox, so several steps land in a single model call instead of one tool call per turn:
 
-- **Small and fast**: CI fails a pull request if any benchmarked command, such as `fx help` or `fx status --json`, takes longer than 2 ms on Linux ([benchmarks](benchmarks/)). Stable releases for Apple silicon must also fit under a fixed size limit.
-- **Built-in tools**: fx finds, reads, and edits files, runs shell commands, searches the web and reads URLs, and delegates work to subagents. A development server or file watcher can keep running while it works ([tools](https://fx.sh/docs/capabilities/tools)).
-- **Model choice**: sign in to Vercel AI Gateway, or connect an OpenAI-compatible Chat Completions endpoint such as Ollama or OpenRouter ([custom model connections](https://fx.sh/docs/configure-fx/custom-model-connections)).
-- **Inline output**: you can scroll, search, and copy the conversation like any other command's output, and tmux bindings and copy mode keep working. Terminals that support the [Program Status Protocol](https://www.superlogical.com/rex/docs/build/program-status) can also show when fx is busy or waiting for you.
-- **Your own shell**: commands run in your login shell, with your aliases, functions, and `PATH`. fx runs your startup files once and reuses the result until one of them changes, so a slow `.zshrc` doesn't slow down every command. Commands also receive `AI_AGENT=fx` in their environment, so development tools can detect fx.
-- **Permissions**: the default `auto` mode runs routine work, such as editing project files and running tests, without asking. Anything else goes first to a model that checks the exact action for prompt injection or malicious behavior, and fx holds the action if the check finds a problem. Switch to `ask` to approve each action yourself, or to `full-access` to turn the checks off ([permissions](https://fx.sh/docs/configure-fx/permissions)).
-- **Sessions**: fx saves your conversations under `~/.fx/sessions/`, and `fx -c` picks up where you left off in a project. When a conversation fills the model's context, fx compacts older turns but keeps their full text on disk, where the agent can look it up ([sessions](https://fx.sh/docs/using-fx/sessions)).
+* `await tools.call("tool_name", "{json args}")` invokes the whitelisted built-in tools: `glob_files`, `grep_files`, `read_file`, and `run_command`. Everything else is invisible to the sandbox.
+* `tools.list()` returns each whitelisted tool's name, description, and full parameter schema, injected from the built-in tool specs at startup, so scripts can introspect argument shapes before calling.
+* Finish with `text(your short summary)`. Top-level `return` is not valid script syntax. A script that only wraps one tool call is slower than calling the tool directly.
 
-## Install
+Codemode is off by default and is enabled per profile in `~/.fx/settings.json`:
 
-```bash
-curl -fsSL https://fx.sh/setup.sh | bash
+```json
+{
+  "experimental": {
+    "codemode": true
+  }
+}
 ```
 
-fx runs on macOS and Linux, on x86_64 and arm64. The installer puts it in `~/.local/bin`. fx checks for updates in the background, and `fx upgrade` installs the latest release right away. [CHANGELOG.md](CHANGELOG.md) lists what changed in each release. You can also [try fx in your browser](https://fx.sh/try) without installing anything.
+## rtk (experimental)
 
-## Quick start
+When enabled, shell commands are rewritten through [rtk](https://www.rtk-ai.app/), a CLI proxy that filters and summarizes command output before it reaches the model. Treat compressed output as the command result; run a command with an explicit `rtk` prefix, such as `rtk git status`, when you need the full uncompressed output. Unknown commands, failures, timeouts, and empty rewrites fall back to the original command.
 
-Sign in with one of these:
+Like codemode, rtk is off by default:
 
-```bash
-fx login                    # Vercel AI Gateway
-fx login vercel --api-key   # AI Gateway API key
+```json
+{
+  "experimental": {
+    "rtk": true
+  }
+}
 ```
 
-Then open a project and start fx:
+## Differences from upstream
+
+Removed in this fork:
+
+* The ACP embedding layer (`src/acp/`) and all JS host surfaces (`src/core/hosts/`): no editor or application embedding, no `fx acp` runner.
+* WebAssembly and Node N-API entry points (`wasm_core_main`, `wasm_term_main`, `napi_*`).
+* ChatGPT and Grok subscription sign-in. API-key providers still work.
+* Checkpoint and journal session recovery.
+
+Everything else carries over: the agent loop, sessions, permission modes, MCP support, skills, the workspace indexer, subagents, and compaction.
+
+## Build
+
+You need [Zig 0.17.0](https://ziglang.org/download/) or newer:
 
 ```bash
-cd your-project
-fx
-```
-
-Type what you want done and press Enter. `/help` lists the slash commands. If something doesn't work, run `fx doctor` to check your setup.
-
-To send one request without the interactive shell, use `fx ask`. Add `--json` when a script needs to read the result:
-
-```bash
-fx ask "explain the changes in this repository"
-fx ask --json "summarize the failing tests" | jq -r .final_output
-```
-
-## Embed and extend
-
-| Surface | Use it for |
-| --- | --- |
-| <code>fx&nbsp;ask</code> | One request from a script or CI job. `--json` returns structured output, and `--resume` continues a saved session. |
-
-The CLI also picks up these extensions:
-
-- **Skills**: fx loads skills from `.fx/skills` and `~/.fx/skills`, and from the folders other agents use, such as `.claude/skills` and `.agents/skills`. The model sees each skill's name and description and reads the full instructions only when it needs them, so installed skills take little room in the context ([skills](https://fx.sh/docs/capabilities/skills)).
-- **MCP servers**: `/mcp add slack` sets up Slack, and `fx mcp` manages servers from your terminal. A server's tool schemas load when the model looks for them ([MCP](https://fx.sh/docs/capabilities/mcp)).
-- **Project instructions**: fx follows the `AGENTS.md` in your project, nested `AGENTS.md` files for the directories they cover, and `~/.fx/AGENTS.md` for your own instructions across projects ([project instructions](https://fx.sh/docs/configure-fx/project-instructions)).
-
-## Documentation
-
-The manual at [fx.sh/docs](https://fx.sh/docs) covers models, permissions, configuration, skills, MCP, sessions, and every CLI and slash command.
-
-## For coding agents
-
-To learn fx, read the manual as Markdown. [fx.sh/llms.txt](https://fx.sh/llms.txt) indexes every page, [fx.sh/llms-full.txt](https://fx.sh/llms-full.txt) puts the whole manual in one file, and adding `.md` to any docs URL returns that page as Markdown. For the flags of the installed version, run `fx <command> --help`.
-
-To run fx from your own tools, use `fx ask`. It takes the prompt as arguments or on stdin, writes its result to stdout and progress and diagnostics to stderr, and exits with a nonzero status when the request fails. With `--json`, the final answer is in `final_output`.
-
-To inspect a user's setup, run `fx status --json` for configuration and runtime information, or `fx doctor --json` for local health checks. Neither changes the setup.
-
-`fx ask` uses the user's saved permission mode, which is `auto` unless they changed it. Pass `--full-access` only when the user asks for it, because it turns off fx's permission checks.
-
-To change fx itself, read [AGENTS.md](AGENTS.md) first, then build and verify the change as described in [Contributing](#contributing).
-
-## Feedback
-
-Run `/feedback` inside fx to open the feedback form, or [open an issue](https://github.com/vercel-labs/fx/issues/new/choose). If something looks wrong in your terminal, `/trace` creates a private diagnostic report you can attach ([share feedback](https://fx.sh/docs/using-fx/share-feedback)).
-
-## Contributing
-
-You need [Zig 0.17.0](https://ziglang.org/download/) to build fx:
-
-```bash
-git clone https://github.com/vercel-labs/fx.git
+git clone https://github.com/tt67wq/fx.git
 cd fx
 zig build
 ./zig-out/bin/fx
 ```
 
-Test your changes with the freshly built `./zig-out/bin/fx`, because a bare `fx` may be an older copy on your `PATH`.
+Always run the freshly built `./zig-out/bin/fx` from this checkout. A bare `fx` may be an older copy on your `PATH`.
 
-`zig build test` runs the unit tests, which sit next to the code they cover. The end-to-end tests in [`tests/e2e/`](tests/e2e) drive the built binary through tmux and need [Bun](https://bun.sh).
+`zig build test` runs the unit tests, which sit next to the code they cover. The end-to-end tests in [`tests/e2e/`](tests/e2e) drive the built binary through tmux and need [Bun](https://bun.sh); on macOS, set `FX_SOUND=0` when running them.
 
-The source is laid out like this:
+## Usage
+
+Run `fx` for the interactive terminal, or `fx ask "topic"` for a one-shot answer that prints its result to stdout and exits nonzero on failure. `fx status --json` reports configuration and runtime information, `fx doctor --json` runs local health checks, and `fx --help` lists every command and flag.
+
+`fx ask` uses the saved permission mode, which is `auto` unless changed. Pass `--full-access` only when you intend to turn off fx's permission checks.
+
+## Source layout
 
 ```text
 fx/
 ├── src/
 │   ├── main.zig     entry point that wires everything together
 │   ├── core/        agent loop, sessions, config, permissions, MCP, skills
-│   ├── builtins/    built-in tool specs, providers, and the system prompt
-│   ├── tools/       built-in tools: files, shell, web, skills, subagents
+│   ├── builtins/    built-in tool specs, providers, system prompt, hooks
+│   ├── tools/       built-in tools, including the codemode sandbox
 │   ├── ui/          terminal rendering and input
 │   ├── gateway/     model provider transport
 │   └── mcp/         MCP engine
-├── tests/           end-to-end tests and model evals
+├── tests/           end-to-end tests, evals, fuzz targets, and TLA+ models
 └── benchmarks/      startup, memory, and latency benchmarks
 ```
 
-Read [CONTRIBUTING.md](CONTRIBUTING.md) before you open a pull request. It covers verification, CI, and PR labels. If a coding agent is helping you, point it at [For coding agents](#for-coding-agents).
+## Contributing
 
-## Security
-
-Report vulnerabilities through the [contact page](https://fx.sh/contact) instead of a public issue.
+Read [AGENTS.md](AGENTS.md) for repository rules and [CONTRIBUTING.md](CONTRIBUTING.md) for verification, CI, and pull request expectations before opening a pull request.
 
 ## License
 
@@ -141,4 +94,4 @@ Report vulnerabilities through the [contact page](https://fx.sh/contact) instead
 
 ## Credits
 
-Interface sounds by [cuelume](https://github.com/Danilaa1/cuelume).
+Based on [vercel-labs/fx](https://github.com/vercel-labs/fx) by Vercel. Interface sounds by [cuelume](https://github.com/Danilaa1/cuelume).
