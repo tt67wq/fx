@@ -7,6 +7,8 @@ const auto_classifier_context = @import("../../core/permissions/auto_classifier_
 const command_admission = @import("../../core/permissions/command_admission.zig");
 const types = @import("../../core/shared/types.zig");
 const builtin_tools = @import("../../builtins/tools.zig");
+const tool_dispatch = @import("../../core/tooling/tool_dispatch.zig");
+const model_tool_schema = @import("../../core/tooling/model_tool_schema.zig");
 const debug_trace = @import("../../core/shared/debug_trace.zig");
 
 /// Runs whitelisted tools for a codemode script through the same admission
@@ -310,6 +312,33 @@ test "other whitelisted tools keep their exact arguments" {
     try std.testing.expectEqualStrings("{\"path\":\"notes.txt\"}", canonical.arguments_json);
 }
 
+/// Maps a script-facing whitelist name to the registered tool that backs
+/// it. run_command is the shell tool's captured-command compatibility name
+/// (see canonicalNestedCall); every other name is its own registry entry.
+/// A whitelist name with no registered backer is a wiring bug, so it is an
+/// error rather than a silent skip.
+fn registeredName(script_name: []const u8) []const u8 {
+    if (std.mem.eql(u8, script_name, "run_command")) return "shell";
+    return script_name;
+}
+
+/// Builds one ToolSchema per whitelisted tool from the builtin registry,
+/// matching the full registry the nested admission path resolves against
+/// (see the tool_registry assignment in call). The returned schemas are
+/// allocated with `alloc`; the caller owns them and must keep them alive
+/// for every eval that borrows them.
+pub fn schemas(alloc: std.mem.Allocator, registry: tool_dispatch.Registry) ![]bindings.ToolSchema {
+    const out = try alloc.alloc(bindings.ToolSchema, bindings.tools.len);
+    for (bindings.tools, 0..) |tool, index| {
+        const registered = registry.lookup(registeredName(tool.name)) orelse return error.SchemaMissing;
+        out[index] = .{
+            .name = tool.name,
+            .schema_json = try model_tool_schema.builtinFunctionSchemaJsonAlloc(alloc, registered.model_schema),
+        };
+    }
+    return out;
+}
+
 test "denied reason prefers the permission pipeline's specific denial" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
@@ -338,4 +367,34 @@ test "denied reason prefers the permission pipeline's specific denial" {
         "Permission to run run_command was not granted (permission_required).",
         try deniedReason(arena, "run_command", .{ .decision = .permission_required }),
     );
+}
+
+test "schemas injects one entry per whitelisted tool with script-facing names" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const injected = try schemas(arena, builtin_tools.registry);
+    try std.testing.expectEqual(@as(usize, bindings.tools.len), injected.len);
+    for (injected, bindings.tools) |schema, tool| {
+        try std.testing.expectEqualStrings(tool.name, schema.name);
+    }
+    // run_command resolves to the registered shell tool's schema, but every
+    // entry keeps its script-facing whitelist name.
+    for (injected) |schema| {
+        var parsed = try std.json.parseFromSlice(std.json.Value, arena, schema.schema_json, .{});
+        defer parsed.deinit();
+        try std.testing.expect(parsed.value.object.get("inputSchema") != null);
+        try std.testing.expect(parsed.value.object.get("description") != null);
+    }
+}
+
+test "schemas errors when a whitelisted name is missing from the registry" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    // A registry without the shell tool cannot back run_command's schema.
+    const partial = tool_dispatch.Registry{ .tools = builtin_tools.registry.tools[0..1] };
+    try std.testing.expectError(error.SchemaMissing, schemas(arena, partial));
 }
