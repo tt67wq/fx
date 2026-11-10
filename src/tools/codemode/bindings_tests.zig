@@ -50,13 +50,32 @@ const FakeBackend = struct {
     }
 };
 
-test "codemode tools.list reports three read-only tools plus run_command" {
+const sample_schemas = [_]bindings.ToolSchema{
+    .{ .name = "glob_files", .schema_json = "{\"type\":\"function\",\"name\":\"glob_files\",\"description\":\"match files\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\"}},\"required\":[\"pattern\"]}}" },
+    .{ .name = "read_file", .schema_json = "{\"type\":\"function\",\"name\":\"read_file\",\"description\":\"read a file\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}}" },
+};
+
+test "codemode tools.list returns schema objects with script-facing names" {
     var host = Host.init(std.testing.allocator, .{});
     defer host.deinit();
+    host.setToolSchemas(&sample_schemas);
 
-    var result = try host.eval("tools.list().join(',')");
+    var result = try host.eval("tools.list().map(t => t.name).join(',') + '|' + typeof tools.list()[0]");
     defer result.deinit();
-    try std.testing.expectEqualStrings("glob_files,grep_files,read_file,run_command", result.value);
+    try std.testing.expectEqualStrings("glob_files,read_file|object", result.value);
+}
+
+test "codemode tools.list exposes parsed input schema as parameters" {
+    var host = Host.init(std.testing.allocator, .{});
+    defer host.deinit();
+    host.setToolSchemas(&sample_schemas);
+
+    var result = try host.eval(
+        \\var t = tools.list()[0];
+        \\t.description + '|' + t.parameters.properties.pattern.type + '|' + t.parameters.required[0]
+    );
+    defer result.deinit();
+    try std.testing.expectEqualStrings("match files|string|pattern", result.value);
 }
 
 test "codemode tools.call forwards JSON to the injected backend" {
