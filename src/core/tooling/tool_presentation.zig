@@ -416,6 +416,101 @@ pub fn formatRunCommandActivity(
     };
 }
 
+/// Extracts a one-line activity summary from a codemode script: the first
+/// command a nested run_command call would execute, or the first meaningful
+/// script line when the script calls no command. The raw script is model
+/// generated text, so every failure path returns null and the caller keeps
+/// its plain label rather than failing the turn that shows it. The caller
+/// owns the returned allocation.
+pub fn formatCodemodeActivity(
+    alloc: Allocator,
+    registry: tool_dispatch.Registry,
+    workspace_root: []const u8,
+    call: ToolCall,
+) !?[]u8 {
+    const spec = registry.lookup(call.name) orelse return null;
+    if (spec.executor_kind != .codemode) return null;
+    var scratch_state = std.heap.ArenaAllocator.init(alloc);
+    defer mem_utils.deinit_arena(scratch_state);
+    const args = tool_args.parseToolArgsObject(scratch_state.allocator(), call.arguments_json) catch return null;
+    const script_value = args.get("script") orelse return null;
+    if (script_value != .string) return null;
+    const script = script_value.string;
+
+    if (firstCodemodeCommand(script)) |command| {
+        if (try formatRunCommandDetailBounded(alloc, command, workspace_root, max_run_command_activity_bytes)) |detail| {
+            return detail;
+        }
+    }
+    const line = firstCodemodeFallbackLine(script) orelse return null;
+    return formatRunCommandDetailBounded(alloc, line, workspace_root, max_run_command_activity_bytes);
+}
+
+fn isCodemodeIdentifierByte(byte: u8) bool {
+    return std.ascii.isAlphanumeric(byte) or byte == '_';
+}
+
+/// Scans the script for the first run_command invocation's command argument.
+/// Accepts both JS object style ({ command: "..." / '...' }) and compact
+/// JSON style ({"command":"..."}); a script that builds its command in
+/// code finds no literal here and the caller falls back to a script line.
+fn firstCodemodeCommand(script: []const u8) ?[]const u8 {
+    var cursor: usize = 0;
+    while (std.mem.findPos(u8, script, cursor, "run_command")) |call_start| {
+        var probe = call_start + "run_command".len;
+        const end = std.mem.findPos(u8, script, probe, "command") orelse {
+            cursor = call_start + "run_command".len;
+            continue;
+        };
+        // The match must be a whole word: mainCommand: would otherwise land
+        // its colon right where the key's colon is expected.
+        if (end > 0 and isCodemodeIdentifierByte(script[end - 1])) {
+            cursor = end + "command".len;
+            continue;
+        }
+        probe = end + "command".len;
+        // Skip whitespace and the key name's closing quote: the scan lands
+        // mid-key for compact JSON ("command":) and on the raw name for JS
+        // object style (command:).
+        while (probe < script.len and (script[probe] == ' ' or script[probe] == '\t' or script[probe] == '"' or script[probe] == '\'')) probe += 1;
+        if (probe >= script.len or script[probe] != ':') {
+            cursor = end + "command".len;
+            continue;
+        }
+        probe += 1;
+        while (probe < script.len and (script[probe] == ' ' or script[probe] == '\t')) probe += 1;
+        if (probe >= script.len) return null;
+        const quote = script[probe];
+        if (quote != '"' and quote != '\'') {
+            cursor = probe;
+            continue;
+        }
+        probe += 1;
+        var finish = probe;
+        while (finish < script.len and script[finish] != quote and script[finish] != '\n') finish += 1;
+        if (finish >= script.len or script[finish] != quote) return null;
+        const raw = script[probe..finish];
+        return if (raw.len == 0) null else raw;
+    }
+    return null;
+}
+
+/// The first script line that is neither blank nor a pure comment. Lines
+/// mentioning run_command come first so a wrapped multi-line invocation
+/// yields its opening line instead of an unrelated earlier statement.
+fn firstCodemodeFallbackLine(script: []const u8) ?[]const u8 {
+    var first_meaningful: ?[]const u8 = null;
+    var it = std.mem.splitScalar(u8, script, '\n');
+    while (it.next()) |raw_line| {
+        const line = std.mem.trim(u8, raw_line, " \t\r");
+        if (line.len == 0) continue;
+        if (std.mem.startsWith(u8, line, "//")) continue;
+        if (std.mem.find(u8, line, "run_command") != null) return line;
+        if (first_meaningful == null) first_meaningful = line;
+    }
+    return first_meaningful;
+}
+
 /// Formats a session launch command with the live terminal display target
 /// projection's 120-byte budget, for replayed history where the live session
 /// rows no longer exist. Returns null when `workspace_root` is empty and the
@@ -659,6 +754,12 @@ pub fn formatPlainAction(alloc: Allocator, input: ToolActionInput) ![]const u8 {
         return alloc.print("{s} {s}", .{ action_label, activity.detail });
     }
 
+    if (try formatCodemodeActivity(alloc, input.tool_registry, input.workspace_root, call)) |detail| {
+        defer alloc.free(detail);
+        const spec = input.tool_registry.lookup(call.name) orelse return alloc.print("Working: {s}", .{call.name});
+        return alloc.print("{s} {s}", .{ spec.action_label, detail });
+    }
+
     var scratch_state = std.heap.ArenaAllocator.init(alloc);
     defer mem_utils.deinit_arena(scratch_state);
     const scratch = scratch_state.allocator();
@@ -705,6 +806,7 @@ pub fn savedOutputSourceLabel(
         else => return null,
     };
     if (command_activity) |activity| return activity.detail;
+    if (try formatCodemodeActivity(alloc, registry, workspace_root, call)) |detail| return detail;
     const spec = registry.lookup(call.name) orelse {
         if (isProviderSearchAlias(call.name)) return null;
         return try encodeSourceLabel(alloc, call.name);
@@ -928,6 +1030,7 @@ const test_tools = [_]tool_dispatch.Tool{
     test_builtin_tools.skill,
     test_install_skill,
     test_builtin_tools.ask_user_question,
+    test_builtin_tools.codemode,
 };
 const test_tool_registry = tool_dispatch.Registry{ .tools = test_tools[0..] };
 const custom_presentation_tool = blk: {
@@ -939,6 +1042,91 @@ const custom_presentation_tool = blk: {
     break :blk tool;
 };
 const custom_presentation_registry = tool_dispatch.Registry{ .tools = &.{custom_presentation_tool} };
+
+test "codemode activity extracts the first run_command command" {
+    const alloc = std.testing.allocator;
+    const call: ToolCall = .{
+        .id = "codemode_probe",
+        .name = "codemode",
+        .arguments_json = "{\"script\":\"const a = 1;\\nawait tools.call(\\\"run_command\\\", { command: \\\"git status --short\\\" });\"}",
+    };
+    const activity = (try formatCodemodeActivity(alloc, test_tool_registry, "", call)) orelse
+        return error.TestExpectedEqual;
+    defer alloc.free(activity);
+    try std.testing.expectEqualStrings("git status --short", activity);
+}
+
+test "codemode activity accepts compact json style and single quotes" {
+    const alloc = std.testing.allocator;
+    const compact: ToolCall = .{
+        .id = "codemode_compact",
+        .name = "codemode",
+        .arguments_json = "{\"script\":\"const r = await tools.call(\\\"run_command\\\",{\\\"command\\\":\\\"npm test\\\"});\"}",
+    };
+    const a1 = (try formatCodemodeActivity(alloc, test_tool_registry, "", compact)) orelse
+        return error.TestExpectedEqual;
+    defer alloc.free(a1);
+    try std.testing.expectEqualStrings("npm test", a1);
+
+    const single: ToolCall = .{
+        .id = "codemode_single",
+        .name = "codemode",
+        .arguments_json = "{\"script\":\"const r = await tools.call('run_command', {command:'bun run build'});\"}",
+    };
+    const a2 = (try formatCodemodeActivity(alloc, test_tool_registry, "", single)) orelse
+        return error.TestExpectedEqual;
+    defer alloc.free(a2);
+    try std.testing.expectEqualStrings("bun run build", a2);
+}
+
+test "codemode activity falls back to the first meaningful script line" {
+    const alloc = std.testing.allocator;
+    const call: ToolCall = .{
+        .id = "codemode_fallback",
+        .name = "codemode",
+        .arguments_json = "{\"script\":\"// compute the answer\\nconst list = tools.list();\\ntext(list.join(','));\"}",
+    };
+    const activity = (try formatCodemodeActivity(alloc, test_tool_registry, "", call)) orelse
+        return error.TestExpectedEqual;
+    defer alloc.free(activity);
+    try std.testing.expectEqualStrings("const list = tools.list();", activity);
+}
+
+test "codemode activity keeps commands with absolute paths" {
+    const alloc = std.testing.allocator;
+    const call: ToolCall = .{
+        .id = "codemode_abs_path",
+        .name = "codemode",
+        .arguments_json = "{\"script\":\"await tools.call(\\\"run_command\\\", { command: \\\"node /Users/example/tools/build.js --watch\\\" });\"}",
+    };
+    const activity = (try formatCodemodeActivity(alloc, test_tool_registry, "/Users/example/workspace", call)) orelse
+        return error.TestExpectedEqual;
+    defer alloc.free(activity);
+    try std.testing.expect(std.mem.startsWith(u8, activity, "node "));
+}
+
+test "codemode activity returns null on malformed arguments" {
+    const alloc = std.testing.allocator;
+    const call: ToolCall = .{
+        .id = "codemode_bad",
+        .name = "codemode",
+        .arguments_json = "{not json",
+    };
+    try std.testing.expectEqual(@as(?[]u8, null), try formatCodemodeActivity(alloc, test_tool_registry, "", call));
+}
+
+test "codemode plain action shows the script activity detail" {
+    const alloc = std.testing.allocator;
+    const call: ToolCall = .{
+        .id = "codemode_plain",
+        .name = "codemode",
+        .arguments_json = "{\"script\":\"await tools.call(\\\"run_command\\\", { command: \\\"zig build test\\\" });\"}",
+    };
+    const action = try formatPlainAction(alloc, .{ .tool_registry = test_tool_registry, .call = call });
+    defer alloc.free(action);
+    try std.testing.expect(std.mem.startsWith(u8, action, "Running script "));
+    try std.testing.expect(std.mem.indexOf(u8, action, "zig build test") != null);
+}
 
 test "tool presentation formats dynamic MCP availability distinctly" {
     const alloc = std.testing.allocator;
