@@ -172,13 +172,53 @@ pub const Host = struct {
         // value in a fresh {value: ...} object before resolving the eval
         // promise (js_parse_program emits OP_object/OP_put_field for
         // JS_FUNC_ASYNC), so unwrap it to recover the script result.
-        const result_value = if (c.JS_VALUE_GET_TAG(settled) == c.JS_TAG_OBJECT)
+        var current = if (c.JS_VALUE_GET_TAG(settled) == c.JS_TAG_OBJECT)
             c.JS_GetPropertyStr(ctx, settled, "value")
         else
             settled;
-        defer if (c.JS_VALUE_GET_TAG(settled) == c.JS_TAG_OBJECT) c.JS_FreeValue(ctx, result_value);
+        var current_owned = c.JS_VALUE_GET_TAG(settled) == c.JS_TAG_OBJECT;
+        defer if (current_owned) c.JS_FreeValue(ctx, current);
 
-        const rendered = try self.stringify(ctx, result_value);
+        // A script that ends by returning its own promise - main() or an
+        // async IIFE the script did not await - leaves that inner promise as
+        // the completion value. Drain it like the eval promise: without
+        // this the model sees "{}", the JSON of a promise object. The
+        // {value: ...} wrapper is an eval-only artifact, so a resolved
+        // inner value passes through unchanged.
+        while (c.JS_PromiseState(ctx, current) != c.JS_PROMISE_NOT_A_PROMISE) {
+            while (c.JS_PromiseState(ctx, current) == c.JS_PROMISE_PENDING) {
+                var job_ctx: ?*c.JSContext = null;
+                const pending = c.JS_ExecutePendingJob(self.runtime.?, &job_ctx);
+                if (pending == 0) return error.Timeout;
+                if (self.cancelRequested()) return error.Cancelled;
+                if (io_mod.milliTimestamp() >= self.deadline_ms) {
+                    self.timed_out = true;
+                    return error.Timeout;
+                }
+            }
+            const inner = c.JS_PromiseResult(ctx, current);
+            if (c.JS_PromiseState(ctx, current) == c.JS_PROMISE_REJECTED) {
+                if (self.cancelRequested()) {
+                    c.JS_FreeValue(ctx, inner);
+                    return error.Cancelled;
+                }
+                if (self.timed_out) {
+                    c.JS_FreeValue(ctx, inner);
+                    return error.Timeout;
+                }
+                if (isOutOfMemory(self, ctx, inner)) {
+                    return error.MemoryLimit;
+                }
+                self.captureExceptionMessage(ctx, inner);
+                c.JS_FreeValue(ctx, inner);
+                return error.ScriptError;
+            }
+            if (current_owned) c.JS_FreeValue(ctx, current);
+            current = inner;
+            current_owned = true;
+        }
+
+        const rendered = try self.stringify(ctx, current);
         errdefer self.allocator.free(rendered);
         const text = try self.text_buf.toOwnedSlice(self.allocator);
         errdefer self.allocator.free(text);

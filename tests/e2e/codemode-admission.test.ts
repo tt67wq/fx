@@ -165,6 +165,31 @@ function countOccurrences(text: string, needle: string): number {
   return text.split(needle).length - 1;
 }
 
+test("REPRO async main completion drains the returned promise", async () => {
+  const root = createIsolatedRoot();
+  const script =
+    'async function main() {\n' +
+    '  const ls = await tools.call("run_command", { command: "echo hello-repro" });\n' +
+    '  return ls;\n' +
+    '}\n' +
+    'main();';
+  const gateway = startGateway([
+    fakeGatewayToolCall("repro-1", "codemode", { script }),
+    fakeGatewayFinalText("REPRO_FINAL"),
+  ]);
+  try {
+    const result = await runFx(
+      ["ask", "--quiet", "--json", "--no-save", "run the repro"],
+      { cwd: root.workspace, env: gatewayEnv(root, gateway), timeoutMs: TIMEOUT },
+    );
+    expect(result.code, "stderr: " + result.stderr.slice(0, 400)).toBe(0);
+    const body = toolResultText(gateway.requests[1]!.body, "repro-1");
+    expect(body).toContain("hello-repro");
+  } finally {
+    rmSync(root.workspace, { recursive: true, force: true });
+  }
+}, 90000);
+
 describe("codemode nested admission parity", () => {
   test(
     "one command produces one review payload and one result on both paths",
