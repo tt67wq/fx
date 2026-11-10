@@ -484,7 +484,10 @@ fn toolsListCallback(ctx: ?*c.JSContext, _: c.JSValue, _: c_int, _: [*c]c.JSValu
             c.JS_FreeValue(context, array);
             return js_exception;
         }
+        // A failed array store leaves ownership of entry with the caller,
+        // so it is freed here like every value the writes rejected.
         if (c.JS_SetPropertyUint32(context, array, @intCast(index), entry) < 0) {
+            c.JS_FreeValue(context, entry);
             c.JS_FreeValue(context, array);
             return js_exception;
         }

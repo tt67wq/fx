@@ -13,7 +13,8 @@ pub const Tool = struct {
 /// which for run_command differs from the registered tool name (shell).
 pub const ToolSchema = struct {
     name: []const u8,
-    schema_json: []const u8,
+    /// Sentinel-terminated: JS_ParseJSON requires buf[buf_len] == 0.
+    schema_json: [:0]const u8,
 };
 
 /// Three read-only tools first, then run_command, which is not read-only:
