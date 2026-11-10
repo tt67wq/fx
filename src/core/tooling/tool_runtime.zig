@@ -1289,6 +1289,27 @@ pub const CodemodeHostState = struct {
     /// Counts nested tool calls a codemode script made through the bridge;
     /// each gets a distinct nested call id.
     call_sequence: usize = 0,
+    /// The codemode script's own wall-clock budget and the moment its call
+    /// started. Nested shell runs receive min(requested, remaining budget)
+    /// so a stalled command cannot outlive the script deadline; null keeps
+    /// the previous never-times-out nesting behavior (tests, direct runs).
+    ambient_budget_ms: ?usize = null,
+    ambient_started_ms: ?i64 = null,
+
+    /// The nested command timeout pair for a call at now_ms: min of the
+    /// script's remaining budget, or null when no budget was recorded.
+    pub fn ambientCommandTimeout(
+        self: *const CodemodeHostState,
+        now_ms: i64,
+    ) ?struct { timeout_ms: usize, started_ms: i64 } {
+        const budget = self.ambient_budget_ms orelse return null;
+        const started = self.ambient_started_ms orelse return null;
+        const elapsed: usize = if (now_ms <= started)
+            0
+        else
+            std.math.cast(usize, now_ms - started) orelse std.math.maxInt(usize);
+        return .{ .timeout_ms = budget -| elapsed, .started_ms = started };
+    }
 
     pub fn cancelled(self: CodemodeHostState) bool {
         return self.runtime.worker.worker_cancel_requested.load(.seq_cst);
@@ -2843,6 +2864,32 @@ const TestRuntime = struct {
         };
     }
 };
+
+test "codemode ambient budget flows into nested command timeout fields" {
+    var rt = TestRuntime{};
+    defer rt.deinit(std.testing.allocator);
+    var host = CodemodeHostState{
+        .runtime = rt.context(),
+        .script_call = .{
+            .id = "codemode-call",
+            .name = "codemode",
+            .arguments_json = "{}",
+        },
+        .ambient_budget_ms = 30_000,
+        .ambient_started_ms = 1_000,
+    };
+    const pair = host.ambientCommandTimeout(1_000 + 5_000);
+    try std.testing.expect(pair != null);
+    try std.testing.expectEqual(@as(usize, 25_000), pair.?.timeout_ms);
+    // A call after the budget expired resolves to zero, which the command
+    // runner treats as an immediate TimeoutExpired.
+    const expired = host.ambientCommandTimeout(1_000 + 30_000);
+    try std.testing.expect(expired != null);
+    try std.testing.expectEqual(@as(usize, 0), expired.?.timeout_ms);
+    // Without a recorded budget the nested timeout stays unconstrained.
+    host.ambient_budget_ms = null;
+    try std.testing.expect(host.ambientCommandTimeout(1_000 + 5_000) == null);
+}
 
 test "codemode host cancel query reads the worker cancel flag" {
     var rt = TestRuntime{};

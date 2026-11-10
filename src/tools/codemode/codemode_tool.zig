@@ -1,6 +1,8 @@
 const std = @import("std");
 const sandbox_mod = @import("sandbox.zig");
 const bridge = @import("bridge.zig");
+const host_mod = @import("host.zig");
+const io_mod = @import("../../core/shared/io.zig");
 const builtin_tools = @import("../../builtins/tools.zig");
 const tool_dispatch = @import("../../core/tooling/tool_dispatch.zig");
 const tool_args = @import("../../core/tooling/tool_args.zig");
@@ -54,6 +56,10 @@ pub fn call(ctx: tool_dispatch.DispatchContext, erased: tool_dispatch.ToolInput)
     const state = ctx.codemode_host orelse return .{
         .failure = try ctx.allocator.dupe(u8, unavailable_message),
     };
+    // Record the script budget once per call so every nested shell run can be
+    // capped at the remaining script wall clock instead of running unbounded.
+    state.ambient_budget_ms = host_mod.default_timeout_ms;
+    state.ambient_started_ms = io_mod.milliTimestamp();
     const input = erased.as(Input);
 
     // The schema JSON strings live in this arena: they must outlive every

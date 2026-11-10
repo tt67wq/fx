@@ -190,6 +190,43 @@ test("REPRO async main completion drains the returned promise", async () => {
   }
 }, 90000);
 
+test("nested run_command is killed when the codemode script budget expires", async () => {
+  const root = createIsolatedRoot();
+  // One nested command sleeps far past the 30s script budget. The ambient
+  // timeout must kill it at the budget instead of waiting for sleep itself.
+  const script = 'await tools.call("run_command", { command: "sleep 60" });\n' +
+    'text("slept");';
+  const gateway = startGateway([
+    fakeGatewayToolCall("budget-1", "codemode", { script }),
+    fakeGatewayFinalText("BUDGET_FINAL"),
+  ]);
+  const startedAt = Date.now();
+  try {
+    const result = await runFx(
+      ["ask", "--quiet", "--json", "--no-save", "run the budget test"],
+      { cwd: root.workspace, env: gatewayEnv(root, gateway), timeoutMs: TIMEOUT },
+    );
+    const elapsedS = (Date.now() - startedAt) / 1000;
+    expect(result.code, "stderr: " + result.stderr.slice(0, 400)).not.toBe(0);
+    expect(elapsedS).toBeGreaterThan(20);
+    expect(elapsedS).toBeLessThan(45);
+    // The failure detail is not echoed by --quiet --json; the model
+    // receives it as the follow-up request's tool result.
+    const request = JSON.parse(gateway.requests[1]!.body) as {
+      prompt?: Array<{ content?: Array<Record<string, unknown>> }>;
+    };
+    const toolResult = (request.prompt ?? [])
+      .flatMap((message) => message.content ?? [])
+      .find((part) => part.type === "tool-result" && part.toolCallId === "budget-1");
+    expect(toolResult).toBeDefined();
+    const output = toolResult!.output as { type: string; value: string };
+    expect(output.type).toBe("error-text");
+    expect(output.value).toContain("Timeout");
+  } finally {
+    rmSync(root.workspace, { recursive: true, force: true });
+  }
+}, 90000);
+
 describe("codemode nested admission parity", () => {
   test(
     "one command produces one review payload and one result on both paths",

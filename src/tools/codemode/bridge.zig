@@ -60,6 +60,14 @@ fn call(
     };
 
     var check = ctx;
+    // Cap every nested shell run at the script's remaining wall clock: a
+    // stalled command is killed at the budget instead of blocking the
+    // synchronous callback until it recovers on its own. See the ambient
+    // timeout consumed by the shell dispatch path.
+    if (state.ambient_budget_ms) |budget| {
+        check.command_timeout_ms = budget;
+        check.command_timeout_started_ms = state.ambient_started_ms;
+    }
     // Nested calls resolve against the full built-in registry, not the
     // profile-narrowed one: a codemode-only profile advertises codemode to
     // the model, while the script-facing whitelist (read_file, glob_files,
