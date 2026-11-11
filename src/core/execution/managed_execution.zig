@@ -2198,3 +2198,49 @@ test "TTY cursor advances monotonically and delivers each delta once" {
         .published_running = true,
     }));
 }
+
+test "admission reclaims delivery-committed entries that went terminal after commit" {
+    const alloc = std.testing.allocator;
+    var runtime = Runtime.init(alloc);
+    defer runtime.deinit();
+    // The codemode nested-command shape: each entry is committed while    // still running and only goes terminal afterwards, so nothing    // tombstones it. Admission must reclaim these instead of counting    // them as live forever.
+    var ids: [contract.max_live_entries][48]u8 = undefined;
+    var lengths: [ids.len]usize = undefined;
+    for (0..contract.max_live_entries) |index| {
+        const id = try std.mem.print(&ids[index], "committed-running-{d}", .{index});
+        lengths[index] = id.len;
+        var prepared = try runtime.registerTty(alloc, .{
+            .execution_id = id,
+            .command = "long-running",
+            .state = .{ .running = {} },
+            .max_output_bytes = 64,
+            .published_running = true,
+        });
+        defer prepared.deinit(alloc);
+        try runtime.commitDelivery(
+            prepared.snapshot.execution_id,
+            prepared.reservation_id,
+        );
+        // The command finishes after the commit; nobody tombstones it.
+        var finished = try runtime.updateTty(alloc, .{
+            .execution_id = id,
+            .command = "long-running",
+            .state = .{ .completed = .{ .exit_code = 0 } },
+            .max_output_bytes = 64,
+            .published_running = true,
+        });
+        defer finished.deinit(alloc);
+    }
+    var next = try runtime.registerTty(alloc, .{
+        .execution_id = "committed-running-next",
+        .command = "true",
+        .state = .{ .completed = .{ .exit_code = 0 } },
+        .max_output_bytes = 64,
+        .published_running = true,
+    });
+    defer next.deinit(alloc);
+    try runtime.commitDelivery(
+        next.snapshot.execution_id,
+        next.reservation_id,
+    );
+}
