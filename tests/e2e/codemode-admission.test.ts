@@ -227,6 +227,43 @@ test("nested run_command is killed when the codemode script budget expires", asy
   }
 }, 90000);
 
+test("a failed script keeps partial output and nested call summary", async () => {
+  const root = createIsolatedRoot();
+  writeFileSync(join(root.workspace, "notes.txt"), "alpha notes");
+  const script = `const notes = await tools.call("read_file", { path: "notes.txt" });
+text("reached the read step");
+console.log("side effect logged");
+throw new Error("boom");`;
+  const gateway = startGateway([
+    fakeGatewayToolCall("fail-1", "codemode", { script }),
+    fakeGatewayFinalText("FAIL_FINAL"),
+  ]);
+  try {
+    const result = await runFx(
+      ["ask", "--quiet", "--json", "--no-save", "run the failure test"],
+      { cwd: root.workspace, env: gatewayEnv(root, gateway), timeoutMs: TIMEOUT },
+    );
+    // A script error is not a process failure: the model receives the
+    // failure body as an error-text tool result and answers normally.
+    expect(result.code, "stderr: " + result.stderr.slice(0, 400)).toBe(0);
+    const request = JSON.parse(gateway.requests[1]!.body) as {
+      prompt?: Array<{ content?: Array<Record<string, unknown>> }>;
+    };
+    const toolResult = (request.prompt ?? [])
+      .flatMap((message) => message.content ?? [])
+      .find((part) => part.type === "tool-result" && part.toolCallId === "fail-1");
+    expect(toolResult).toBeDefined();
+    const output = toolResult!.output as { type: string; value: string };
+    expect(output.type).toBe("error-text");
+    expect(output.value).toContain("boom");
+    expect(output.value).toContain("reached the read step");
+    expect(output.value).toContain("side effect logged");
+    expect(output.value).toContain("read_file: ok");
+  } finally {
+    rmSync(root.workspace, { recursive: true, force: true });
+  }
+});
+
 describe("codemode nested admission parity", () => {
   test(
     "one command produces one review payload and one result on both paths",

@@ -51,6 +51,13 @@ pub const Result = struct {
 /// A single-threaded QuickJS host. The runtime is created on the first eval so
 /// startup never pays for the engine. Do not move a host after its first eval:
 /// the interrupt handler keeps a pointer to it.
+/// The captured script-facing output moved out of the host buffers.
+/// The caller owns both slices and frees them with the host allocator.
+pub const PartialOutput = struct {
+    text: []const u8 = "",
+    console: []const u8 = "",
+};
+
 pub const Host = struct {
     allocator: Allocator,
     options: Options,
@@ -90,6 +97,16 @@ pub const Host = struct {
         self.console_buf.deinit(self.allocator);
         if (self.last_script_error) |message| self.allocator.free(message);
         self.last_script_error = null;
+    }
+
+    /// Moves the captured text and console buffers to the caller and empties
+    /// them, the same post-eval read the exception message uses. A second
+    /// take yields empty slices, so deinit never double frees. On allocation
+    /// failure the buffer stays behind for deinit and the slice is empty.
+    pub fn takePartialOutput(self: *Host) PartialOutput {
+        const text = self.text_buf.toOwnedSlice(self.allocator) catch "";
+        const console = self.console_buf.toOwnedSlice(self.allocator) catch "";
+        return .{ .text = text, .console = console };
     }
 
     /// The script-visible message of the last ScriptError, for the tool result.
@@ -902,4 +919,25 @@ test {
     // test build.
     _ = @import("bindings_tests.zig");
     _ = @import("sandbox.zig");
+}
+
+test "takePartialOutput moves captured buffers to the caller" {
+    var host = Host.init(std.testing.allocator, .{});
+    defer host.deinit();
+    _ = appendCapped(&host, &host.text_buf, "partial text");
+    _ = appendCapped(&host, &host.console_buf, "console line\n");
+
+    const partial = host.takePartialOutput();
+    defer host.allocator.free(partial.text);
+    defer host.allocator.free(partial.console);
+    try std.testing.expectEqualStrings("partial text", partial.text);
+    try std.testing.expectEqualStrings("console line\n", partial.console);
+
+    // The buffers are emptied: a later take yields empty slices, and deinit
+    // must not double free what the caller now owns.
+    const empty = host.takePartialOutput();
+    defer host.allocator.free(empty.text);
+    defer host.allocator.free(empty.console);
+    try std.testing.expectEqualStrings("", empty.text);
+    try std.testing.expectEqualStrings("", empty.console);
 }

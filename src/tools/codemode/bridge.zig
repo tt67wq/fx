@@ -107,10 +107,11 @@ fn call(
         check.session_grants,
     );
     if (outcome.decision.isDenied() or outcome.tool_failure != null) {
+        state.recordNestedCall(tool.name, if (outcome.tool_failure != null) .failure else .denied);
         return deniedResult(allocator, try deniedReason(arena, tool.name, outcome));
     }
 
-    const result = try tool_runtime.executeToolCallAuthorized(check, .{
+    const result = tool_runtime.executeToolCallAuthorized(check, .{
         .call_allocator = arena,
         .result_allocator = arena,
         .call = nested_call,
@@ -120,7 +121,10 @@ fn call(
         .advertised_dynamic_tool_names = ctx.advertised_dynamic_tool_names,
         .max_tool_result_bytes = ctx.max_tool_result_bytes,
         .classification_complete = true,
-    });
+    }) catch |err| {
+        state.recordNestedCall(tool.name, .failure);
+        return err;
+    };
     // The bridge consumes the output itself and never hands the delivery
     // reservation to a later interact. Commit it so a terminal entry
     // tombstones and frees its execution slot. Without this every nested
@@ -132,8 +136,12 @@ fn call(
 
     // Wait-for-completion, then discard: a cancel that arrived during the
     // nested call must not hand the script a usable value.
-    if (state.cancelled()) return error.Cancelled;
+    if (state.cancelled()) {
+        state.recordNestedCall(tool.name, .cancelled);
+        return error.Cancelled;
+    }
 
+    state.recordNestedCall(tool.name, .ok);
     if (std.mem.eql(u8, tool.name, "run_command")) {
         return shellResult(allocator, arena, result);
     }

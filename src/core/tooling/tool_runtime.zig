@@ -1283,6 +1283,19 @@ const RunCommandBackendState = struct {
     execution_error: ?anyerror = null,
 };
 
+/// How a nested tool call a codemode script made ended.
+pub const NestedCallOutcome = enum { ok, denied, failure, cancelled };
+
+/// One recorded nested call exit. The name is the static script-facing
+/// tool name, so recording never allocates.
+pub const NestedCallRecord = struct {
+    name: []const u8 = "",
+    outcome: NestedCallOutcome = .ok,
+};
+
+/// Fixed failure-body summary capacity; past it only the overflow flag.
+pub const max_nested_call_records: usize = 32;
+
 pub const CodemodeHostState = struct {
     runtime: Context,
     script_call: ToolCall,
@@ -1295,6 +1308,28 @@ pub const CodemodeHostState = struct {
     /// the previous never-times-out nesting behavior (tests, direct runs).
     ambient_budget_ms: ?usize = null,
     ambient_started_ms: ?i64 = null,
+    /// The exits of nested tool calls the script made, for the failure
+    /// body. Fixed-size per-call state: the sandbox thread records without
+    /// allocation, the tool thread reads after eval returns, and the state
+    /// dies with the call so nothing leaks across calls.
+    nested_calls: [max_nested_call_records]NestedCallRecord = @splat(.{}),
+    nested_call_count: usize = 0,
+    nested_call_overflow: bool = false,
+    /// Records one nested call exit. Past capacity keeps the recorded
+    /// entries and raises the overflow flag.
+    pub fn recordNestedCall(self: *CodemodeHostState, name: []const u8, outcome: NestedCallOutcome) void {
+        if (self.nested_call_count >= max_nested_call_records) {
+            self.nested_call_overflow = true;
+            return;
+        }
+        self.nested_calls[self.nested_call_count] = .{ .name = name, .outcome = outcome };
+        self.nested_call_count += 1;
+    }
+
+    pub fn nestedCallCount(self: *const CodemodeHostState) usize {
+        return self.nested_call_count;
+    }
+
     pub fn cancelled(self: CodemodeHostState) bool {
         return self.runtime.worker.worker_cancel_requested.load(.seq_cst);
     }
@@ -2848,6 +2883,31 @@ const TestRuntime = struct {
         };
     }
 };
+
+test "codemode nested call summary records exits and overflow" {
+    var rt = TestRuntime{};
+    defer rt.deinit(std.testing.allocator);
+    var host = CodemodeHostState{
+        .runtime = rt.context(),
+        .script_call = .{
+            .id = "codemode-call",
+            .name = "codemode",
+            .arguments_json = "{}",
+        },
+    };
+    host.recordNestedCall("read_file", .ok);
+    host.recordNestedCall("run_command", .denied);
+    try std.testing.expectEqual(@as(usize, 2), host.nestedCallCount());
+    try std.testing.expectEqualStrings("read_file", host.nested_calls[0].name);
+    try std.testing.expectEqual(NestedCallOutcome.ok, host.nested_calls[0].outcome);
+    try std.testing.expectEqual(NestedCallOutcome.denied, host.nested_calls[1].outcome);
+
+    // Filling past the fixed capacity keeps the recorded entries and raises
+    // the overflow flag instead of dropping recorded ones.
+    for (0..40) |_| host.recordNestedCall("glob_files", .ok);
+    try std.testing.expect(host.nested_call_overflow);
+    try std.testing.expectEqual(max_nested_call_records, host.nestedCallCount());
+}
 
 test "codemode host cancel query reads the worker cancel flag" {
     var rt = TestRuntime{};
