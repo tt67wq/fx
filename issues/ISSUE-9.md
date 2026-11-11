@@ -1,6 +1,6 @@
 # ISSUE-9 — codemode 失败结果丢弃部分输出与已执行调用
 
-- **状态**: open
+- **状态**: closed
 - **发现时间**: 2026-11-10
 - **来源**: fx codemode 与 pi 1.5.1 源码对比
 - **工作量**: 小
@@ -63,5 +63,6 @@ ISSUE-11）。
 e2e；真二进制开 experimental.codemode 跑失败脚本；CI 过 Build & Test 与
 macOS arm64。
 
-实现：见工作区变更（host 访问器、state 32 槽摘要、bridge 出口记状态、formatFailureBody）。
+实现：91291355（host 访问器、state 32 槽摘要、bridge 出口记状态、formatFailureBody）；收尾修复 169e8105（PartialOutput 移出 Host 文档注释块）。
 review note: bridge early exits before admission (unknown tool name and similar) do not record a nested call summary entry; expected semantics (the summary only covers calls that took effect).
+关闭：2026-11-11，实现 91291355，收尾修复 169e8105。
