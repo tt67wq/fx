@@ -210,6 +210,7 @@ const Entry = struct {
     /// Serializes joins of `thread`; see `Runtime.joinEntry`.
     join_mutex: std.Io.Mutex = .init,
     published_running: bool = false,
+    delivery_committed: bool = false,
     tombstone_sequence: std.atomic.Value(u32) = .init(0),
     active_operations: usize = 0,
     pending_delete: bool = false,
@@ -648,11 +649,14 @@ pub const Runtime = struct {
                 self.mutex.unlock(zio);
                 return error.InvalidCapacityReservation;
             }
-        } else if (contract.decideAdmission(
-            self.liveCountLocked() + self.pending_admissions,
-        ) == .capacity_exhausted) {
-            self.mutex.unlock(zio);
-            return error.ExecutionCapacityExceeded;
+        } else {
+            self.reclaimDeliveryCommittedLocked();
+            if (contract.decideAdmission(
+                self.liveCountLocked() + self.pending_admissions,
+            ) == .capacity_exhausted) {
+                self.mutex.unlock(zio);
+                return error.ExecutionCapacityExceeded;
+            }
         }
         self.evictOldestTombstoneLocked();
         const slot = self.emptySlotLocked() orelse {
@@ -676,6 +680,7 @@ pub const Runtime = struct {
         self.mutex.lockUncancelable(zio);
         defer self.mutex.unlock(zio);
         if (self.shutting_down) return error.RuntimeStopping;
+        self.reclaimDeliveryCommittedLocked();
         if (contract.decideAdmission(
             self.liveCountLocked() + self.pending_admissions,
         ) == .capacity_exhausted) {
@@ -1054,6 +1059,7 @@ pub const Runtime = struct {
         const terminal = entry.isTerminal();
         const should_remove = terminal and !entry.published_running;
         if (terminal and entry.published_running) self.clearAuthorityLocked(entry);
+        if (!terminal) entry.delivery_committed = true;
         entry.mutex.unlock(zio);
         if (should_remove) self.markDelete(entry);
     }
@@ -1154,6 +1160,7 @@ pub const Runtime = struct {
             }
             return .{ .entry = existing, .created = false };
         }
+        self.reclaimDeliveryCommittedLocked();
         const live_count = self.liveCountLocked() + self.pending_admissions;
         if (contract.decideAdmission(live_count) == .capacity_exhausted) {
             return error.ExecutionCapacityExceeded;
@@ -1355,8 +1362,12 @@ pub const Runtime = struct {
     fn markDelete(self: *Runtime, entry: *Entry) void {
         const zio = io_mod.getIo();
         self.mutex.lockUncancelable(zio);
-        entry.pending_delete = true;
+        self.markDeleteLocked(entry);
         self.mutex.unlock(zio);
+    }
+
+    fn markDeleteLocked(_: *Runtime, entry: *Entry) void {
+        entry.pending_delete = true;
     }
 
     fn clearAuthorityLocked(self: *Runtime, entry: *Entry) void {
@@ -1412,6 +1423,22 @@ pub const Runtime = struct {
             entry.mutex.unlock(zio);
         }
         return count;
+    }
+
+    fn reclaimDeliveryCommittedLocked(self: *Runtime) void {
+        const zio = io_mod.getIo();
+        for (self.entries) |candidate| {
+            const entry = candidate orelse continue;
+            entry.mutex.lockUncancelable(zio);
+            const reclaim = entry.delivery_committed and
+                entry.isTerminal() and
+                entry.backend_state != .tombstone;
+            if (reclaim) {
+                self.clearAuthorityLocked(entry);
+                self.markDeleteLocked(entry);
+            }
+            entry.mutex.unlock(zio);
+        }
     }
 
     fn emptySlotLocked(self: *Runtime) ?usize {
