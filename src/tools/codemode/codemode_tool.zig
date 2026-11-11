@@ -297,3 +297,91 @@ test "failure body truncates oversized output and flags summary overflow" {
     try std.testing.expect(body.len < 8192);
     try std.testing.expect(std.mem.find(u8, body, "additional calls") != null);
 }
+
+// ISSUE-10: script-level @options budget. The header is the first
+// non-empty line comment; parsing and clamping are pure so the bounds are
+// unit-tested. Conductor contract with failing stubs; the worker fills in
+// the bodies until these tests are green.
+pub const options_timeout_min_ms: u64 = 1_000;
+pub const options_timeout_max_ms: u64 = 120_000;
+pub const options_max_output_tokens: u64 = 16_384;
+pub const options_output_floor_bytes: usize = 1_024;
+pub const options_header_prefix = "// @options:";
+
+pub const ScriptOptions = struct {
+    timeout_ms: ?u64 = null,
+    max_output_tokens: ?u64 = null,
+};
+
+pub const EffectiveOptions = struct {
+    timeout_ms: usize,
+    output_buffer_bytes: usize,
+};
+
+pub const OptionsParseError = error{ Malformed, OutOfRange };
+
+/// Parses the script-level @options header from the first non-empty line.
+/// STUB: returns defaults until implemented.
+pub fn parseScriptOptions(_: []const u8) OptionsParseError!ScriptOptions {
+    return .{};
+}
+
+/// Clamps declared options into the effective sandbox budget.
+/// STUB: returns host defaults until implemented.
+pub fn effectiveScriptOptions(_: ScriptOptions) EffectiveOptions {
+    return .{
+        .timeout_ms = host_mod.default_timeout_ms,
+        .output_buffer_bytes = host_mod.default_output_buffer_bytes,
+    };
+}
+
+test "parseScriptOptions reads a first-line header" {
+    const opts = try parseScriptOptions("// @options: {\"timeout_ms\": 60000, \"max_output_tokens\": 4096}\ntext(\"hi\");");
+    try std.testing.expectEqual(@as(?u64, 60000), opts.timeout_ms);
+    try std.testing.expectEqual(@as(?u64, 4096), opts.max_output_tokens);
+}
+
+test "parseScriptOptions ignores a header past the first non-empty line" {
+    const opts = try parseScriptOptions("console.log(1);\n// @options: {\"timeout_ms\": 60000}");
+    try std.testing.expectEqual(@as(?u64, null), opts.timeout_ms);
+}
+
+test "parseScriptOptions falls back to defaults without a header" {
+    const opts = try parseScriptOptions("text(\"done\");");
+    try std.testing.expectEqual(@as(?u64, null), opts.timeout_ms);
+    try std.testing.expectEqual(@as(?u64, null), opts.max_output_tokens);
+}
+
+test "parseScriptOptions rejects malformed json and out-of-range values" {
+    try std.testing.expectError(error.Malformed, parseScriptOptions("// @options: {oops}"));
+    try std.testing.expectError(error.Malformed, parseScriptOptions("// @options:"));
+    try std.testing.expectError(error.OutOfRange, parseScriptOptions("// @options: {\"timeout_ms\": 999}\ntext(\"hi\");"));
+    try std.testing.expectError(error.OutOfRange, parseScriptOptions("// @options: {\"timeout_ms\": 120001}\ntext(\"hi\");"));
+    try std.testing.expectError(error.OutOfRange, parseScriptOptions("// @options: {\"max_output_tokens\": 0}\ntext(\"hi\");"));
+    try std.testing.expectError(error.Malformed, parseScriptOptions("// @options: {\"timeout_ms\": \"60000\"}\ntext(\"hi\");"));
+}
+
+test "parseScriptOptions accepts the bounds" {
+    const low = try parseScriptOptions("// @options: {\"timeout_ms\": 1000}\ntext(\"hi\");");
+    try std.testing.expectEqual(@as(?u64, 1000), low.timeout_ms);
+    const high = try parseScriptOptions("// @options: {\"timeout_ms\": 120000}\ntext(\"hi\");");
+    try std.testing.expectEqual(@as(?u64, 120000), high.timeout_ms);
+}
+
+test "effectiveScriptOptions clamps timeout and saturates tokens" {
+    const defaults = effectiveScriptOptions(.{});
+    try std.testing.expectEqual(@as(usize, 30_000), defaults.timeout_ms);
+    try std.testing.expectEqual(@as(usize, 64 * 1024), defaults.output_buffer_bytes);
+
+    const declared = effectiveScriptOptions(.{ .timeout_ms = 60_000, .max_output_tokens = 4_096 });
+    try std.testing.expectEqual(@as(usize, 60_000), declared.timeout_ms);
+    try std.testing.expectEqual(@as(usize, 16_384), declared.output_buffer_bytes);
+
+    // A huge token value saturates at the host hard cap, never overflows.
+    const huge = effectiveScriptOptions(.{ .max_output_tokens = std.math.maxInt(u64) });
+    try std.testing.expectEqual(@as(usize, 64 * 1024), huge.output_buffer_bytes);
+
+    // Small token values hold the floor.
+    const tiny = effectiveScriptOptions(.{ .max_output_tokens = 1 });
+    try std.testing.expectEqual(@as(usize, 1_024), tiny.output_buffer_bytes);
+}
