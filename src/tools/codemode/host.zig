@@ -48,9 +48,6 @@ pub const Result = struct {
     }
 };
 
-/// A single-threaded QuickJS host. The runtime is created on the first eval so
-/// startup never pays for the engine. Do not move a host after its first eval:
-/// the interrupt handler keeps a pointer to it.
 /// The captured script-facing output moved out of the host buffers.
 /// The caller owns both slices and frees them with the host allocator.
 pub const PartialOutput = struct {
@@ -58,6 +55,9 @@ pub const PartialOutput = struct {
     console: []const u8 = "",
 };
 
+/// A single-threaded QuickJS host. The runtime is created on the first eval so
+/// startup never pays for the engine. Do not move a host after its first eval:
+/// the interrupt handler keeps a pointer to it.
 pub const Host = struct {
     allocator: Allocator,
     options: Options,

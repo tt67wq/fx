@@ -64,3 +64,4 @@ e2e；真二进制开 experimental.codemode 跑失败脚本；CI 过 Build & Tes
 macOS arm64。
 
 实现：见工作区变更（host 访问器、state 32 槽摘要、bridge 出口记状态、formatFailureBody）。
+review note: bridge early exits before admission (unknown tool name and similar) do not record a nested call summary entry; expected semantics (the summary only covers calls that took effect).
