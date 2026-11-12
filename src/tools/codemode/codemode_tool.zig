@@ -317,24 +317,24 @@ test "failure body truncates oversized output and flags summary overflow" {
 // ISSUE-10: script-level @options budget. The header is the first
 // non-empty line comment; parsing and clamping are pure so the bounds are
 // unit-tested. The bound constants live in host.zig.
-pub const options_header_prefix = "// @options:";
+const options_header_prefix = "// @options:";
 
-pub const ScriptOptions = struct {
+const ScriptOptions = struct {
     timeout_ms: ?u64 = null,
     max_output_tokens: ?u64 = null,
 };
 
-pub const EffectiveOptions = struct {
+const EffectiveOptions = struct {
     timeout_ms: usize,
     output_buffer_bytes: usize,
 };
 
-pub const OptionsParseError = error{ Malformed, OutOfRange };
+const OptionsParseError = error{ Malformed, OutOfRange };
 
 /// Parses the script-level @options header from the first non-empty line.
 /// A header anywhere else is ignored; a header line must hold a JSON object
 /// with integer timeout_ms and max_output_tokens, or the script is rejected.
-pub fn parseScriptOptions(script: []const u8) OptionsParseError!ScriptOptions {
+fn parseScriptOptions(script: []const u8) OptionsParseError!ScriptOptions {
     var rest = script;
     while (rest.len > 0) {
         const line_end = std.mem.findScalar(u8, rest, '\n') orelse rest.len;
@@ -393,7 +393,7 @@ fn optionsInteger(value: std.json.Value) OptionsParseError!u64 {
 /// timeout replaces the host default, and the declared token budget becomes
 /// an output byte cap at 4 bytes per token, saturated at the host's 64KiB
 /// hard cap and never below the 1KiB floor.
-pub fn effectiveScriptOptions(options: ScriptOptions) EffectiveOptions {
+fn effectiveScriptOptions(options: ScriptOptions) EffectiveOptions {
     const timeout_ms: usize = if (options.timeout_ms) |declared|
         @intCast(declared)
     else
