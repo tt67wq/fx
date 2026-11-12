@@ -704,8 +704,12 @@ fn isOutOfMemory(host: *Host, ctx: *c.JSContext, exception: c.JSValue) bool {
     // quickjs-ng throws JS_NULL when the heap is too full to build the error
     // object itself (vendor/quickjs/quickjs.c JS_ThrowError2: "out of memory:
     // throw JS_NULL to avoid recursing"), so a null exception near the cap is
-    // the missing "out of memory" message. A script's own `throw null` still
-    // classifies as ScriptError: memoryLimitReached only fires at the cap.
+    // the missing "out of memory" message. The tradeoff: a script's own
+    // `throw null` while the heap sits within 64KiB of the cap is also
+    // reported as MemoryLimit, because memoryLimitReached fires at
+    // malloc_limit - 65536 and the JS_ToCStringLen failure path below calls
+    // it too. The slack recognizes the engine null-OOM signal without
+    // moving the cap.
     if (c.JS_IsNull(exception)) return memoryLimitReached(host);
     var len: usize = 0;
     const ptr = c.JS_ToCStringLen(ctx, &len, exception) orelse {
