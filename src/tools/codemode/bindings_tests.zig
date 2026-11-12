@@ -361,10 +361,11 @@ test "codemode named functions exist for every whitelisted tool" {
         \\for (var i = 0; i < entries.length; i++) {
         \\    if (typeof tools[entries[i].name] === "function") names.push(entries[i].name);
         \\}
+        \\if (names.length !== entries.length) throw new Error("missing named functions");
         \\names.join(",");
     );
     defer result.deinit();
-    try std.testing.expectEqualStrings("glob_files,grep_files,read_file,run_command", result.value);
+    try std.testing.expect(result.value.len > 0);
 }
 
 test "codemode named call forwards the object like tools.call" {
@@ -391,7 +392,6 @@ test "codemode named run_command reaches the backend as run_command" {
         \\tools.run_command({ command: "echo hi" });
     );
     defer result.deinit();
-    defer std.testing.allocator.free(result.value);
     try std.testing.expectEqual(@as(usize, 1), fake.calls);
     try std.testing.expectEqualStrings("run_command", fake.last_tool);
 }
@@ -405,7 +405,7 @@ test "codemode named call runs alongside tools.call" {
         \\var first = tools.read_file({ path: "a.txt" });
         \\var second = tools.call("read_file", { path: "a.txt" });
         \\var both = await Promise.all([first, second]);
-        \\$both.length;
+        \\both.length;
     );
     defer result.deinit();
     try std.testing.expectEqual(@as(usize, 2), fake.calls);

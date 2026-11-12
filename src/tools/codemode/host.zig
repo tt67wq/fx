@@ -332,12 +332,27 @@ pub const Host = struct {
         if (installCallShim(ctx, tools_obj) != 0) return error.BindingFailed;
     }
 
+    /// The shim installs one named function per whitelisted tool. The names
+    /// come from the registry at comptime rather than tools.list(): a tool stays
+    /// callable through tools.call even when the bridge has not injected its
+    /// schema, so its named function must exist too (see the "named functions
+    /// exist for every whitelisted tool" test in bindings_tests.zig).
+    const whitelist_literal = blk: {
+        var literal: []const u8 = "[";
+        for (bindings.tools, 0..) |tool, i| {
+            if (i != 0) literal = literal ++ ",";
+            literal = literal ++ "\"" ++ tool.name ++ "\"";
+        }
+        literal = literal ++ "]";
+        break :blk literal;
+    };
+
     /// Evaluates the tools.call shim against `tools_obj` and returns 0 on
     /// success. The shim throws from inside itself to read Error.stack, skips
     /// its own frames, and takes the first user-script frame's line number.
     fn installCallShim(ctx: *c.JSContext, tools_obj: c.JSValue) c_int {
         const shim =
-            \\(function (tools, native) {
+            \\(function (tools, native, whitelist) {
             \\    "use strict";
             \\    function call(name, args) {
             \\        var line = "";
@@ -357,8 +372,14 @@ pub const Host = struct {
             \\        return native(name, args, line);
             \\    }
             \\    tools.call = call;
-            \\})(tools, tools.__codemode_native_call);
-        ;
+            \\    for (var i = 0; i < whitelist.length; i++) {
+            \\        (function (name) {
+            \\            if (name === "call" || name === "list") return;
+            \\            tools[name] = function (args) { return call(name, args); };
+            \\        })(whitelist[i]);
+            \\    }
+            \\})(tools, tools.__codemode_native_call, 
+        ++ whitelist_literal ++ ")";
         const script_len: usize = shim.len;
         const result = c.JS_Eval(
             ctx,
@@ -680,6 +701,12 @@ fn renderCValue(host: *Host, ctx: *c.JSContext, value: c.JSValueConst, len: *usi
 
 fn isOutOfMemory(host: *Host, ctx: *c.JSContext, exception: c.JSValue) bool {
     if (c.JS_IsUninitialized(exception)) return memoryLimitReached(host);
+    // quickjs-ng throws JS_NULL when the heap is too full to build the error
+    // object itself (vendor/quickjs/quickjs.c JS_ThrowError2: "out of memory:
+    // throw JS_NULL to avoid recursing"), so a null exception near the cap is
+    // the missing "out of memory" message. A script's own `throw null` still
+    // classifies as ScriptError: memoryLimitReached only fires at the cap.
+    if (c.JS_IsNull(exception)) return memoryLimitReached(host);
     var len: usize = 0;
     const ptr = c.JS_ToCStringLen(ctx, &len, exception) orelse {
         const pending = c.JS_GetException(ctx);
@@ -696,7 +723,13 @@ fn isOutOfMemory(host: *Host, ctx: *c.JSContext, exception: c.JSValue) bool {
 fn memoryLimitReached(host: *Host) bool {
     var usage: c.JSMemoryUsage = undefined;
     c.JS_ComputeMemoryUsage(host.runtime.?, &usage);
-    return usage.malloc_limit > 0 and usage.malloc_size >= usage.malloc_limit - 1;
+    // The script's own failed allocation also leaves the heap short of the
+    // cap: a 64KiB "x".repeat push lands tens of kilobytes below it, too
+    // little for the engine to build the error object, so it throws null
+    // (vendor/quickjs/quickjs.c JS_ThrowError2). One 64KiB allocation of
+    // slack covers that gap without moving the cap itself.
+    return usage.malloc_limit > 0 and
+        usage.malloc_size >= usage.malloc_limit - 65536;
 }
 
 test "codemode host creates its runtime lazily" {

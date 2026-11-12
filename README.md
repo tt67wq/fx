@@ -8,7 +8,7 @@ This is a fork of [vercel-labs/fx](https://github.com/vercel-labs/fx). It adds a
 
 One tool that runs JavaScript in a QuickJS sandbox, so several steps land in a single model call instead of one tool call per turn:
 
-* `await tools.call("tool_name", "{json args}")` invokes the whitelisted built-in tools: `glob_files`, `grep_files`, `read_file`, and `run_command`. Everything else is invisible to the sandbox.
+* `await tools.read_file({...})` calls a whitelisted built-in tool with a JSON object argument: `glob_files`, `grep_files`, `read_file`, and `run_command`. The older `await tools.call("tool_name", "{json args}")` form still works. Everything else is invisible to the sandbox.
 * `tools.list()` returns each whitelisted tool's name, description, and full parameter schema, injected from the built-in tool specs at startup, so scripts can introspect argument shapes before calling.
 * Finish with `text(your short summary)`. Top-level `return` is not valid script syntax. A script that only wraps one tool call is slower than calling the tool directly.
 
