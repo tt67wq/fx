@@ -73,6 +73,9 @@ const max_failure_output_head_bytes: usize = 4 * 1024;
 
 /// Appends the display head of captured output, with a truncation marker
 /// when the captured bytes exceed it.
+const failure_summary_title = "Nested tool calls before failure (not undone):";
+const success_summary_title = "Nested tool calls (not undone):";
+
 fn appendFailureOutputHead(out: *std.ArrayList(u8), allocator: Allocator, bytes: []const u8) Allocator.Error!void {
     const head = bytes[0..@min(bytes.len, max_failure_output_head_bytes)];
     try out.appendSlice(allocator, head);
@@ -113,15 +116,8 @@ fn formatFailureBody(
             appendFailureOutputHead(&out, allocator, partial.?.console) catch break :blk;
         }
         if (nested_calls.len > 0 or nested_overflow) {
-            out.appendSlice(allocator, "\n\nNested tool calls before failure (not undone):\n") catch break :blk;
-            for (nested_calls) |record| {
-                var line_buf: [128]u8 = undefined;
-                const line = std.mem.print(&line_buf, "- {s}: {s}\n", .{ record.name, @tagName(record.outcome) }) catch break :blk;
-                out.appendSlice(allocator, line) catch break :blk;
-            }
-            if (nested_overflow) {
-                out.appendSlice(allocator, "- ... additional calls not recorded\n") catch break :blk;
-            }
+            out.appendSlice(allocator, "\n\n") catch break :blk;
+            appendNestedCallSummary(&out, allocator, failure_summary_title, nested_calls, nested_overflow) catch break :blk;
         }
         return out.toOwnedSlice(allocator) catch break :blk;
     }
@@ -144,11 +140,52 @@ fn failureBody(
     return body;
 }
 
-/// Assembles the success body the way the codemode tool's success path does
-/// today: console, then text, then the completion value when neither
-/// captured output exists. ISSUE-11 skeleton seam: the nested call summary
-/// is not rendered yet, so the summary goldens fail for the right reason
-/// while the no-call goldens lock today's exact bytes.
+/// Appends the success body output: console, then text, then the
+/// completion value when the script called neither text() nor console.log
+/// ("1 + 1" must answer "2", not an empty output the model reads as
+/// silence and retries against).
+fn appendSuccessOutput(out: *std.ArrayList(u8), allocator: Allocator, console: []const u8, text: []const u8, value: []const u8) Allocator.Error!void {
+    try out.appendSlice(allocator, console);
+    if (console.len > 0 and !std.mem.endsWith(u8, console, "\n")) try out.appendSlice(allocator, "\n");
+    try out.appendSlice(allocator, text);
+    if (text.len > 0 and !std.mem.endsWith(u8, text, "\n")) try out.appendSlice(allocator, "\n");
+    if (out.items.len == 0 and value.len > 0 and !std.mem.eql(u8, value, "undefined")) {
+        try out.appendSlice(allocator, value);
+        try out.appendSlice(allocator, "\n");
+    }
+}
+
+/// Appends the nested call summary shared by the failure and success
+/// bodies: the title line, one record line per call, and the overflow note
+/// when flagged. The leading blank-line separator is the caller's
+/// business: the failure body joins sections with "\n\n" while the success
+/// body starts directly with the title. A record line renders the clamped
+/// duration so the model can audit what each nested call cost.
+fn appendNestedCallSummary(
+    out: *std.ArrayList(u8),
+    allocator: Allocator,
+    title: []const u8,
+    nested_calls: []const tool_runtime.NestedCallRecord,
+    nested_overflow: bool,
+) Allocator.Error!void {
+    try out.appendSlice(allocator, title);
+    try out.appendSlice(allocator, "\n");
+    for (nested_calls) |record| {
+        var line_buf: [128]u8 = undefined;
+        const line = std.mem.print(&line_buf, "- {s}: {s} ({d}ms)\n", .{ record.name, @tagName(record.outcome), record.duration_ms }) catch return error.OutOfMemory;
+        try out.appendSlice(allocator, line);
+    }
+    if (nested_overflow) {
+        try out.appendSlice(allocator, "- ... additional calls not recorded\n");
+    }
+}
+
+/// Assembles the success body: the nested call summary at the head, before
+/// console/text/value, so a 4KiB externalized preview keeps it
+/// model-visible (review F1). Without calls or overflow the body is byte
+/// identical to the captured output alone. Summary allocation failure
+/// returns the body without the summary: a summary must never fail the
+/// result.
 fn formatSuccessBody(
     allocator: Allocator,
     console: []const u8,
@@ -157,20 +194,23 @@ fn formatSuccessBody(
     nested_calls: []const tool_runtime.NestedCallRecord,
     nested_overflow: bool,
 ) Allocator.Error![]u8 {
-    _ = nested_calls;
-    _ = nested_overflow;
-    var out: std.ArrayList(u8) = .empty;
-    errdefer out.deinit(allocator);
-    try out.appendSlice(allocator, console);
-    if (console.len > 0 and !std.mem.endsWith(u8, console, "\n")) try out.appendSlice(allocator, "\n");
-    try out.appendSlice(allocator, text);
-    if (text.len > 0 and !std.mem.endsWith(u8, text, "\n")) try out.appendSlice(allocator, "\n");
-    // A script completion value is the result when the script called
-    // neither text() nor console.log (see the success assembly in call).
-    if (out.items.len == 0 and value.len > 0 and !std.mem.eql(u8, value, "undefined")) {
-        try out.appendSlice(allocator, value);
-        try out.appendSlice(allocator, "\n");
+    var body: std.ArrayList(u8) = .empty;
+    defer body.deinit(allocator);
+    try appendSuccessOutput(&body, allocator, console, text, value);
+    if (nested_calls.len == 0 and !nested_overflow) {
+        return body.toOwnedSlice(allocator);
     }
+    var summary: std.ArrayList(u8) = .empty;
+    defer summary.deinit(allocator);
+    appendNestedCallSummary(&summary, allocator, success_summary_title, nested_calls, nested_overflow) catch {
+        // Summary allocation failed: return the plain body.
+        return body.toOwnedSlice(allocator);
+    };
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(allocator);
+    try out.appendSlice(allocator, summary.items);
+    if (body.items.len > 0) try out.appendSlice(allocator, "\n");
+    try out.appendSlice(allocator, body.items);
     return out.toOwnedSlice(allocator);
 }
 
@@ -243,26 +283,17 @@ pub fn call(ctx: tool_dispatch.DispatchContext, erased: tool_dispatch.ToolInput)
 
     if (state.cancelled()) return error.Cancelled;
 
-    var text: std.Io.Writer.Allocating = .init(ctx.allocator);
-    defer text.deinit();
-    text.writer.writeAll(result.console) catch return error.OutOfMemory;
-    if (result.console.len > 0 and !std.mem.endsWith(u8, result.console, "\n")) {
-        text.writer.writeAll("\n") catch return error.OutOfMemory;
-    }
-    text.writer.writeAll(result.text) catch return error.OutOfMemory;
-    if (result.text.len > 0 and !std.mem.endsWith(u8, result.text, "\n")) {
-        text.writer.writeAll("\n") catch return error.OutOfMemory;
-    }
-    // A script completion value is the result when the script called
-    // neither text() nor console.log: "1 + 1" must answer "2", not an
-    // empty output the model reads as silence and retries against.
-    if (text.written().len == 0 and result.value.len > 0 and
-        !std.mem.eql(u8, result.value, "undefined"))
-    {
-        text.writer.writeAll(result.value) catch return error.OutOfMemory;
-        text.writer.writeAll("\n") catch return error.OutOfMemory;
-    }
-    return .{ .success = text.toOwnedSlice() catch return error.OutOfMemory };
+    // ISSUE-11: the nested call summary rides at the head of the success
+    // body so result-store externalization keeps it model-visible.
+    const body = formatSuccessBody(
+        ctx.allocator,
+        result.console,
+        result.text,
+        result.value,
+        state.nested_calls[0..state.nested_call_count],
+        state.nested_call_overflow,
+    ) catch return error.OutOfMemory;
+    return .{ .success = body };
 }
 
 /// Reports that codemode is not itself a read-only observer: it runs

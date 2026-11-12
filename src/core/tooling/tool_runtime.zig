@@ -1319,14 +1319,14 @@ pub const CodemodeHostState = struct {
     nested_calls: [max_nested_call_records]NestedCallRecord = @splat(.{}),
     nested_call_count: usize = 0,
     nested_call_overflow: bool = false,
-    /// Records one nested call exit. Past capacity keeps the recorded
-    /// entries and raises the overflow flag.
-    pub fn recordNestedCall(self: *CodemodeHostState, name: []const u8, outcome: NestedCallOutcome) void {
+    /// Records one nested call exit with its clamped duration. Past
+    /// capacity keeps the recorded entries and raises the overflow flag.
+    pub fn recordNestedCall(self: *CodemodeHostState, name: []const u8, outcome: NestedCallOutcome, duration_ms: u64) void {
         if (self.nested_call_count >= max_nested_call_records) {
             self.nested_call_overflow = true;
             return;
         }
-        self.nested_calls[self.nested_call_count] = .{ .name = name, .outcome = outcome };
+        self.nested_calls[self.nested_call_count] = .{ .name = name, .outcome = outcome, .duration_ms = duration_ms };
         self.nested_call_count += 1;
     }
 
@@ -2899,8 +2899,8 @@ test "codemode nested call summary records exits and overflow" {
             .arguments_json = "{}",
         },
     };
-    host.recordNestedCall("read_file", .ok);
-    host.recordNestedCall("run_command", .denied);
+    host.recordNestedCall("read_file", .ok, 0);
+    host.recordNestedCall("run_command", .denied, 0);
     try std.testing.expectEqual(@as(usize, 2), host.nestedCallCount());
     try std.testing.expectEqualStrings("read_file", host.nested_calls[0].name);
     try std.testing.expectEqual(NestedCallOutcome.ok, host.nested_calls[0].outcome);
@@ -2908,7 +2908,7 @@ test "codemode nested call summary records exits and overflow" {
 
     // Filling past the fixed capacity keeps the recorded entries and raises
     // the overflow flag instead of dropping recorded ones.
-    for (0..40) |_| host.recordNestedCall("glob_files", .ok);
+    for (0..40) |_| host.recordNestedCall("glob_files", .ok, 0);
     try std.testing.expect(host.nested_call_overflow);
     try std.testing.expectEqual(max_nested_call_records, host.nestedCallCount());
 }

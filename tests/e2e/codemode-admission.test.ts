@@ -135,6 +135,17 @@ function toolResultText(
   return content as string;
 }
 
+// A codemode result that made nested calls now carries the nested call
+// summary at the head of its output (ISSUE-11). Tests that parse the
+// script's own JSON envelope strip that summary block first: everything
+// after the blank line that follows the summary record lines.
+function stripNestedCallSummary(text: string): string {
+  const title = "Nested tool calls (not undone):";
+  if (!text.startsWith(title)) return text;
+  const separator = text.indexOf("\n\n", title.length);
+  return separator === -1 ? "" : text.slice(separator + 2);
+}
+
 function normalizeReviewBody(body: string, callId: string): string {
   return body
     .split(callId)
@@ -387,7 +398,9 @@ describe("codemode nested admission parity", () => {
         toolResultText(directGateway.requests[1]!.body, "parity-direct-call"),
       ) as { exit_code?: number; output_delta?: string };
       const codemodeOuter = JSON.parse(
-        toolResultText(codemodeGateway.requests[1]!.body, "parity-bridge-call").trim(),
+        stripNestedCallSummary(
+          toolResultText(codemodeGateway.requests[1]!.body, "parity-bridge-call"),
+        ).trim(),
       ) as { exit_code?: number; output?: string; truncated?: boolean };
       const codemodeEnvelope = JSON.parse(String(codemodeOuter.output)) as {
         exit_code?: number;
@@ -519,7 +532,9 @@ describe("codemode nested admission parity", () => {
       ) as { error?: { reason?: string } };
       expect(directDenial.error?.reason).toBe("review_caution");
       const codemodeDenial = JSON.parse(
-        toolResultText(codemodeGateway.requests[1]!.body, "parity-bridge-call").trim(),
+        stripNestedCallSummary(
+          toolResultText(codemodeGateway.requests[1]!.body, "parity-bridge-call"),
+        ).trim(),
       ) as { denied?: boolean; reason?: string };
       expect(codemodeDenial.denied).toBe(true);
       expect(codemodeDenial.reason).toContain(String(directDenial.error?.reason));

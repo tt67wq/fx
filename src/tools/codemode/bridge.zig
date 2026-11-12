@@ -10,6 +10,7 @@ const builtin_tools = @import("../../builtins/tools.zig");
 const tool_dispatch = @import("../../core/tooling/tool_dispatch.zig");
 const model_tool_schema = @import("../../core/tooling/model_tool_schema.zig");
 const debug_trace = @import("../../core/shared/debug_trace.zig");
+const io_mod = @import("../../core/shared/io.zig");
 
 // Test-only fixture imports (plan v2 groups 5-8): the minimal runtime
 // context the canonicalization-failure no-record test drives call() with.
@@ -62,6 +63,10 @@ fn call(
     const arena = arena_state.allocator();
 
     state.call_sequence += 1;
+    // The duration starts before canonicalization and admission so every
+    // exit records the same elapsed time, including any human permission
+    // wait (plan v2 section 2).
+    const started_ms = io_mod.milliTimestamp();
     var id_buf: [64]u8 = undefined;
     const nested_id = try std.mem.print(&id_buf, "codemode-nested-{d}", .{state.call_sequence});
 
@@ -114,7 +119,7 @@ fn call(
         check.session_grants,
     );
     if (outcome.decision.isDenied() or outcome.tool_failure != null) {
-        state.recordNestedCall(tool.name, if (outcome.tool_failure != null) .failure else .denied);
+        state.recordNestedCall(tool.name, if (outcome.tool_failure != null) .failure else .denied, nestedDurationMs(started_ms, io_mod.milliTimestamp()));
         return deniedResult(allocator, try deniedReason(arena, tool.name, outcome));
     }
 
@@ -129,7 +134,7 @@ fn call(
         .max_tool_result_bytes = ctx.max_tool_result_bytes,
         .classification_complete = true,
     }) catch |err| {
-        state.recordNestedCall(tool.name, .failure);
+        state.recordNestedCall(tool.name, mapNestedOutcome(null, err), nestedDurationMs(started_ms, io_mod.milliTimestamp()));
         return err;
     };
     // The bridge consumes the output itself and never hands the delivery
@@ -144,11 +149,13 @@ fn call(
     // Wait-for-completion, then discard: a cancel that arrived during the
     // nested call must not hand the script a usable value.
     if (state.cancelled()) {
-        state.recordNestedCall(tool.name, .cancelled);
+        state.recordNestedCall(tool.name, .cancelled, nestedDurationMs(started_ms, io_mod.milliTimestamp()));
         return error.Cancelled;
     }
 
-    state.recordNestedCall(tool.name, .ok);
+    // F2: a normal return can carry status .failure (missing file, non-zero
+    // exit) or observe cancellation; record the real outcome, not .ok.
+    state.recordNestedCall(tool.name, mapNestedOutcome(result, null), nestedDurationMs(started_ms, io_mod.milliTimestamp()));
     if (std.mem.eql(u8, tool.name, "run_command")) {
         return shellResult(allocator, arena, result);
     }
@@ -459,28 +466,36 @@ test "bridge caps nested commands with the script budget fields" {
 }
 
 // ---------------------------------------------------------------------------
-// ISSUE-11 red-test seams and tests (plan v2 groups 5-8).
+// ISSUE-11 tests (plan v2 groups 5-8).
 // ---------------------------------------------------------------------------
 
-/// ISSUE-11 skeleton for plan v2 section 1: mirrors today's exit mapping
-/// that review F2 describes as wrong, so the mapping tests fail for the
-/// right reason. The green change maps a returned status failure to
-/// .failure and error.Cancelled to .cancelled.
+/// Maps a nested call exit to its recorded outcome (plan v2 section 1):
+/// a returned status failure is a failure, cancellation - observed on the
+/// result or caught as error.Cancelled - is cancelled, and only a plain
+/// success is ok. Admission denial records .denied at its own exit.
 fn mapNestedOutcome(
     result: ?tool_runtime.ToolExecutionResult,
     err: ?anyerror,
 ) tool_runtime.NestedCallOutcome {
-    if (err != null) return .failure;
-    if (result != null and result.?.cancelled) return .cancelled;
+    if (err) |e| {
+        if (e == error.Cancelled) return .cancelled;
+        return .failure;
+    }
+    if (result) |r| {
+        if (r.cancelled) return .cancelled;
+        if (r.status == .failure) return .failure;
+    }
     return .ok;
 }
 
-/// ISSUE-11 skeleton for plan v2 section 2: unchecked wrap-around cast,
-/// the rollback hazard review F3 describes, so the clamp tests fail for
-/// the right reason. The green change clamps with @max(0, end - start)
-/// before the u64 cast.
+/// Wall-clock milliseconds between the bridge entry timestamp and an
+/// exit, clamped so a rolled-back .real clock records 0ms instead of
+/// panicking on the u64 cast or wrapping to a huge value (plan v2
+/// section 2, review F3).
 fn nestedDurationMs(start_ms: i64, end_ms: i64) u64 {
-    return @bitCast(end_ms -% start_ms);
+    const elapsed = end_ms - start_ms;
+    if (elapsed <= 0) return 0;
+    return @intCast(elapsed);
 }
 
 // Plan v2 group 5 (review F2): the exit mapping records returned failures
