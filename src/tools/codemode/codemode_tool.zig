@@ -13,6 +13,8 @@ const Allocator = std.mem.Allocator;
 /// Typed input for the built-in codemode tool.
 pub const Input = struct {
     script: []u8,
+    effective_timeout_ms: usize = host_mod.default_timeout_ms,
+    effective_output_buffer_bytes: usize = host_mod.default_output_buffer_bytes,
 
     pub fn deinit(self: *Input, alloc: Allocator) void {
         alloc.free(self.script);
@@ -27,12 +29,22 @@ pub fn decode(ctx: tool_dispatch.DispatchContext, args_json: []const u8) tool_di
     const object = parsed.value.object;
     const script = args.requiredString(object, "script") catch |err| return .{ .failure = try args.takeFailure(err) };
 
+    const script_options = parseScriptOptions(script) catch |err| switch (err) {
+        error.Malformed => return .{ .failure = try ctx.allocator.dupe(u8, "codemode @options header is malformed. The first non-empty line must be `// @options: {\"timeout_ms\": N, \"max_output_tokens\": N}` holding valid JSON; unknown fields are ignored.") },
+        error.OutOfRange => return .{ .failure = try ctx.allocator.dupe(u8, "codemode @options out of range. timeout_ms must be 1000..120000 and max_output_tokens must be greater than 0.") },
+    };
+    const effective = effectiveScriptOptions(script_options);
+
     const owned_script = try ctx.allocator.dupe(u8, script);
     errdefer ctx.allocator.free(owned_script);
 
     const input = try ctx.allocator.create(Input);
     errdefer ctx.allocator.destroy(input);
-    input.* = .{ .script = owned_script };
+    input.* = .{
+        .script = owned_script,
+        .effective_timeout_ms = effective.timeout_ms,
+        .effective_output_buffer_bytes = effective.output_buffer_bytes,
+    };
 
     return .{ .input = .{ .ptr = input, .deinit_fn = inputDeinit } };
 }
@@ -135,11 +147,12 @@ pub fn call(ctx: tool_dispatch.DispatchContext, erased: tool_dispatch.ToolInput)
     const state = ctx.codemode_host orelse return .{
         .failure = try ctx.allocator.dupe(u8, unavailable_message),
     };
+    const input = erased.as(Input);
+
     // Record the script budget once per call so every nested shell run can be
     // capped at the remaining script wall clock instead of running unbounded.
-    state.ambient_budget_ms = host_mod.default_timeout_ms;
+    state.ambient_budget_ms = input.effective_timeout_ms;
     state.ambient_started_ms = io_mod.milliTimestamp();
-    const input = erased.as(Input);
 
     // The schema JSON strings live in this arena: they must outlive every
     // eval the sandbox runs and are freed when the call ends. The host
@@ -150,7 +163,10 @@ pub fn call(ctx: tool_dispatch.DispatchContext, erased: tool_dispatch.ToolInput)
         return .{ .failure = try ctx.allocator.print("codemode schema injection failed: {s}", .{@errorName(err)}) };
     };
 
-    var sandbox = sandbox_mod.Sandbox.init(ctx.allocator, .{});
+    var sandbox = sandbox_mod.Sandbox.init(ctx.allocator, .{
+        .timeout_ms = @intCast(input.effective_timeout_ms),
+        .output_buffer_bytes = input.effective_output_buffer_bytes,
+    });
     defer sandbox.deinit();
     // ISSUE-8: the sandbox has no cancel source of its own. The interrupt
     // handler polls the same atomic the worker cancel path sets.
@@ -321,18 +337,80 @@ pub const EffectiveOptions = struct {
 pub const OptionsParseError = error{ Malformed, OutOfRange };
 
 /// Parses the script-level @options header from the first non-empty line.
-/// STUB: returns defaults until implemented.
-pub fn parseScriptOptions(_: []const u8) OptionsParseError!ScriptOptions {
+/// A header anywhere else is ignored; a header line must hold a JSON object
+/// with integer timeout_ms and max_output_tokens, or the script is rejected.
+pub fn parseScriptOptions(script: []const u8) OptionsParseError!ScriptOptions {
+    var rest = script;
+    while (rest.len > 0) {
+        const line_end = std.mem.findScalar(u8, rest, '\n') orelse rest.len;
+        const line = std.mem.trimStart(u8, rest[0..line_end], " \t\r");
+        if (line.len > 0) {
+            if (!std.mem.startsWith(u8, line, options_header_prefix)) return .{};
+            return parseOptionsHeader(line[options_header_prefix.len..]);
+        }
+        rest = rest[if (line_end < rest.len) line_end + 1 else rest.len..];
+    }
     return .{};
 }
 
-/// Clamps declared options into the effective sandbox budget.
-/// STUB: returns host defaults until implemented.
-pub fn effectiveScriptOptions(_: ScriptOptions) EffectiveOptions {
-    return .{
-        .timeout_ms = host_mod.default_timeout_ms,
-        .output_buffer_bytes = host_mod.default_output_buffer_bytes,
+/// Parses the JSON payload after the `// @options:` prefix. Malformed JSON,
+/// an empty payload, or a non-integer field value rejects the script;
+/// timeout_ms outside [1000, 120000] and max_output_tokens of 0 do too.
+/// Unknown fields are ignored; missing fields stay null.
+fn parseOptionsHeader(json_text_in: []const u8) OptionsParseError!ScriptOptions {
+    const json_text = std.mem.trimStart(u8, json_text_in, " \t\r");
+    if (json_text.len == 0) return error.Malformed;
+
+    var arena_state = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena_state.deinit();
+    const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena_state.allocator(), json_text, .{}) catch return error.Malformed;
+    if (parsed != .object) return error.Malformed;
+
+    var options: ScriptOptions = .{};
+    var it = parsed.object.iterator();
+    while (it.next()) |entry| {
+        const key = entry.key_ptr.*;
+        const value = entry.value_ptr.*;
+        if (std.mem.eql(u8, key, "timeout_ms")) {
+            options.timeout_ms = try optionsInteger(value);
+        } else if (std.mem.eql(u8, key, "max_output_tokens")) {
+            options.max_output_tokens = try optionsInteger(value);
+        }
+    }
+    if (options.timeout_ms) |timeout_ms| {
+        if (timeout_ms < 1_000 or timeout_ms > host_mod.max_options_timeout_ms) return error.OutOfRange;
+    }
+    if (options.max_output_tokens) |tokens| {
+        if (tokens == 0) return error.OutOfRange;
+    }
+    return options;
+}
+
+/// Accepts only JSON integers; any other value type is malformed.
+fn optionsInteger(value: std.json.Value) OptionsParseError!u64 {
+    return switch (value) {
+        .integer => |i| if (i < 0) error.OutOfRange else @intCast(i),
+        else => error.Malformed,
     };
+}
+
+/// Clamps declared options into the effective sandbox budget: the declared
+/// timeout replaces the host default, and the declared token budget becomes
+/// an output byte cap at 4 bytes per token, saturated at the host's 64KiB
+/// hard cap and never below the 1KiB floor.
+pub fn effectiveScriptOptions(options: ScriptOptions) EffectiveOptions {
+    const timeout_ms: usize = if (options.timeout_ms) |declared|
+        @intCast(declared)
+    else
+        host_mod.default_timeout_ms;
+
+    const output_buffer_bytes: usize = if (options.max_output_tokens) |declared| blk: {
+        const capped_tokens: u64 = @min(declared, host_mod.max_options_output_tokens);
+        const bytes: usize = @intCast(capped_tokens * 4);
+        break :blk @max(host_mod.options_output_floor_bytes, @min(bytes, host_mod.default_output_buffer_bytes));
+    } else host_mod.default_output_buffer_bytes;
+
+    return .{ .timeout_ms = timeout_ms, .output_buffer_bytes = output_buffer_bytes };
 }
 
 test "parseScriptOptions reads a first-line header" {

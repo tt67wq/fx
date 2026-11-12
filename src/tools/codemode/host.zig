@@ -18,6 +18,13 @@ pub const default_memory_limit_bytes: usize = 64 * 1024 * 1024;
 pub const default_timeout_ms: u64 = 30_000;
 pub const default_output_buffer_bytes: usize = 64 * 1024;
 
+/// Hard cap for a script-declared @options timeout: 2 minutes.
+pub const max_options_timeout_ms: u64 = 120_000;
+/// Hard cap for script-declared max_output_tokens: 64KiB / 4 bytes per token.
+pub const max_options_output_tokens: u64 = 16_384;
+/// Floor for a script-declared output buffer in bytes.
+pub const options_output_floor_bytes: usize = 1_024;
+
 pub const Options = struct {
     memory_limit_bytes: usize = default_memory_limit_bytes,
     timeout_ms: u64 = default_timeout_ms,
