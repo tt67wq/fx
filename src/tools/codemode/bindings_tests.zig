@@ -350,3 +350,63 @@ test "codemode script exceptions carry the message to the tool result" {
     const message = host.lastExceptionMessage() orelse return error.TestUnexpectedResult;
     try std.testing.expect(std.mem.indexOf(u8, message, "bad args shape") != null);
 }
+
+test "codemode named functions exist for every whitelisted tool" {
+    var host = Host.init(std.testing.allocator, .{});
+    defer host.deinit();
+    host.setToolSchemas(&sample_schemas);
+    var result = try host.eval(
+        \\var names = [];
+        \\var entries = tools.list();
+        \\for (var i = 0; i < entries.length; i++) {
+        \\    if (typeof tools[entries[i].name] === "function") names.push(entries[i].name);
+        \\}
+        \\names.join(",");
+    );
+    defer result.deinit();
+    try std.testing.expectEqualStrings("glob_files,grep_files,read_file,run_command", result.value);
+}
+
+test "codemode named call forwards the object like tools.call" {
+    var host = Host.init(std.testing.allocator, .{});
+    defer host.deinit();
+    var fake = FakeBackend{};
+    host.setToolBackend(.{ .ctx = &fake, .call = FakeBackend.call });
+    var result = try host.eval(
+        \\tools.read_file({ path: "notes.txt" });
+    );
+    defer result.deinit();
+    try std.testing.expectEqualStrings("{\"ok\":true}", result.value);
+    try std.testing.expectEqual(@as(usize, 1), fake.calls);
+    try std.testing.expectEqualStrings("read_file", fake.last_tool);
+    try std.testing.expectEqualStrings("{\"path\":\"notes.txt\"}", fake.last_args[0..fake.last_args_len]);
+}
+
+test "codemode named run_command reaches the backend as run_command" {
+    var host = Host.init(std.testing.allocator, .{});
+    defer host.deinit();
+    var fake = FakeBackend{};
+    host.setToolBackend(.{ .ctx = &fake, .call = FakeBackend.call });
+    var result = try host.eval(
+        \\tools.run_command({ command: "echo hi" });
+    );
+    defer result.deinit();
+    defer std.testing.allocator.free(result.value);
+    try std.testing.expectEqual(@as(usize, 1), fake.calls);
+    try std.testing.expectEqualStrings("run_command", fake.last_tool);
+}
+
+test "codemode named call runs alongside tools.call" {
+    var host = Host.init(std.testing.allocator, .{});
+    defer host.deinit();
+    var fake = FakeBackend{};
+    host.setToolBackend(.{ .ctx = &fake, .call = FakeBackend.call });
+    var result = try host.eval(
+        \\var first = tools.read_file({ path: "a.txt" });
+        \\var second = tools.call("read_file", { path: "a.txt" });
+        \\var both = await Promise.all([first, second]);
+        \\$both.length;
+    );
+    defer result.deinit();
+    try std.testing.expectEqual(@as(usize, 2), fake.calls);
+}
