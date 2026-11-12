@@ -1,6 +1,6 @@
 # ISSUE-16 — codemode 具名调用写法 tools.read_file({...})
 
-- **状态**: open
+- **状态**: closed
 - **发现时间**: 2026-11-10
 - **来源**: fx codemode 与 pi 1.5.1 源码对比
 - **工作量**: 小
