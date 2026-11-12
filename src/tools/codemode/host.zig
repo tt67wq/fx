@@ -18,6 +18,8 @@ pub const default_memory_limit_bytes: usize = 64 * 1024 * 1024;
 pub const default_timeout_ms: u64 = 30_000;
 pub const default_output_buffer_bytes: usize = 64 * 1024;
 
+/// Lower bound for a script-declared @options timeout.
+pub const min_options_timeout_ms: u64 = 1_000;
 /// Hard cap for a script-declared @options timeout: 2 minutes.
 pub const max_options_timeout_ms: u64 = 120_000;
 /// Hard cap for script-declared max_output_tokens: 64KiB / 4 bytes per token.

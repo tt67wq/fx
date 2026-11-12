@@ -316,12 +316,7 @@ test "failure body truncates oversized output and flags summary overflow" {
 
 // ISSUE-10: script-level @options budget. The header is the first
 // non-empty line comment; parsing and clamping are pure so the bounds are
-// unit-tested. Conductor contract with failing stubs; the worker fills in
-// the bodies until these tests are green.
-pub const options_timeout_min_ms: u64 = 1_000;
-pub const options_timeout_max_ms: u64 = 120_000;
-pub const options_max_output_tokens: u64 = 16_384;
-pub const options_output_floor_bytes: usize = 1_024;
+// unit-tested. The bound constants live in host.zig.
 pub const options_header_prefix = "// @options:";
 
 pub const ScriptOptions = struct {
@@ -378,7 +373,7 @@ fn parseOptionsHeader(json_text_in: []const u8) OptionsParseError!ScriptOptions 
         }
     }
     if (options.timeout_ms) |timeout_ms| {
-        if (timeout_ms < 1_000 or timeout_ms > host_mod.max_options_timeout_ms) return error.OutOfRange;
+        if (timeout_ms < host_mod.min_options_timeout_ms or timeout_ms > host_mod.max_options_timeout_ms) return error.OutOfRange;
     }
     if (options.max_output_tokens) |tokens| {
         if (tokens == 0) return error.OutOfRange;

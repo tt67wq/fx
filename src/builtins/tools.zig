@@ -730,7 +730,7 @@ pub const read_tool_result = ToolSpec{
 };
 
 pub const codemode_description =
-    "Run JavaScript in a sandbox for multi-step work in one call. Use tools.call(\"read_file\", ...) and the other file and command tools to search, read, and run. tools.list() returns each tool's name, description, and parameters schema for introspection. The script has a 30 second wall-clock budget; a nested run_command that is still running when it expires is killed and the script reports Timeout. Finish with text(your short summary); top-level return is not valid script syntax. A script that only wraps one tool call is slower than calling the tool directly.";
+    "Run JavaScript in a sandbox for multi-step work in one call. Use tools.call(\"read_file\", ...) and the other file and command tools to search, read, and run. tools.list() returns each tool's name, description, and parameters schema for introspection. The script runs on a default 30 second wall-clock budget with a 64KiB output cap; as its first non-empty line, `// @options: {\"timeout_ms\": N, \"max_output_tokens\": N}` declares a bigger budget (timeout 1000..120000 ms hard-capped, output cap of 4 bytes per token clamped to the 64KiB host cap), and a declared budget also caps nested run_command wall clock, which is killed and reports Timeout when it expires. Finish with text(your short summary); top-level return is not valid script syntax. A script that only wraps one tool call is slower than calling the tool directly.";
 
 pub const codemode = ToolSpec{
     .name = "codemode",
