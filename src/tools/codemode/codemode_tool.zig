@@ -7,6 +7,10 @@ const builtin_tools = @import("../../builtins/tools.zig");
 const tool_dispatch = @import("../../core/tooling/tool_dispatch.zig");
 const tool_args = @import("../../core/tooling/tool_args.zig");
 const tool_runtime = @import("../../core/tooling/tool_runtime.zig");
+const result_store = @import("../../core/session/result_store.zig");
+const session_child_store = @import("../../core/session/session_child_store.zig");
+const shared_testing = @import("../../core/shared/testing_allocator.zig");
+const text_utils = @import("../../core/shared/text_utils.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -138,6 +142,36 @@ fn failureBody(
     const body = formatFailureBody(allocator, headline, partial, nested_calls, nested_overflow) catch headline;
     if (body.ptr != headline.ptr) allocator.free(headline);
     return body;
+}
+
+/// Assembles the success body the way the codemode tool's success path does
+/// today: console, then text, then the completion value when neither
+/// captured output exists. ISSUE-11 skeleton seam: the nested call summary
+/// is not rendered yet, so the summary goldens fail for the right reason
+/// while the no-call goldens lock today's exact bytes.
+fn formatSuccessBody(
+    allocator: Allocator,
+    console: []const u8,
+    text: []const u8,
+    value: []const u8,
+    nested_calls: []const tool_runtime.NestedCallRecord,
+    nested_overflow: bool,
+) Allocator.Error![]u8 {
+    _ = nested_calls;
+    _ = nested_overflow;
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, console);
+    if (console.len > 0 and !std.mem.endsWith(u8, console, "\n")) try out.appendSlice(allocator, "\n");
+    try out.appendSlice(allocator, text);
+    if (text.len > 0 and !std.mem.endsWith(u8, text, "\n")) try out.appendSlice(allocator, "\n");
+    // A script completion value is the result when the script called
+    // neither text() nor console.log (see the success assembly in call).
+    if (out.items.len == 0 and value.len > 0 and !std.mem.eql(u8, value, "undefined")) {
+        try out.appendSlice(allocator, value);
+        try out.appendSlice(allocator, "\n");
+    }
+    return out.toOwnedSlice(allocator);
 }
 
 /// carries the script call's execution frame, including the runtime context
@@ -279,24 +313,35 @@ test "failure body without output or calls matches the plain one-liner" {
     try std.testing.expectEqualStrings("codemode script failed: ScriptError: boom", body);
 }
 
-test "failure body appends partial output and nested call summary" {
+// Plan v2 group 2: the failure body records durations, an intentional
+// format change that replaces the ISSUE-9 substring expectation. Exact
+// golden, hand-computed from the assembly order (headline, partial text,
+// partial console, summary lines).
+test "failure body records duration and partial output" {
     const text = try std.testing.allocator.dupe(u8, "found 3 files");
     const console = try std.testing.allocator.dupe(u8, "logged line");
     const records = [_]tool_runtime.NestedCallRecord{
-        .{ .name = "read_file", .outcome = .ok },
-        .{ .name = "run_command", .outcome = .denied },
+        .{ .name = "read_file", .outcome = .ok, .duration_ms = 123 },
+        .{ .name = "run_command", .outcome = .denied, .duration_ms = 0 },
     };
     const body = try formatFailureBody(std.testing.allocator, "codemode script failed: ScriptError: boom", .{ .text = text, .console = console }, &records, false);
     defer std.testing.allocator.free(text);
     defer std.testing.allocator.free(console);
     defer std.testing.allocator.free(body);
-    try std.testing.expect(std.mem.find(u8, body, "Partial output before failure:") != null);
-    try std.testing.expect(std.mem.find(u8, body, "found 3 files") != null);
-    try std.testing.expect(std.mem.find(u8, body, "Console output before failure:") != null);
-    try std.testing.expect(std.mem.find(u8, body, "logged line") != null);
-    try std.testing.expect(std.mem.find(u8, body, "Nested tool calls before failure (not undone):") != null);
-    try std.testing.expect(std.mem.find(u8, body, "- read_file: ok") != null);
-    try std.testing.expect(std.mem.find(u8, body, "- run_command: denied") != null);
+    try std.testing.expectEqualStrings(
+        "codemode script failed: ScriptError: boom\n" ++
+            "\n" ++
+            "Partial output before failure:\n" ++
+            "found 3 files\n" ++
+            "\n" ++
+            "Console output before failure:\n" ++
+            "logged line\n" ++
+            "\n" ++
+            "Nested tool calls before failure (not undone):\n" ++
+            "- read_file: ok (123ms)\n" ++
+            "- run_command: denied (0ms)\n",
+        body,
+    );
 }
 
 test "failure body truncates oversized output and flags summary overflow" {
@@ -312,6 +357,214 @@ test "failure body truncates oversized output and flags summary overflow" {
     try std.testing.expect(std.mem.find(u8, body, "truncated") != null);
     try std.testing.expect(body.len < 8192);
     try std.testing.expect(std.mem.find(u8, body, "additional calls") != null);
+}
+
+// Plan v2 group 1: the success body puts the summary at the head, before
+// console/text/value, so a 4KiB externalized preview still shows it.
+// Golden hand-computed from the plan's format: title, record lines, one
+// blank line, then the ordinary body.
+test "success body puts the nested call summary at the head" {
+    const records = [_]tool_runtime.NestedCallRecord{
+        .{ .name = "read_file", .outcome = .ok, .duration_ms = 123 },
+        .{ .name = "run_command", .outcome = .failure, .duration_ms = 45 },
+    };
+    const body = try formatSuccessBody(std.testing.allocator, "", "", "done", &records, false);
+    defer std.testing.allocator.free(body);
+    try std.testing.expectEqualStrings(
+        "Nested tool calls (not undone):\n" ++
+            "- read_file: ok (123ms)\n" ++
+            "- run_command: failure (45ms)\n" ++
+            "\n" ++
+            "done\n",
+        body,
+    );
+}
+
+// Plan v2 group 1: every outcome renders with its duration, and the
+// overflow flag adds the explicit note after the recorded lines.
+test "success body summary covers every outcome and the overflow note" {
+    const records = [_]tool_runtime.NestedCallRecord{
+        .{ .name = "read_file", .outcome = .ok, .duration_ms = 123 },
+        .{ .name = "run_command", .outcome = .failure, .duration_ms = 45 },
+        .{ .name = "glob_files", .outcome = .denied, .duration_ms = 0 },
+        .{ .name = "grep_files", .outcome = .cancelled, .duration_ms = 7 },
+    };
+    const body = try formatSuccessBody(std.testing.allocator, "logged\n", "", "", &records, true);
+    defer std.testing.allocator.free(body);
+    try std.testing.expectEqualStrings(
+        "Nested tool calls (not undone):\n" ++
+            "- read_file: ok (123ms)\n" ++
+            "- run_command: failure (45ms)\n" ++
+            "- glob_files: denied (0ms)\n" ++
+            "- grep_files: cancelled (7ms)\n" ++
+            "- ... additional calls not recorded\n" ++
+            "\n" ++
+            "logged\n",
+        body,
+    );
+}
+
+// Plan v2 group 1: without nested calls the four output forms are byte
+// identical to today's success assembly. This locks the invariant the
+// green change must preserve; it passes before the summary exists.
+test "success body without nested calls matches today's four forms" {
+    const allocator = std.testing.allocator;
+
+    const console_only = try formatSuccessBody(allocator, "logged\n", "", "", &.{}, false);
+    defer allocator.free(console_only);
+    try std.testing.expectEqualStrings("logged\n", console_only);
+
+    const text_only = try formatSuccessBody(allocator, "", "result", "", &.{}, false);
+    defer allocator.free(text_only);
+    try std.testing.expectEqualStrings("result\n", text_only);
+
+    const value_only = try formatSuccessBody(allocator, "", "", "42", &.{}, false);
+    defer allocator.free(value_only);
+    try std.testing.expectEqualStrings("42\n", value_only);
+
+    const empty = try formatSuccessBody(allocator, "", "", "", &.{}, false);
+    defer allocator.free(empty);
+    try std.testing.expectEqualStrings("", empty);
+}
+
+// Plan v2 group 3: capacity holds 32 records; past it the overflow flag
+// adds the note. The failure form renders the full set with durations.
+test "failure body renders 32 records plus the overflow note" {
+    const records: [tool_runtime.max_nested_call_records]tool_runtime.NestedCallRecord =
+        @splat(.{ .name = "glob_files", .outcome = .ok, .duration_ms = 5 });
+    const overflow_line: []const u8 = "- ... additional calls not recorded\n";
+    const repeated: []const u8 = text_utils.repeat("- glob_files: ok (5ms)\n", 32);
+    const body = try formatFailureBody(std.testing.allocator, "codemode script failed: Timeout", null, &records, true);
+    defer std.testing.allocator.free(body);
+    try std.testing.expectEqualStrings(
+        "codemode script failed: Timeout\n" ++
+            "\n" ++
+            "Nested tool calls before failure (not undone):\n" ++
+            repeated ++
+            overflow_line,
+        body,
+    );
+}
+
+// Plan v2 group 3: the same 32-record overflow renders on the success path.
+test "success body renders 32 records plus the overflow note" {
+    const records: [tool_runtime.max_nested_call_records]tool_runtime.NestedCallRecord =
+        @splat(.{ .name = "glob_files", .outcome = .ok, .duration_ms = 5 });
+    const overflow_line: []const u8 = "- ... additional calls not recorded\n";
+    const repeated: []const u8 = text_utils.repeat("- glob_files: ok (5ms)\n", 32);
+    const body = try formatSuccessBody(std.testing.allocator, "", "", "done", &records, true);
+    defer std.testing.allocator.free(body);
+    try std.testing.expectEqualStrings(
+        "Nested tool calls (not undone):\n" ++
+            repeated ++
+            overflow_line ++
+            "\n" ++
+            "done\n",
+        body,
+    );
+}
+
+// Plan v2 group 4: the failure report never fails - every induced
+// allocation failure degrades to the plain headline (ISSUE-9 contract the
+// shared renderer must preserve), and iterations without an injected
+// failure always start with the headline.
+test "failure body degrades to the headline under allocation failures" {
+    const backing = shared_testing.no_resize;
+    const records = [_]tool_runtime.NestedCallRecord{
+        .{ .name = "read_file", .outcome = .ok, .duration_ms = 123 },
+    };
+    const text = try backing.dupe(u8, "found 3 files");
+    defer backing.free(text);
+    var fail_index: usize = 0;
+    while (fail_index < 32) : (fail_index += 1) {
+        var failing = std.testing.FailingAllocator.init(backing, .{ .fail_index = fail_index });
+        const body = formatFailureBody(failing.allocator(), "codemode script failed: ScriptError: boom", .{ .text = text, .console = "" }, &records, false) catch |err| switch (err) {
+            error.OutOfMemory => continue,
+        };
+        defer backing.free(body);
+        if (failing.has_induced_failure) {
+            // The degrade contract: the whole headline, nothing added.
+            try std.testing.expectEqualStrings("codemode script failed: ScriptError: boom", body);
+        } else {
+            try std.testing.expect(std.mem.startsWith(u8, body, "codemode script failed: ScriptError: boom"));
+        }
+    }
+}
+
+// Plan v2 group 4: a success body never fails because of its summary -
+// when summary allocation fails the plain body is returned without a
+// partial summary. Iterations without an injected failure keep a whole
+// body (plain before the summary exists, summary-headed after it).
+test "success body keeps a whole body when summary allocation fails" {
+    const backing = shared_testing.no_resize;
+    const records = [_]tool_runtime.NestedCallRecord{
+        .{ .name = "read_file", .outcome = .ok, .duration_ms = 123 },
+    };
+    var fail_index: usize = 0;
+    while (fail_index < 32) : (fail_index += 1) {
+        var failing = std.testing.FailingAllocator.init(backing, .{ .fail_index = fail_index });
+        const body = formatSuccessBody(failing.allocator(), "logged\n", "", "", &records, false) catch |err| switch (err) {
+            error.OutOfMemory => continue,
+        };
+        defer backing.free(body);
+        if (failing.has_induced_failure) {
+            // The degrade contract: the plain body, no partial summary.
+            try std.testing.expectEqualStrings("logged\n", body);
+        } else {
+            const plain = std.mem.eql(u8, body, "logged\n");
+            const complete = std.mem.eql(
+                u8,
+                body,
+                "Nested tool calls (not undone):\n- read_file: ok (123ms)\n\nlogged\n",
+            );
+            try std.testing.expect(plain or complete);
+        }
+    }
+}
+
+// Plan v2 group 9 (review F1): with a session child capability in place,
+// a success body over the 16KiB externalization threshold still shows the
+// head summary in the model-visible preview. The body is built through the
+// same seam the success path uses, so it is red until the summary exists.
+test "externalized success result keeps the head summary visible" {
+    const allocator = std.testing.allocator;
+    var memory = session_child_store.MemoryBlobsForTesting.init(allocator);
+    defer memory.deinit();
+    var capability = try session_child_store.SessionChildCapability.initBlobs(
+        allocator,
+        memory.blobs(),
+        "",
+        .writable,
+    );
+    defer capability.deinit();
+
+    const records = [_]tool_runtime.NestedCallRecord{
+        .{ .name = "read_file", .outcome = .ok, .duration_ms = 123 },
+    };
+    const body = try formatSuccessBody(allocator, "", "", "done", &records, false);
+    defer allocator.free(body);
+    // Pad past the externalization threshold so the store externalizes and
+    // the model sees only the head preview.
+    var padded: std.ArrayList(u8) = .empty;
+    defer padded.deinit(allocator);
+    try padded.appendSlice(allocator, body);
+    try padded.appendNTimes(allocator, 'x', 20 * 1024);
+
+    const prepared = try result_store.prepareManaged(
+        allocator,
+        &capability,
+        "success-1",
+        "codemode",
+        padded.items.len,
+        padded.items,
+        64 * 1024,
+    );
+    defer allocator.free(prepared.model_output);
+    defer allocator.free(@constCast(prepared.memory.output_handle.?));
+    defer allocator.free(@constCast(prepared.memory.preview.?));
+
+    try std.testing.expect(std.mem.find(u8, prepared.model_output, "Nested tool calls (not undone):") != null);
+    try std.testing.expect(std.mem.find(u8, prepared.model_output, "- read_file: ok (123ms)") != null);
 }
 
 // ISSUE-10: script-level @options budget. The header is the first

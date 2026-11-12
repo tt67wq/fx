@@ -1291,6 +1291,10 @@ pub const NestedCallOutcome = enum { ok, denied, failure, cancelled };
 pub const NestedCallRecord = struct {
     name: []const u8 = "",
     outcome: NestedCallOutcome = .ok,
+    /// Wall-clock milliseconds the nested call took, including admission
+    /// and any permission wait; a rolled-back clock clamps to 0.
+    /// ISSUE-11 skeleton field: recording is wired in the green change.
+    duration_ms: u64 = 0,
 };
 
 /// Fixed failure-body summary capacity; past it only the overflow flag.

@@ -264,6 +264,50 @@ throw new Error("boom");`;
   }
 });
 
+// Plan v2 group 10: a successful script that makes nested calls reports
+// them at the head of the model-visible result (plan v2 section 3). The
+// captured text crosses the 16KiB externalization threshold so the model
+// sees only the head preview and the summary must stay visible there
+// (review F1). The second read misses on purpose and returns a failure
+// status without throwing, so the summary must record .failure for it
+// (review F2).
+test("a successful script reports the nested call summary at the head", async () => {
+  const root = createIsolatedRoot();
+  writeFileSync(join(root.workspace, "notes.txt"), "alpha notes");
+  const script = `const notes = await tools.call("read_file", { path: "notes.txt" });
+await tools.call("read_file", { path: "missing.txt" });
+text("padding " + "x".repeat(20000));
+`;
+  const gateway = startGateway([
+    fakeGatewayToolCall("success-1", "codemode", { script }),
+    fakeGatewayFinalText("SUCCESS_FINAL"),
+  ]);
+  try {
+    const result = await runFx(
+      ["ask", "--quiet", "--json", "--no-save", "run the success test"],
+      { cwd: root.workspace, env: gatewayEnv(root, gateway), timeoutMs: TIMEOUT },
+    );
+    expect(result.code, "stderr: " + result.stderr.slice(0, 400)).toBe(0);
+    const request = JSON.parse(gateway.requests[1]!.body) as {
+      prompt?: Array<{ content?: Array<Record<string, unknown>> }>;
+    };
+    const toolResult = (request.prompt ?? [])
+      .flatMap((message) => message.content ?? [])
+      .find((part) => part.type === "tool-result" && part.toolCallId === "success-1");
+    expect(toolResult).toBeDefined();
+    const output = toolResult!.output as { type: string; value: string };
+    expect(output.type).toBe("text");
+    // The head summary survives externalization.
+    expect(output.value).toContain("Nested tool calls (not undone):");
+    expect(output.value).toContain("- read_file: ok (");
+    expect(output.value).toContain("ms)");
+    // A returned failure records as failure, not ok (review F2).
+    expect(output.value).toContain("- read_file: failure (");
+  } finally {
+    rmSync(root.workspace, { recursive: true, force: true });
+  }
+});
+
 describe("codemode nested admission parity", () => {
   test(
     "one command produces one review payload and one result on both paths",

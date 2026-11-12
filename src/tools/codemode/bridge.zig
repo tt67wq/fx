@@ -11,6 +11,13 @@ const tool_dispatch = @import("../../core/tooling/tool_dispatch.zig");
 const model_tool_schema = @import("../../core/tooling/model_tool_schema.zig");
 const debug_trace = @import("../../core/shared/debug_trace.zig");
 
+// Test-only fixture imports (plan v2 groups 5-8): the minimal runtime
+// context the canonicalization-failure no-record test drives call() with.
+const context_contract = @import("../../core/workspace/context_contract.zig");
+const command_contract = @import("../../core/execution/command_contract.zig");
+const worker_runtime_mod = @import("../../core/agent/worker_runtime.zig");
+const session_runtime_mod = @import("../../core/session/session.zig");
+
 /// Runs whitelisted tools for a codemode script through the same admission
 /// pipeline a direct tool call takes. Every nested call builds its own
 /// admission input from the script call's execution context, carries the
@@ -450,3 +457,157 @@ test "bridge caps nested commands with the script budget fields" {
     try std.testing.expectEqual(@as(?usize, null), check.command_timeout_ms);
     try std.testing.expectEqual(@as(?i64, null), check.command_timeout_started_ms);
 }
+
+// ---------------------------------------------------------------------------
+// ISSUE-11 red-test seams and tests (plan v2 groups 5-8).
+// ---------------------------------------------------------------------------
+
+/// ISSUE-11 skeleton for plan v2 section 1: mirrors today's exit mapping
+/// that review F2 describes as wrong, so the mapping tests fail for the
+/// right reason. The green change maps a returned status failure to
+/// .failure and error.Cancelled to .cancelled.
+fn mapNestedOutcome(
+    result: ?tool_runtime.ToolExecutionResult,
+    err: ?anyerror,
+) tool_runtime.NestedCallOutcome {
+    if (err != null) return .failure;
+    if (result != null and result.?.cancelled) return .cancelled;
+    return .ok;
+}
+
+/// ISSUE-11 skeleton for plan v2 section 2: unchecked wrap-around cast,
+/// the rollback hazard review F3 describes, so the clamp tests fail for
+/// the right reason. The green change clamps with @max(0, end - start)
+/// before the u64 cast.
+fn nestedDurationMs(start_ms: i64, end_ms: i64) u64 {
+    return @bitCast(end_ms -% start_ms);
+}
+
+// Plan v2 group 5 (review F2): the exit mapping records returned failures
+// and cancellations accurately instead of labeling them ok or failure.
+test "nested outcome mapping records returned failures and cancellations" {
+    // A normal return with status .failure (missing file, non-zero exit)
+    // records .failure, not .ok.
+    try std.testing.expectEqual(
+        tool_runtime.NestedCallOutcome.failure,
+        mapNestedOutcome(.{ .model_output = "", .status = .failure }, null),
+    );
+    // error.Cancelled from dispatch records .cancelled, not .failure.
+    try std.testing.expectEqual(
+        tool_runtime.NestedCallOutcome.cancelled,
+        mapNestedOutcome(.{ .model_output = "" }, error.Cancelled),
+    );
+    // A returned result that observed cancellation records .cancelled.
+    try std.testing.expectEqual(
+        tool_runtime.NestedCallOutcome.cancelled,
+        mapNestedOutcome(.{ .model_output = "", .cancelled = true }, null),
+    );
+    // A plain success records .ok.
+    try std.testing.expectEqual(
+        tool_runtime.NestedCallOutcome.ok,
+        mapNestedOutcome(.{ .model_output = "" }, null),
+    );
+}
+
+// Plan v2 group 7 (review F3): a rolled-back wall clock clamps to 0ms
+// instead of panicking on the u64 cast or wrapping to a huge value.
+test "nested duration clamps a rolled-back wall clock" {
+    // Normal elapsed time survives intact.
+    try std.testing.expectEqual(@as(u64, 123), nestedDurationMs(1_000, 1_123));
+    // A rollback records 0ms.
+    try std.testing.expectEqual(@as(u64, 0), nestedDurationMs(5_000, 3_000));
+    // Equal timestamps record 0ms.
+    try std.testing.expectEqual(@as(u64, 0), nestedDurationMs(7_000, 7_000));
+}
+
+// Plan v2 group 8: duration is a non-negative, sane bound. Millisecond
+// resolution makes 0ms legal for a fast path, so nothing asserts > 0;
+// non-zero values are locked by the formatter goldens instead.
+test "nested duration never wraps to a huge value" {
+    // A rollback clamps to 0 rather than wrapping near u64 max.
+    try std.testing.expect(nestedDurationMs(9_000, 8_999) < 4_096);
+    // A full day of elapsed time still fits.
+    try std.testing.expectEqual(@as(u64, 86_400_000), nestedDurationMs(0, 86_400_000));
+}
+
+// Plan v2 group 6 (review F7): a nested call that never takes effect
+// records nothing. canonicalNestedCall errors return before admission and
+// before recordNestedCall, matching the ISSUE-9 review note.
+test "a nested call that fails canonicalization records nothing" {
+    const allocator = std.testing.allocator;
+    var fixture = TestCodemodeRuntime{};
+    defer fixture.deinit(allocator);
+    var state = tool_runtime.CodemodeHostState{
+        .runtime = fixture.context(),
+        .script_call = .{
+            .id = "codemode-call",
+            .name = "codemode",
+            .arguments_json = "{}",
+        },
+    };
+    const result = call(
+        &state,
+        allocator,
+        .{ .name = "run_command" },
+        "{\"action\":\"interact\",\"command\":\"true\"}",
+    );
+    try std.testing.expectError(error.InvalidToolArguments, result);
+    try std.testing.expectEqual(@as(usize, 0), state.nestedCallCount());
+    // The sequence still advances: the call id was minted before the
+    // canonicalization error, but no record exists.
+    try std.testing.expectEqual(@as(usize, 1), state.call_sequence);
+}
+
+fn gatherNoopBridgeContext(_: std.mem.Allocator, _: context_contract.InitialContextInput) context_contract.ProviderError!context_contract.ProviderContext {
+    return .{};
+}
+
+fn appendNoopBridgeStaticContext(_: context_contract.StaticContextInput, _: std.mem.Allocator, _: *std.ArrayList(types.ChatMessage)) context_contract.ProviderError!void {}
+
+fn appendNoopBridgeTransientContext(_: context_contract.TransientContextInput, _: std.mem.Allocator, _: *std.ArrayList(types.ChatMessage)) context_contract.ProviderError!void {}
+
+fn noopBridgeOutputChunk(_: *anyopaque, _: ?types.ToolLifecycleId, _: command_contract.CommandOutputStream, _: []const u8) anyerror!void {}
+
+/// Minimal runtime fixture for bridge-level behavior tests. Only the
+/// canonicalization-failure path is driven, which touches no ctx field
+/// before returning, so every field holds a harmless placeholder.
+const TestCodemodeRuntime = struct {
+    worker: worker_runtime_mod.WorkerRuntime = .{},
+    session: session_runtime_mod.SessionRuntime = .{ .max_history_turns = 8 },
+
+    fn deinit(self: *TestCodemodeRuntime, alloc: std.mem.Allocator) void {
+        self.worker.deinit(alloc);
+        self.session.deinit(alloc);
+    }
+
+    fn context(self: *TestCodemodeRuntime) tool_runtime.Context {
+        return .{
+            .workspace_root = "/tmp",
+            .ignored_list_entries = &.{},
+            .max_list_entries = 100,
+            .max_read_file_bytes = 64 * 1024,
+            .max_read_file_lines = 400,
+            .max_read_file_line_len = 2000,
+            .max_command_output_bytes = 64 * 1024,
+            .api_key = "",
+            .model = "",
+            .gateway_retry_count = 0,
+            .gateway_chat_url = "",
+            .agent_step_limit = 0,
+            .permission_mode = .ask,
+            .permission_grants = &.{},
+            .permission_rules = .{},
+            .worker = &self.worker,
+            .session = &self.session,
+            .context_registry = .{ .default_provider = .{
+                .id = "test.codemode_bridge_context",
+                .gather_project_context_fn = gatherNoopBridgeContext,
+                .select_applicable_project_context_fn = context_contract.selectNoApplicableProjectContext,
+                .append_static_fn = appendNoopBridgeStaticContext,
+                .append_transient_fn = appendNoopBridgeTransientContext,
+            } },
+            .output_chunk_ctx = undefined,
+            .on_output_chunk = noopBridgeOutputChunk,
+        };
+    }
+};
