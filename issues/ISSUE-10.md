@@ -1,6 +1,6 @@
 # ISSUE-10 — codemode 脚本级 @options 预算
 
-- **状态**: open
+- **状态**: closed
 - **发现时间**: 2026-11-10
 - **来源**: fx codemode 与 pi 1.5.1 源码对比
 - **工作量**: 小
@@ -22,7 +22,7 @@ applyAmbientBudget）改用生效超时。工具描述与 README 同步。
 
 ## 处置
 
-- [ ] decode 解析并校验 @options 首行
-- [ ] 生效超时贯通 Sandbox Options 与 ambient 预算
-- [ ] 输出预算生效且不超过宿主硬帽
-- [ ] 单测，工具描述与 README 更新
+- [x] decode 解析并校验 @options 首行
+- [x] 生效超时贯通 Sandbox Options 与 ambient 预算
+- [x] 输出预算生效且不超过宿主硬帽
+- [x] 单测，工具描述更新（README 经核实无需改动）
