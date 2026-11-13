@@ -16,8 +16,10 @@ test "codemode tool registry holds three read-only tools plus run_command" {
     try std.testing.expect(bindings.find("write_file") == null);
 }
 
-test "sandbox face keeps the shipped surface whether the gate is off or on" {
+test "sandbox face locks the shipped four names and the nine-name derived face" {
     const registry = builtin_tools.registry;
+    // The shipped face is what a fresh profile gets; the default-face
+    // lookups below are about that face, not the gate-open one.
     const closed = bridge.sandboxFace(registry, false);
     try std.testing.expectEqual(@as(usize, 4), closed.len);
     const closed_names = [_][]const u8{ "glob_files", "grep_files", "read_file", "run_command" };
