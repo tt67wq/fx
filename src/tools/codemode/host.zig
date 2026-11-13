@@ -372,7 +372,7 @@ pub const Host = struct {
                 return -1;
             }
             // JS_SetPropertyUint32 consumes tool_name whether it succeeds or
-            // fails (quickjs.c JS_SetPropertyGenericInternal), so the failure
+            // fails (quickjs.c JS_SetPropertyValue and add_fast_array_element, via JS_SetPropertyUint32), so the failure
             // branch frees only the array it still owns.
             if (c.JS_SetPropertyUint32(ctx, whitelist, @intCast(index), tool_name) < 0) {
                 c.JS_FreeValue(ctx, whitelist);

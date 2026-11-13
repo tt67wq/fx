@@ -3599,12 +3599,12 @@ test "app agent runtime shows the first codemode command in the action row" {
     const call: ToolCall = .{
         .id = "1",
         .name = "codemode",
-        .arguments_json = "{\"script\":\"const out = await tools.call(\\\"run_command\\\", { command: \\\"ls /Users/admin/noxus/skills/tavily-search/\\\" });\"}",
+        .arguments_json = "{\"script\":\"const out = await tools.call(\\\"run_command\\\", { command: \\\"ls /Users/example/skills/tavily-search/\\\" });\"}",
     };
     const active = try app.describeToolAction(app.agent(), arena, call);
-    try std.testing.expect(std.mem.find(u8, active, "ls /Users/admin/noxus/skills/tavily-search/") != null);
+    try std.testing.expect(std.mem.find(u8, active, "ls /Users/example/skills/tavily-search/") != null);
     const completed = try app.describeToolActionCompleted(app.agent(), arena, call);
-    try std.testing.expect(std.mem.find(u8, completed, "ls /Users/admin/noxus/skills/tavily-search/") != null);
+    try std.testing.expect(std.mem.find(u8, completed, "ls /Users/example/skills/tavily-search/") != null);
 }
 
 test "app agent runtime highlights shell command rows over the tool text base" {
