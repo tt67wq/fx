@@ -19,7 +19,7 @@
 
 ## 后绿
 
-green 最终 commit SHA：见本文件最后一次提交（红测试 commit b3b1b8f 之后的实现提交）。
+green 实现 commit SHA：5b4f6c655（红测试 commit b3b1b8f 之后）。本文件所在提交只更新该 SHA。
 
 验收命令（工作区，全部退出码 0）：
 
