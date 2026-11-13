@@ -1,6 +1,6 @@
 # ISSUE-11 — codemode 嵌套调用记录进工具结果
 
-- **状态**: open
+- **状态**: closed
 - **发现时间**: 2026-11-10
 - **来源**: fx codemode 与 pi 1.5.1 源码对比
 - **工作量**: 中
@@ -23,7 +23,7 @@ CodemodeHostState 记录每次嵌套调用的摘要（名称、状态、耗时�
 
 ## 处置
 
-- [ ] CodemodeHostState 记录嵌套调用摘要
-- [ ] 成功与失败结果尾部附摘要
-- [ ] 限额与 incomplete 标记
-- [ ] Zig 单测：多调用脚本的结果含完整摘要
+- [x] CodemodeHostState 记录嵌套调用摘要
+- [x] 成功结果头部附摘要（评审 F1：尾部会被外部化藏掉）；失败结果尾部附摘要（ISSUE-9 已有，duration 并入）
+- [x] 限额与 incomplete 标记（沿用 ISSUE-9 的 32 条 + overflow）
+- [x] Zig 单测：多调用脚本的结果含完整摘要（含 outcome 映射、时钟钳制、OOM 降级、外部化可见性）
