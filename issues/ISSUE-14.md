@@ -60,7 +60,7 @@ reads_only_fn 推导：
 
 ## 处置
 
-- [ ] 与 fx-cli-shape 技能核对开关命名与 surface 清单（surface_diff.sh、
+- [x] 与 fx-cli-shape 技能核对开关命名与 surface 清单（surface_diff.sh、
       settings_keys.zig、cli_config.zig、tests/e2e/cli.test.ts、fx.sh 页面）
 - [x] Tool 增加 sandbox_reachable 字段，comptime 推导开启面（要点 1、2）
 - [x] gate 设置键、config_runtime 管道与传值（要点 3）
