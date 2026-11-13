@@ -276,12 +276,13 @@ throw new Error("boom");`;
 });
 
 // Plan v2 group 10: a successful script that makes nested calls reports
-// them at the head of the model-visible result (plan v2 section 3). The
-// captured text crosses the 16KiB externalization threshold so the model
-// sees only the head preview and the summary must stay visible there
-// (review F1). The second read misses on purpose and returns a failure
-// status without throwing, so the summary must record .failure for it
-// (review F2).
+// them at the head of the model-visible result (plan v2 section 3). With
+// --no-save there is no session result store, so the 20KiB text is cut to
+// the 64KiB model head cap rather than externalized; the summary sits at
+// the head either way and stays visible. The true externalization path is
+// pinned by the codemode_tool layer test (plan v2 group 9). The second
+// read misses on purpose and returns a failure status without throwing,
+// so the summary must record .failure for it (review F2).
 test("a successful script reports the nested call summary at the head", async () => {
   const root = createIsolatedRoot();
   writeFileSync(join(root.workspace, "notes.txt"), "alpha notes");
@@ -308,7 +309,7 @@ text("padding " + "x".repeat(20000));
     expect(toolResult).toBeDefined();
     const output = toolResult!.output as { type: string; value: string };
     expect(output.type).toBe("text");
-    // The head summary survives externalization.
+    // The head summary survives the 64KiB model head cap.
     expect(output.value).toContain("Nested tool calls (not undone):");
     expect(output.value).toContain("- read_file: ok (");
     expect(output.value).toContain("ms)");

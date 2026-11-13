@@ -183,9 +183,9 @@ fn appendNestedCallSummary(
 /// Assembles the success body: the nested call summary at the head, before
 /// console/text/value, so a 4KiB externalized preview keeps it
 /// model-visible (review F1). Without calls or overflow the body is byte
-/// identical to the captured output alone. Summary allocation failure
-/// returns the body without the summary: a summary must never fail the
-/// result.
+/// identical to the captured output alone. A summary-stage or
+/// assembly-stage allocation failure returns the body without the
+/// summary: a summary splice must never fail the result.
 fn formatSuccessBody(
     allocator: Allocator,
     console: []const u8,
@@ -208,10 +208,15 @@ fn formatSuccessBody(
     };
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
-    try out.appendSlice(allocator, summary.items);
-    if (body.items.len > 0) try out.appendSlice(allocator, "\n");
-    try out.appendSlice(allocator, body.items);
-    return out.toOwnedSlice(allocator);
+    blk: {
+        out.appendSlice(allocator, summary.items) catch break :blk;
+        if (body.items.len > 0) out.appendSlice(allocator, "\n") catch break :blk;
+        out.appendSlice(allocator, body.items) catch break :blk;
+        return out.toOwnedSlice(allocator) catch break :blk;
+    }
+    // Assembly allocation failed: the summary splice must never fail the
+    // result, so return the plain unmodified body.
+    return body.toOwnedSlice(allocator);
 }
 
 /// carries the script call's execution frame, including the runtime context
@@ -522,35 +527,40 @@ test "failure body degrades to the headline under allocation failures" {
     }
 }
 
-// Plan v2 group 4: a success body never fails because of its summary -
-// when summary allocation fails the plain body is returned without a
-// partial summary. Iterations without an injected failure keep a whole
-// body (plain before the summary exists, summary-headed after it).
-test "success body keeps a whole body when summary allocation fails" {
-    const backing = shared_testing.no_resize;
+// Plan v2 group 4, review-green Medium: an allocation failure after the
+// body itself was built - in the summary build or the summary splice -
+// must return the plain unmodified body, never fail the result with
+// error.OutOfMemory. The sweep uses the standard testing allocator so the
+// degrade path can hand back the already-built body buffer in place; a
+// never-resizing backing would make every allocation after the first
+// failure fail, which is not the OOM shape being pinned here. The final
+// assertion pins the Medium: at least one post-body failure degraded to
+// the plain body.
+test "success body keeps a whole body under allocation failures" {
     const records = [_]tool_runtime.NestedCallRecord{
         .{ .name = "read_file", .outcome = .ok, .duration_ms = 123 },
     };
+    var saw_plain_degrade = false;
     var fail_index: usize = 0;
-    while (fail_index < 32) : (fail_index += 1) {
-        var failing = std.testing.FailingAllocator.init(backing, .{ .fail_index = fail_index });
+    while (fail_index < 64) : (fail_index += 1) {
+        var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = fail_index });
         const body = formatSuccessBody(failing.allocator(), "logged\n", "", "", &records, false) catch |err| switch (err) {
+            // The captured output itself could not be built; there is no
+            // body to return, so the failure propagates.
             error.OutOfMemory => continue,
         };
-        defer backing.free(body);
-        if (failing.has_induced_failure) {
-            // The degrade contract: the plain body, no partial summary.
-            try std.testing.expectEqualStrings("logged\n", body);
-        } else {
-            const plain = std.mem.eql(u8, body, "logged\n");
-            const complete = std.mem.eql(
-                u8,
-                body,
-                "Nested tool calls (not undone):\n- read_file: ok (123ms)\n\nlogged\n",
-            );
-            try std.testing.expect(plain or complete);
-        }
+        defer std.testing.allocator.free(body);
+        if (!failing.has_induced_failure) continue;
+        const plain = std.mem.eql(u8, body, "logged\n");
+        const complete = std.mem.eql(
+            u8,
+            body,
+            "Nested tool calls (not undone):\n- read_file: ok (123ms)\n\nlogged\n",
+        );
+        try std.testing.expect(plain or complete);
+        if (plain) saw_plain_degrade = true;
     }
+    try std.testing.expect(saw_plain_degrade);
 }
 
 // Plan v2 group 9 (review F1): with a session child capability in place,
