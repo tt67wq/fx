@@ -9,6 +9,7 @@ bun.lock
 .zig-cache/
 zig-cache/
 zig-out/
+zig-out-linux/
 zig-pkg/
 
 # Workspace-local runtime state

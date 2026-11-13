@@ -1,9 +1,13 @@
 # Development shortcuts. The canonical commands live in AGENTS.md; this file only wraps them.
 
 .DEFAULT_GOAL := help
-.PHONY: help build test fmt fmt-check check e2e evals tla smoke release clean
+.PHONY: help build test fmt fmt-check check e2e evals tla smoke release linux-x86_64 clean
 
 JOBS := $(shell getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu || nproc || echo 4)
+
+## Linux x86_64 cross build. Override LINUX_TARGET for another ABI, such as x86_64-linux-gnu.
+LINUX_TARGET ?= x86_64-linux
+LINUX_PREFIX ?= zig-out-linux
 
 help:
 	@grep -E '^# |^[a-z][a-z0-9_-]*:' $(firstword $(MAKEFILE_LIST)) | awk '/^# /{c=$$0; next} /^[a-z][a-z0-9_-]*:/{printf "%-12s %s\n", $$1, substr(c, 3); c=""}'
@@ -62,6 +66,11 @@ release:
 	./zig-out/bin/fx --help >/dev/null
 	./zig-out/bin/fx status
 
+# cross-compile a static Linux x86_64 binary into zig-out-linux/bin/fx
+linux-x86_64:
+	zig build -Doptimize=ReleaseSafe -Dtarget=$(LINUX_TARGET) --prefix $(LINUX_PREFIX)
+	@echo "built $(LINUX_PREFIX)/bin/fx"
+
 # remove build output
 clean:
-	rm -rf zig-out .zig-cache
+	rm -rf zig-out .zig-cache $(LINUX_PREFIX)
