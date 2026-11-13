@@ -4936,6 +4936,22 @@ test "fx ask's report sink queues a report as its subagent's message" {
     try std.testing.expect(queued.delivery == .continuation);
 }
 
+test "fx ask tool context forwards the codemode derived surface gate" {
+    const alloc = std.testing.allocator;
+    var stdout_capture = TestCapture{};
+    defer stdout_capture.deinit(alloc);
+    var stderr_capture = TestCapture{};
+    defer stderr_capture.deinit(alloc);
+    var ctx = AskContext.init(alloc, testConfig(), testPromptRunDeps(&stdout_capture, &stderr_capture, testPresentKeyStartup), "/tmp/workspace");
+    defer ctx.deinit();
+
+    // The shipped face is the default, and the resolved gate reaches the tool
+    // context the codemode tool reads.
+    try std.testing.expect(!ctx.toolContext().codemode_derived_surface);
+    ctx.codemode_derived_surface_gate = true;
+    try std.testing.expect(ctx.toolContext().codemode_derived_surface);
+}
+
 test "fx ask deps validate malformed registered calls" {
     const alloc = std.testing.allocator;
     var stdout_capture = TestCapture{};

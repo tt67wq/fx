@@ -1967,6 +1967,7 @@ const FakeApp = struct {
     permission_engine: permissions.PermissionEngine = .{},
     agent_step_limit: usize = 8,
     fast_mode: bool = true,
+    codemode_derived_surface: bool = false,
     main_agent: struct {
         effort: types.ReasoningEffort = types.ReasoningEffort.literal("high"),
         context_snapshot: context_contract.GatheredContextSnapshot,
@@ -2027,6 +2028,10 @@ const FakeApp = struct {
 
     pub fn toolRegistry(self: *const FakeApp, _: anytype) tool_dispatch.Registry {
         return self.tool_registry;
+    }
+
+    pub fn codemodeDerivedSurface(self: *const FakeApp) bool {
+        return self.codemode_derived_surface;
     }
 
     fn contextRegistry(self: *const FakeApp) context_contract.Registry {
@@ -2554,6 +2559,16 @@ test "app agent runtime tool context combines active settings with live permissi
     try std.testing.expect(ctx.fast_mode);
     try std.testing.expectEqual(types.ReasoningEffort.literal("high"), ctx.effort);
     try std.testing.expectEqual(PermissionMode.auto, ctx.permission_mode);
+}
+
+test "app agent runtime tool context carries the codemode derived surface gate" {
+    const alloc = std.testing.allocator;
+    var app = try FakeApp.init(alloc);
+    defer app.deinit();
+
+    try std.testing.expect(!testToolContext(&app).codemode_derived_surface);
+    app.codemode_derived_surface = true;
+    try std.testing.expect(testToolContext(&app).codemode_derived_surface);
 }
 
 test "app agent runtime formats active completed denied and MCP tool actions" {
