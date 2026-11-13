@@ -2769,6 +2769,34 @@ test "codemode gate is profile only and type checked" {
     try std.testing.expectEqual(false, codemodeEnabled(&project));
 }
 
+test "codemode_derived_surface gate defaults off and turns on only with an explicit profile value" {
+    var absent = try parseSettingsJson(std.testing.allocator, "{}");
+    defer absent.deinit(std.testing.allocator);
+    try std.testing.expect(absent.codemode_derived_surface_enabled == null);
+    try std.testing.expectEqual(false, codemodeDerivedSurfaceEnabled(&absent));
+
+    var off = try parseSettingsJson(std.testing.allocator, "{\"experimental\":{\"codemode_derived_surface\":false}}");
+    defer off.deinit(std.testing.allocator);
+    try std.testing.expectEqual(false, codemodeDerivedSurfaceEnabled(&off));
+
+    var on = try parseSettingsJson(std.testing.allocator, "{\"experimental\":{\"codemode_derived_surface\":true}}");
+    defer on.deinit(std.testing.allocator);
+    try std.testing.expectEqual(true, codemodeDerivedSurfaceEnabled(&on));
+}
+
+test "codemode_derived_surface gate is profile only and type checked" {
+    const alloc = std.testing.allocator;
+    try std.testing.expectError(
+        error.InvalidExperimentalCodemodeDerivedSurfaceType,
+        parseSettingsJson(alloc, "{\"experimental\":{\"codemode_derived_surface\":\"yes\"}}"),
+    );
+
+    var project = try parseSettingsJsonForLayer(alloc, "{\"experimental\":{\"codemode_derived_surface\":true}}", .project);
+    defer project.deinit(alloc);
+    try std.testing.expect(project.codemode_derived_surface_enabled == null);
+    try std.testing.expectEqual(false, codemodeDerivedSurfaceEnabled(&project));
+}
+
 test "rtk gate defaults off and turns on only with an explicit profile value" {
     var absent = try parseSettingsJson(std.testing.allocator, "{}");
     defer absent.deinit(std.testing.allocator);

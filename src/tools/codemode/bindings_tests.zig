@@ -2,6 +2,8 @@ const std = @import("std");
 const bindings = @import("bindings.zig");
 const host_mod = @import("host.zig");
 const shell = @import("shell.zig");
+const bridge = @import("bridge.zig");
+const builtin_tools = @import("../../builtins/tools.zig");
 
 const Host = host_mod.Host;
 
@@ -12,6 +14,26 @@ test "codemode tool registry holds three read-only tools plus run_command" {
     try std.testing.expect(bindings.find("read_file") != null);
     try std.testing.expect(bindings.find("run_command") != null);
     try std.testing.expect(bindings.find("write_file") == null);
+}
+
+test "sandbox face keeps the shipped surface whether the gate is off or on" {
+    const registry = builtin_tools.registry;
+    const closed = bridge.sandboxFace(registry, false);
+    try std.testing.expectEqual(@as(usize, 4), closed.len);
+    const closed_names = [_][]const u8{ "glob_files", "grep_files", "read_file", "run_command" };
+    for (closed_names, closed) |expected, tool| {
+        try std.testing.expectEqualStrings(expected, tool.name);
+    }
+
+    const open = bridge.sandboxFace(registry, true);
+    // First implementation marks exactly the shipped set; the gate only
+    // selects the face, it does not widen it until tools are marked.
+    try std.testing.expectEqual(@as(usize, closed.len), open.len);
+    for (closed, open) |a, b| {
+        try std.testing.expectEqualStrings(a.name, b.name);
+    }
+    try std.testing.expectEqual(false, builtin_tools.registry.lookup("write_file").?.sandbox_reachable);
+    try std.testing.expectEqual(true, builtin_tools.registry.lookup("read_file").?.sandbox_reachable);
 }
 
 const FakeBackend = struct {
