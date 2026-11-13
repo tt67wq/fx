@@ -390,6 +390,10 @@ pub fn Runtime(comptime App: type) type {
                 .provider_order = if (selected_provider == .gateway) agent_settings.provider_order else &.{},
                 .provider_strict = selected_provider == .gateway and agent_settings.provider_strict,
                 .first_call_tool_choice = agent_settings.first_call_tool_choice,
+                .codemode_derived_surface = if (comptime @hasDecl(App, "codemodeDerivedSurface"))
+                    app.codemodeDerivedSurface()
+                else
+                    false,
                 .tool_registry = if (comptime @hasDecl(App, "toolRegistry")) app.toolRegistry(agent) else .{},
                 .subagent_host = if (comptime agents.hasAgentField(App, "session_persistence"))
                     app_session_runtime.Runtime(App).ownSubagentHost(agent)

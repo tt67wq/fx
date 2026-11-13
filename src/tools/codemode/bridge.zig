@@ -365,9 +365,38 @@ fn registeredName(script_name: []const u8) []const u8 {
 /// (see the tool_registry assignment in call). The returned schemas are
 /// allocated with `alloc`; the caller owns them and must keep them alive
 /// for every eval that borrows them.
-pub fn schemas(alloc: std.mem.Allocator, registry: tool_dispatch.Registry) ![]bindings.ToolSchema {
-    const out = try alloc.alloc(bindings.ToolSchema, bindings.tools.len);
-    for (bindings.tools, 0..) |tool, index| {
+/// The script-facing names one eval may forward. Both faces are built at
+/// compile time from the registry, so the runtime gate only selects a static
+/// slice and nothing is concatenated per call.
+///
+/// The shipped face is the four names below. The derived face is every tool
+/// the registry marks `sandbox_reachable`, in registry order, plus run_command: the
+/// registry carries the shell tool, and run_command is its script-facing name
+/// (see registeredName). Both faces only decide which names a script may
+/// forward; every nested call still runs the admission pipeline in `call`.
+pub fn sandboxFace(comptime registry: tool_dispatch.Registry, derived: bool) []const bindings.Tool {
+    const open = comptime derivedFace(registry);
+    return if (derived) open else bindings.tools[0..];
+}
+
+fn derivedFace(comptime registry: tool_dispatch.Registry) []const bindings.Tool {
+    return comptime blk: {
+        var face: []const bindings.Tool = &.{};
+        for (registry.tools) |tool| {
+            if (!tool.sandbox_reachable) continue;
+            face = face ++ &[_]bindings.Tool{.{ .name = tool.name }};
+        }
+        break :blk face ++ &[_]bindings.Tool{.{ .name = "run_command" }};
+    };
+}
+
+pub fn schemas(
+    alloc: std.mem.Allocator,
+    registry: tool_dispatch.Registry,
+    face: []const bindings.Tool,
+) ![]bindings.ToolSchema {
+    const out = try alloc.alloc(bindings.ToolSchema, face.len);
+    for (face, 0..) |tool, index| {
         const registered = registry.lookup(registeredName(tool.name)) orelse return error.SchemaMissing;
         const json = try model_tool_schema.builtinFunctionSchemaJsonAlloc(alloc, registered.model_schema);
         // JS_ParseJSON requires a NUL-terminated buffer (quickjs.c: 'buf'
@@ -418,7 +447,7 @@ test "schemas injects one entry per whitelisted tool with script-facing names" {
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    const injected = try schemas(arena, builtin_tools.registry);
+    const injected = try schemas(arena, builtin_tools.registry, &bindings.tools);
     try std.testing.expectEqual(@as(usize, bindings.tools.len), injected.len);
     for (injected, bindings.tools) |schema, tool| {
         try std.testing.expectEqualStrings(tool.name, schema.name);
@@ -440,7 +469,7 @@ test "schemas errors when a whitelisted name is missing from the registry" {
 
     // A registry without the shell tool cannot back run_command's schema.
     const partial = tool_dispatch.Registry{ .tools = builtin_tools.registry.tools[0..1] };
-    try std.testing.expectError(error.SchemaMissing, schemas(arena, partial));
+    try std.testing.expectError(error.SchemaMissing, schemas(arena, partial, &bindings.tools));
 }
 
 test "bridge caps nested commands with the script budget fields" {

@@ -730,6 +730,47 @@ describe("cli: status", () => {
   );
 
   test(
+    "experimental.codemode_derived_surface is a known settings key",
+    async () => {
+      const root = realpathSync(mkdtempSync(join(tmpdir(), "fx-e2e-codemode-surface-")));
+      try {
+        const home = join(root, "home");
+        const cwd = join(root, "workspace");
+        mkdirSync(join(home, ".fx"), { recursive: true });
+        mkdirSync(cwd);
+        writeFileSync(
+          join(home, ".fx", "settings.json"),
+          JSON.stringify({
+            $schema: "https://fx.sh/schemas/settings.json",
+            experimental: { codemode: true, codemode_derived_surface: true },
+          }) + "\n",
+          { mode: 0o600 },
+        );
+        const env = { ...NO_GATEWAY_AUTH, HOME: home, FX_DISABLE_KEYCHAIN: "1" };
+
+        const doctor = await runFx(["doctor", "--json"], { cwd, env });
+        expect(doctor.code).toBe(0);
+        // The derived-surface gate must be recognized: no unknown-setting
+        // warning names it.
+        const configChecks = JSON.parse(doctor.stdout).checks.filter(
+          (check: { name: string; detail: string }) => check.name === "config",
+        );
+        expect(configChecks.length).toBeGreaterThan(0);
+        for (const check of configChecks) {
+          expect(check.detail).not.toContain("codemode_derived_surface");
+        }
+
+        const status = await runFx(["status"], { cwd, env });
+        expect(status.code).toBe(0);
+        expect(status.stderr).toBe("");
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    TIMEOUT,
+  );
+
+  test(
     "doctor names unknown settings keys while status stays quiet",
     async () => {
       const root = realpathSync(mkdtempSync(join(tmpdir(), "fx-e2e-unknown-settings-")));

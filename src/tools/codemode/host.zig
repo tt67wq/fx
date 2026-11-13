@@ -86,6 +86,10 @@ pub const Host = struct {
     /// The injected model-facing schemas behind tools.list. Borrowed: the
     /// injector owns the slices and keeps them alive for every eval.
     tool_schemas: ?[]const bindings.ToolSchema = null,
+    /// The script-facing surface this eval may forward, injected by the
+    /// bridge. The shipped set unless the gate selected the derived face.
+    /// Borrowed: the bridge owns it for the life of the eval.
+    tool_face: []const bindings.Tool = &bindings.tools,
     text_buf: std.ArrayList(u8) = .empty,
     console_buf: std.ArrayList(u8) = .empty,
 
@@ -140,6 +144,10 @@ pub const Host = struct {
 
     pub fn setToolSchemas(self: *Host, schemas: []const bindings.ToolSchema) void {
         self.tool_schemas = schemas;
+    }
+
+    pub fn setToolFace(self: *Host, face: []const bindings.Tool) void {
+        self.tool_face = face;
     }
 
     fn cancelRequested(self: Host) bool {
@@ -269,7 +277,7 @@ pub const Host = struct {
         errdefer c.JS_FreeContext(ctx);
         c.JS_SetContextOpaque(ctx, self);
 
-        try installBindings(ctx);
+        try installBindings(ctx, self.tool_face);
         // The interrupt handler is installed after the bindings: the shim
         // install below evaluates JS while deadline_ms is still 0, and a
         // handler would see every check as past the deadline.
@@ -279,7 +287,7 @@ pub const Host = struct {
         self.context = ctx;
     }
 
-    fn installBindings(ctx: *c.JSContext) EvalError!void {
+    fn installBindings(ctx: *c.JSContext, face: []const bindings.Tool) EvalError!void {
         const global = c.JS_GetGlobalObject(ctx);
         defer c.JS_FreeValue(ctx, global);
 
@@ -329,28 +337,38 @@ pub const Host = struct {
             c.JS_FreeValue(ctx, tools_obj);
             return error.BindingFailed;
         }
-        if (installCallShim(ctx, tools_obj) != 0) return error.BindingFailed;
+        if (installCallShim(ctx, tools_obj, face) != 0) return error.BindingFailed;
     }
-
-    /// The shim installs one named function per whitelisted tool. The names
-    /// come from the registry at comptime rather than tools.list(): a tool stays
-    /// callable through tools.call even when the bridge has not injected its
-    /// schema, so its named function must exist too (see the "named functions
-    /// exist for every whitelisted tool" test in bindings_tests.zig).
-    const whitelist_literal = blk: {
-        var literal: []const u8 = "[";
-        for (bindings.tools, 0..) |tool, i| {
-            if (i != 0) literal = literal ++ ",";
-            literal = literal ++ "\"" ++ tool.name ++ "\"";
-        }
-        literal = literal ++ "]";
-        break :blk literal;
-    };
 
     /// Evaluates the tools.call shim against `tools_obj` and returns 0 on
     /// success. The shim throws from inside itself to read Error.stack, skips
     /// its own frames, and takes the first user-script frame's line number.
-    fn installCallShim(ctx: *c.JSContext, tools_obj: c.JSValue) c_int {
+    fn installCallShim(ctx: *c.JSContext, tools_obj: c.JSValue, face: []const bindings.Tool) c_int {
+        // The shim installs one named function per tool on the selected face.
+        // The names come from the face rather than tools.list(): a tool stays
+        // callable through tools.call even when the bridge has not injected
+        // its schema, so its named function must exist too (see the "named
+        // functions exist for every whitelisted tool" test in
+        // bindings_tests.zig). QuickJS owns its own copies of the names, so
+        // the Zig slices never outlive this call.
+        const whitelist = c.JS_NewArray(ctx);
+        if (c.JS_IsException(whitelist)) return -1;
+        for (face, 0..) |tool, index| {
+            const tool_name = c.JS_NewStringLen(ctx, tool.name.ptr, tool.name.len);
+            if (c.JS_IsException(tool_name)) {
+                c.JS_FreeValue(ctx, whitelist);
+                return -1;
+            }
+            if (c.JS_SetPropertyUint32(ctx, whitelist, @intCast(index), tool_name) < 0) {
+                c.JS_FreeValue(ctx, tool_name);
+                c.JS_FreeValue(ctx, whitelist);
+                return -1;
+            }
+        }
+        if (c.JS_SetPropertyStr(ctx, tools_obj, "__codemode_whitelist", whitelist) < 0) {
+            c.JS_FreeValue(ctx, whitelist);
+            return -1;
+        }
         const shim =
             \\(function (tools, native, whitelist) {
             \\    "use strict";
@@ -378,8 +396,8 @@ pub const Host = struct {
             \\            tools[name] = function (args) { return call(name, args); };
             \\        })(whitelist[i]);
             \\    }
-            \\})(tools, tools.__codemode_native_call, 
-        ++ whitelist_literal ++ ")";
+            \\})(tools, tools.__codemode_native_call, tools.__codemode_whitelist)
+        ;
         const script_len: usize = shim.len;
         const result = c.JS_Eval(
             ctx,
@@ -604,7 +622,7 @@ fn toolsCallCallback(ctx: ?*c.JSContext, _: c.JSValue, argc: c_int, argv: [*c]c.
     const name_ptr = c.JS_ToCStringLen(context, &name_len, argv[0]) orelse return js_exception;
     defer c.JS_FreeCString(context, name_ptr);
     const name = name_ptr[0..name_len];
-    const tool = bindings.find(name) orelse {
+    const tool = bindings.findIn(host.tool_face, name) orelse {
         var message_buf: [256]u8 = undefined;
         const message: [:0]const u8 = std.mem.printSentinel(&message_buf, "unknown codemode tool: {s}", .{name}, 0) catch
             "unknown codemode tool";

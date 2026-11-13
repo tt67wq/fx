@@ -169,6 +169,10 @@ pub const Context = struct {
     provider_strict: bool = false,
     first_call_tool_choice: types.ToolChoice = .auto,
     tool_registry: tool_dispatch.Registry = .{},
+    /// Selects the codemode sandbox's script-facing tool surface: the
+    /// shipped four names, or the registry-derived face the experimental
+    /// gate turns on. It changes only which names a script may forward.
+    codemode_derived_surface: bool = false,
     subagent_host: ?*subagent_tool_host.Runtime = null,
     subagent_caller_id: ?[]const u8 = null,
     permission_mode: PermissionMode,
@@ -732,6 +736,7 @@ fn executeWorkspaceToolCallInner(
     // this handle's presence alone.
     var codemode_host = CodemodeHostState{
         .runtime = ctx,
+        .derived_surface = ctx.codemode_derived_surface,
         .script_call = call,
     };
     var dispatch_metadata: DispatchMetadata = .{};
@@ -844,6 +849,7 @@ fn executeRegisteredTool(
     // advertisement layer and this handle admits nothing by itself.
     var codemode_host = CodemodeHostState{
         .runtime = ctx,
+        .derived_surface = ctx.codemode_derived_surface,
         .script_call = call,
     };
     var vision_provider = VisionProviderState{
@@ -1301,6 +1307,9 @@ pub const NestedCallRecord = struct {
 pub const max_nested_call_records: usize = 32;
 
 pub const CodemodeHostState = struct {
+    /// Whether this call's sandbox forwards the registry-derived face
+    /// rather than the shipped four names.
+    derived_surface: bool = false,
     runtime: Context,
     script_call: ToolCall,
     /// Counts nested tool calls a codemode script made through the bridge;

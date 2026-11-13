@@ -238,7 +238,11 @@ pub fn call(ctx: tool_dispatch.DispatchContext, erased: tool_dispatch.ToolInput)
     // borrows the slices and never frees them.
     var schema_arena_state = std.heap.ArenaAllocator.init(ctx.allocator);
     defer schema_arena_state.deinit();
-    const tool_schemas = bridge.schemas(schema_arena_state.allocator(), builtin_tools.registry) catch |err| {
+    // The gate selects between two compile-time faces; a script can only
+    // name tools on the selected face, and every nested call still runs
+    // the admission pipeline in bridge.call.
+    const face = bridge.sandboxFace(builtin_tools.registry, state.derived_surface);
+    const tool_schemas = bridge.schemas(schema_arena_state.allocator(), builtin_tools.registry, face) catch |err| {
         return .{ .failure = try ctx.allocator.print("codemode schema injection failed: {s}", .{@errorName(err)}) };
     };
 
@@ -251,6 +255,7 @@ pub fn call(ctx: tool_dispatch.DispatchContext, erased: tool_dispatch.ToolInput)
     // handler polls the same atomic the worker cancel path sets.
     sandbox.cancel_flag = &state.runtime.worker.worker_cancel_requested;
     sandbox.host.setToolBackend(bridge.backend(state));
+    sandbox.host.setToolFace(face);
     sandbox.host.setToolSchemas(tool_schemas);
 
     sandbox.start() catch |err| {

@@ -71,6 +71,10 @@ pub const Settings = struct {
     /// Whether the experimental codemode tool bridge is on. Profile-only;
     /// default off. Read with codemodeEnabled.
     codemode_enabled: ?bool = null,
+    /// Whether the experimental codemode sandbox may name the registry-derived
+    /// tool surface. Profile-only; a missing value keeps the shipped four
+    /// names.
+    codemode_derived_surface_enabled: ?bool = null,
     /// Whether the experimental rtk output-compression hook is on. Profile-only;
     /// default off. Read with rtkEnabled.
     rtk_enabled: ?bool = null,
@@ -204,6 +208,13 @@ pub fn resolveContextLimits(settings: *const Settings, command_line: []const con
 /// only an explicit experimental.codemode true in the profile turns it on.
 pub fn codemodeEnabled(settings: *const Settings) bool {
     return settings.codemode_enabled orelse false;
+}
+
+/// Whether the codemode sandbox forwards the registry-derived tool surface.
+/// Default off; only an explicit experimental.codemode_derived_surface true
+/// in the profile turns it on.
+pub fn codemodeDerivedSurfaceEnabled(settings: *const Settings) bool {
+    return settings.codemode_derived_surface_enabled orelse false;
 }
 
 /// Whether the experimental rtk output-compression hook is enabled. Default
@@ -1874,6 +1885,10 @@ fn parseProfileOnlyFields(
             if (codemode != .bool) return error.InvalidExperimentalCodemodeType;
             settings.codemode_enabled = codemode.bool;
         }
+        if (experimental_value.object.get("codemode_derived_surface")) |derived| {
+            if (derived != .bool) return error.InvalidExperimentalCodemodeDerivedSurfaceType;
+            settings.codemode_derived_surface_enabled = derived.bool;
+        }
         if (experimental_value.object.get("rtk")) |rtk| {
             if (rtk != .bool) return error.InvalidExperimentalRtkType;
             settings.rtk_enabled = rtk.bool;
@@ -2091,6 +2106,7 @@ fn mergeSettings(target: *Settings, incoming: *Settings, alloc: Allocator) !void
     }
     if (incoming.prompt_history_enabled) |value| target.prompt_history_enabled = value;
     if (incoming.codemode_enabled) |value| target.codemode_enabled = value;
+    if (incoming.codemode_derived_surface_enabled) |value| target.codemode_derived_surface_enabled = value;
     if (incoming.rtk_enabled) |value| target.rtk_enabled = value;
     if (incoming.effort) |value| target.effort = value;
     if (incoming.review_model) |value| {

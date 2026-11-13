@@ -498,6 +498,9 @@ const App = struct {
     workspace_root: []u8 = &.{},
     /// Resolved experimental.codemode gate, cached after the first read.
     codemode_gate: ?bool = null,
+    /// Resolved experimental.codemode_derived_surface gate, cached after the
+    /// first read.
+    codemode_derived_surface_gate: ?bool = null,
     rtk_gate: ?bool = null,
     codemode_gate_from_cwd: bool = false,
     workspace_identity: statusline_identity.Runtime = .{},
@@ -1869,8 +1872,25 @@ const App = struct {
             defer settings.deinit(self.alloc);
             break :blk config_runtime.codemodeEnabled(&settings);
         };
+
         @constCast(self).codemode_gate = enabled;
         @constCast(self).codemode_gate_from_cwd = from_cwd;
+        return enabled;
+    }
+
+    /// Whether codemode scripts may name the registry-derived tool surface.
+    /// Read once from merged profile settings and cached, like the codemode
+    /// gate itself: a half-open gate mid-session would change which names a
+    /// script can forward between calls.
+    pub fn codemodeDerivedSurface(self: *const App) bool {
+        if (self.codemode_derived_surface_gate) |enabled| return enabled;
+        const root = if (self.workspace_root.len == 0) "." else self.workspace_root;
+        const enabled = blk: {
+            var settings = config_runtime.loadMergedSettings(self.alloc, root) catch break :blk false;
+            defer settings.deinit(self.alloc);
+            break :blk config_runtime.codemodeDerivedSurfaceEnabled(&settings);
+        };
+        @constCast(self).codemode_derived_surface_gate = enabled;
         return enabled;
     }
 
@@ -1882,6 +1902,7 @@ const App = struct {
         if (self.codemode_gate == null or !self.codemode_gate_from_cwd) return;
         if (self.workspace_root.len == 0) return;
         self.codemode_gate = null;
+        self.codemode_derived_surface_gate = null;
         self.codemode_gate_from_cwd = false;
         _ = self.codemodeGate();
         // A launch profile narrowed against the pre-bootstrap base already

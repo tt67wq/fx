@@ -27,8 +27,15 @@ pub const tools = [_]Tool{
     .{ .name = "run_command" },
 };
 
+/// Looks a script-facing name up in the shipped surface.
 pub fn find(name: []const u8) ?Tool {
-    for (tools) |tool| {
+    return findIn(&tools, name);
+}
+
+/// Looks a script-facing name up in the surface the host selected for this
+/// eval. The bridge hands both faces in; only one is live per eval.
+pub fn findIn(face: []const Tool, name: []const u8) ?Tool {
+    for (face) |tool| {
         if (std.mem.eql(u8, tool.name, name)) return tool;
     }
     return null;

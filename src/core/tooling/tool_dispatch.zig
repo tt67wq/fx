@@ -434,6 +434,12 @@ pub const Tool = struct {
     /// never reaches a call-time permission check, so advertisement is its only
     /// enforcement point and requires an already-settled allow.
     provider_executed: bool = false,
+    /// Whether a codemode script may name this tool through tools.call. The
+    /// flag only widens which names the sandbox can forward: every nested call
+    /// still passes the full admission pipeline (see the codemode bridge), so
+    /// reachability never means review-free execution. Marking a tool here is
+    /// an explicit product decision, not a property derived from how it reads.
+    sandbox_reachable: bool = false,
     executor_kind: ExecutorKind = .read_file,
     activity_kind: core_types.ToolActivityKind = .read,
     requires_approval: bool = false,
