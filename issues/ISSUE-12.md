@@ -27,3 +27,10 @@ text 输出超限改头尾保留，全文按 shell 的句柄机制落盘，结�
 - [ ] text 输出超限改头尾保留
 - [ ] 全文落盘并附句柄路径
 - [ ] Zig 单测：超限输出可经句柄回读全文
+## 处置记录（2026-11-12）
+
+方案已定稿（v2，并入 codex 评审 9 项必改）：.agents/tasks/issue-12-output-spill/plan.md，
+评审：.agents/tasks/issue-12-output-spill/review.md（approve-with-changes）。
+规模估算：源码约 300-400 行 + 测试 400-600 行，风险集中在 spill 对象穿过
+DispatchContext 注入链与集成层 capability 夹具。**暂缓**：改动中等偏大，
+先做性价比更高的 issue，回头再开团。
