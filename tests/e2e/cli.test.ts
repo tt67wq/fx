@@ -760,6 +760,12 @@ describe("cli: status", () => {
           expect(check.detail).not.toContain("codemode_derived_surface");
         }
 
+        // F7: the key also appears in fx config list, so the new control is
+        // visible where people look for settings.
+        const list = await runFx(["config", "list"], { cwd, env });
+        expect(list.code).toBe(0);
+        expect(list.stdout).toContain("experimental.codemode_derived_surface=true");
+
         const status = await runFx(["status"], { cwd, env });
         expect(status.code).toBe(0);
         expect(status.stderr).toBe("");

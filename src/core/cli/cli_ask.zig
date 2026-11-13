@@ -619,6 +619,9 @@ const AskContext = struct {
     auto_compact_percent: u8 = compactor.default_percent,
     context_limits: config_runtime.context_limits.Values = .{},
     fast_mode: bool = false,
+    /// Resolved experimental.codemode_derived_surface gate, cached after the
+    /// first read so one ask run merges profile settings at most once.
+    codemode_derived_surface_gate: ?bool = null,
     /// Profile preference used only when creating a new durable session.
     /// Process and CLI overrides remain per-run and never rewrite this value.
     persisted_ultrafast_mode: bool = false,
@@ -1105,6 +1108,7 @@ const AskContext = struct {
             .permission_grants = &.{},
             .permission_rules = self.permission_rules,
             .tool_registry = self.toolRegistry(),
+            .codemode_derived_surface = self.codemodeDerivedSurface(),
             .subagent_host = self.subagent_host,
             .subagent_caller_id = self.activeSessionId(),
             .auto_classifier = self.admissionAutoClassifier(),
@@ -1162,6 +1166,21 @@ const AskContext = struct {
     fn modelVisibleProjectContext(self: *const AskContext) []const u8 {
         if (!self.context_enabled) return "";
         return self.context_snapshot.modelVisibleBytes();
+    }
+
+    /// Whether codemode scripts may name the registry-derived tool surface.
+    /// Read on demand from merged profile settings and cached for the run, the
+    /// same shape the interactive app uses, so no tool call re-reads the
+    /// profile.
+    fn codemodeDerivedSurface(self: *AskContext) bool {
+        if (self.codemode_derived_surface_gate) |enabled| return enabled;
+        const enabled = blk: {
+            var settings = config_runtime.loadMergedSettings(self.alloc, self.workspace_root) catch break :blk false;
+            defer settings.deinit(self.alloc);
+            break :blk config_runtime.codemodeDerivedSurfaceEnabled(&settings);
+        };
+        self.codemode_derived_surface_gate = enabled;
+        return enabled;
     }
 
     fn toolRegistry(self: *const AskContext) tool_dispatch.Registry {

@@ -349,8 +349,20 @@ pub const Host = struct {
         // callable through tools.call even when the bridge has not injected
         // its schema, so its named function must exist too (see the "named
         // functions exist for every whitelisted tool" test in
-        // bindings_tests.zig). QuickJS owns its own copies of the names, so
-        // the Zig slices never outlive this call.
+        // bindings_tests.zig).
+        //
+        // Why the names are injected at runtime instead of as a compile-time
+        // literal: two faces now exist and the binary selects one per eval at
+        // runtime, so a single literal cannot describe both. Building the
+        // array here keeps QuickJS owning its own copies of the names, so no
+        // Zig slice outlives this call and no string is concatenated.
+        //
+        // This shim only decides which names the script can write down. It is
+        // not an authorization point: toolsCallCallback checks the same face
+        // after the interrupt and deadline checks, and the only execution
+        // path past it is the bridge's nested admission, which resolves
+        // against the full built-in registry on every call. Adding a name
+        // here never makes a call review-free.
         const whitelist = c.JS_NewArray(ctx);
         if (c.JS_IsException(whitelist)) return -1;
         for (face, 0..) |tool, index| {
@@ -359,14 +371,17 @@ pub const Host = struct {
                 c.JS_FreeValue(ctx, whitelist);
                 return -1;
             }
+            // JS_SetPropertyUint32 consumes tool_name whether it succeeds or
+            // fails (quickjs.c JS_SetPropertyGenericInternal), so the failure
+            // branch frees only the array it still owns.
             if (c.JS_SetPropertyUint32(ctx, whitelist, @intCast(index), tool_name) < 0) {
-                c.JS_FreeValue(ctx, tool_name);
                 c.JS_FreeValue(ctx, whitelist);
                 return -1;
             }
         }
+        // JS_SetPropertyStr consumes whitelist on both outcomes, so a failed
+        // write leaves nothing to free here.
         if (c.JS_SetPropertyStr(ctx, tools_obj, "__codemode_whitelist", whitelist) < 0) {
-            c.JS_FreeValue(ctx, whitelist);
             return -1;
         }
         const shim =

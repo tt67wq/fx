@@ -360,11 +360,6 @@ fn registeredName(script_name: []const u8) []const u8 {
     return script_name;
 }
 
-/// Builds one ToolSchema per whitelisted tool from the builtin registry,
-/// matching the full registry the nested admission path resolves against
-/// (see the tool_registry assignment in call). The returned schemas are
-/// allocated with `alloc`; the caller owns them and must keep them alive
-/// for every eval that borrows them.
 /// The script-facing names one eval may forward. Both faces are built at
 /// compile time from the registry, so the runtime gate only selects a static
 /// slice and nothing is concatenated per call.
@@ -390,6 +385,11 @@ fn derivedFace(comptime registry: tool_dispatch.Registry) []const bindings.Tool 
     };
 }
 
+/// Builds one ToolSchema per whitelisted tool from the builtin registry,
+/// matching the full registry the nested admission path resolves against
+/// (see the tool_registry assignment in call). The returned schemas are
+/// allocated with `alloc`; the caller owns them and must keep them alive
+/// for every eval that borrows them.
 pub fn schemas(
     alloc: std.mem.Allocator,
     registry: tool_dispatch.Registry,
