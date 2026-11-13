@@ -61,6 +61,11 @@ fn call(
     var arena_state = std.heap.ArenaAllocator.init(allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
+    // File mutations require a result owner distinct from the call owner:
+    // the prepared mutation keeps the call arena alive across execution, so
+    // one arena for both would trip the contract's ownership check.
+    var result_arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer result_arena_state.deinit();
 
     state.call_sequence += 1;
     // The duration starts before canonicalization and admission so every
@@ -125,7 +130,7 @@ fn call(
 
     const result = tool_runtime.executeToolCallAuthorized(check, .{
         .call_allocator = arena,
-        .result_allocator = arena,
+        .result_allocator = result_arena_state.allocator(),
         .call = nested_call,
         .authority = outcome.execution_authority orelse .ordinary,
         .current_turn_messages = ctx.current_turn_messages,

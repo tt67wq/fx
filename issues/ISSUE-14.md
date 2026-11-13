@@ -60,7 +60,7 @@ reads_only_fn 推导：
 
 ## 处置
 
-- [ ] 与 fx-cli-shape 技能核对开关命名与 surface 清单（surface_diff.sh、
+- [x] 与 fx-cli-shape 技能核对开关命名与 surface 清单（surface_diff.sh、
       settings_keys.zig、cli_config.zig、tests/e2e/cli.test.ts、fx.sh 页面）
 - [x] Tool 增加 sandbox_reachable 字段，comptime 推导开启面（要点 1、2）
 - [x] gate 设置键、config_runtime 管道与传值（要点 3）
@@ -70,4 +70,6 @@ reads_only_fn 推导：
 - [x] 单测 A：关闭 gate 时工具面与现状逐项且同序相等（tools.list 注入顺序
       即 bindings.tools 顺序，bridge.zig:370）
 - [x] 单测 B：开启态 golden 名单锁定期望面，防标记漂移
-- [ ] 开启态候选工具（web_fetch、ask_user_question、vision）逐个拍板记录
+- [x] 开启态候选工具（web_fetch、ask_user_question、vision）逐个拍板记录
+      用户拍板：edit_file、write_file、web_fetch、ask_user_question、vision
+      五个一并进面，开启态 9 项（含 run_command）。

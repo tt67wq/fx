@@ -58,7 +58,10 @@ afterEach(async () => {
   }
 });
 
-function createIsolatedRoot(): IsolatedRoot {
+function createIsolatedRoot(
+  extraExperimental: Record<string, boolean> = {},
+  permission: Record<string, unknown> = {},
+): IsolatedRoot {
   const root = realpathSync(
     mkdtempSync(join(tmpdir(), "fx-codemode-admission-e2e-")),
   );
@@ -71,8 +74,8 @@ function createIsolatedRoot(): IsolatedRoot {
     JSON.stringify({
       sandbox: "none",
       permission_mode: "auto",
-      permission: {},
-      experimental: { codemode: true },
+      permission,
+      experimental: { codemode: true, ...extraExperimental },
     }) + "\n",
   );
   roots.push(root);
@@ -580,6 +583,129 @@ describe("codemode nested admission parity", () => {
     expect(report.pattern).toBe("string");
     expect(report.required).toBe("pattern");
   }, TIMEOUT);
+
+test(
+  "a nested write then read back returns the written content",
+  async () => {
+    // G1: the nested result owner is a distinct arena from the call owner, so
+    // a prepared file mutation and the result that follows it cannot share
+    // one arena's lifetime. A single arena makes the write fail silently.
+    const root = createIsolatedRoot({ codemode_derived_surface: true }, { edit: "allow" });
+    const target = join(root.workspace, "result-arena-probe.txt");
+    const script =
+      'const w = await tools.call("write_file", JSON.stringify({ path: ' +
+      JSON.stringify(target) +
+      ', content: "result-arena-probe" }));' +
+      'const r = await tools.call("read_file", JSON.stringify({ path: ' +
+      JSON.stringify(target) +
+      " }));" +
+      "text(String(r));";
+    const gateway = startGateway([
+      fakeGatewayToolCall("arena-write-1", "codemode", { script }),
+      fakeGatewayFinalText("ARENA_FINAL"),
+    ]);
+    rmSync(target, { force: true });
+    try {
+      const result = await runFx(
+        ["ask", "--quiet", "--json", "--no-save", USER_PROMPT],
+        { cwd: root.workspace, env: gatewayEnv(root, gateway), timeoutMs: TIMEOUT },
+      );
+      expect(result.code, result.stderr.slice(0, 400)).toBe(0);
+      expect(existsSync(target)).toBe(true);
+      expect(readFileSync(target, "utf8")).toBe("result-arena-probe");
+      // The read-back crosses the same bridge, so the script sees the content
+      // written by the previous nested call.
+      const body = toolResultText(gateway.requests[1]!.body, "arena-write-1");
+      expect(body).toContain("result-arena-probe");
+    } finally {
+      rmSync(target, { force: true });
+    }
+  },
+  TIMEOUT,
+);
+
+test(
+  "a nested edit_file on the derived face is still denied by admission",
+  async () => {
+    // G2: the deny coverage for the derived face includes edit_file, not only
+    // write_file.
+    const root = createIsolatedRoot({ codemode_derived_surface: true }, { edit: "deny" });
+    const target = join(root.workspace, "script-edit.txt");
+    writeFileSync(target, "alpha\n");
+    const script =
+      'text(tools.call("edit_file", JSON.stringify({ path: ' +
+      JSON.stringify(target) +
+      ', old_string: "alpha", new_string: "beta" })));';
+    const gateway = startGateway([
+      fakeGatewayToolCall("surface-edit-1", "codemode", { script }),
+      fakeGatewayFinalText("SURFACE_EDIT_FINAL"),
+    ]);
+    try {
+      const result = await runFx(
+        ["ask", "--quiet", "--json", "--no-save", USER_PROMPT],
+        { cwd: root.workspace, env: gatewayEnv(root, gateway), timeoutMs: TIMEOUT },
+      );
+      expect(result.code, result.stderr.slice(0, 400)).toBe(0);
+      expect(readFileSync(target, "utf8")).toBe("alpha\n");
+      const denial = JSON.parse(
+        stripNestedCallSummary(
+          toolResultText(gateway.requests[1]!.body, "surface-edit-1"),
+        ).trim(),
+      ) as { denied?: boolean; reason?: string };
+      expect(denial.denied).toBe(true);
+      expect(denial.reason).toBeTruthy();
+    } finally {
+      rmSync(target, { force: true });
+    }
+  },
+  TIMEOUT,
+);
+
+test(
+  "a nested write_file on the derived face is still denied by admission",
+  async () => {
+    // A configured deny is the authority the derived face must not bypass.
+    const root = createIsolatedRoot({ codemode_derived_surface: true }, { edit: "deny" });
+    const target = join(root.workspace, "script-write.txt");
+    const script =
+      'text(tools.call("write_file", JSON.stringify({ path: ' +
+      JSON.stringify(target) +
+      ', content: "scripted" })));';
+    const gateway = startGateway([
+      fakeGatewayToolCall("surface-write-1", "codemode", { script }),
+      fakeGatewayFinalText("SURFACE_WRITE_FINAL"),
+    ]);
+    rmSync(target, { force: true });
+    try {
+      const result = await runFx(
+        ["ask", "--quiet", "--json", "--no-save", USER_PROMPT],
+        {
+          cwd: root.workspace,
+          env: gatewayEnv(root, gateway),
+          timeoutMs: TIMEOUT,
+        },
+      );
+      expect(
+        result.code,
+        `stdout: \${result.stdout}
+stderr: \${result.stderr}`,
+      ).toBe(0);
+      // The derived face only widens which names the script can write down:
+      // the write is denied by admission and never touches the workspace.
+      expect(existsSync(target)).toBe(false);
+      const denial = JSON.parse(
+        stripNestedCallSummary(
+          toolResultText(gateway.requests[1]!.body, "surface-write-1"),
+        ).trim(),
+      ) as { denied?: boolean; reason?: string };
+      expect(denial.denied).toBe(true);
+      expect(denial.reason).toBeTruthy();
+    } finally {
+      rmSync(target, { force: true });
+    }
+  },
+  TIMEOUT,
+);
 
 describe.skipIf(!tmuxAvailable())("tui: codemode nested permission slots", () => {
   test(
