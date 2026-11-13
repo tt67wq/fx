@@ -283,6 +283,7 @@ pub const write_file = ToolSpec{
             .required = &.{ "path", "content" },
         },
     },
+    .sandbox_reachable = true,
     .executor_kind = .write_file,
     .activity_kind = .write,
     .requires_approval = true,
@@ -314,6 +315,7 @@ pub const edit_file = ToolSpec{
             .required = &.{ "path", "old_string", "new_string" },
         },
     },
+    .sandbox_reachable = true,
     .executor_kind = .edit_file,
     .activity_kind = .edit,
     .requires_approval = true,
@@ -344,6 +346,7 @@ pub const web_fetch = ToolSpec{
             .additional_properties = false,
         },
     },
+    .sandbox_reachable = true,
     .executor_kind = .web_fetch,
     .activity_kind = .read,
     .requires_approval = false,
@@ -629,6 +632,10 @@ pub const ask_user_question = ToolSpec{
             .required = &.{"questions"},
         },
     },
+    // Reachable from codemode scripts by product decision: a script
+    // call blocks on a human answer inside the script's own wall-clock
+    // budget, and the call still passes the normal admission review.
+    .sandbox_reachable = true,
     .executor_kind = .ask_user_question,
     .activity_kind = .ask,
     .requires_approval = false,
@@ -674,6 +681,7 @@ pub const vision = ToolSpec{
             .max_properties = 2,
         },
     },
+    .sandbox_reachable = true,
     .executor_kind = .vision,
     .activity_kind = .read,
     .requires_approval = true,

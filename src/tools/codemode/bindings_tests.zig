@@ -49,7 +49,9 @@ test "sandbox face keeps the shipped surface whether the gate is off or on" {
     try std.testing.expectEqual(true, builtin_tools.registry.lookup("read_file").?.sandbox_reachable);
     try std.testing.expectEqual(false, builtin_tools.registry.lookup("shell").?.sandbox_reachable);
     try std.testing.expectEqual(false, builtin_tools.registry.lookup("subagent").?.sandbox_reachable);
-    try std.testing.expectEqual(false, builtin_tools.registry.lookup("codemode").?.sandbox_reachable);
+    // codemode itself is not in the builtin registry (the tool set adds it),
+    // so reachability for it cannot be asserted here.
+    try std.testing.expect(builtin_tools.registry.lookup("codemode") == null);
 }
 
 const FakeBackend = struct {

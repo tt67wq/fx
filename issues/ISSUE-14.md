@@ -70,4 +70,6 @@ reads_only_fn 推导：
 - [x] 单测 A：关闭 gate 时工具面与现状逐项且同序相等（tools.list 注入顺序
       即 bindings.tools 顺序，bridge.zig:370）
 - [x] 单测 B：开启态 golden 名单锁定期望面，防标记漂移
-- [ ] 开启态候选工具（web_fetch、ask_user_question、vision）逐个拍板记录
+- [x] 开启态候选工具（web_fetch、ask_user_question、vision）逐个拍板记录
+      用户拍板：edit_file、write_file、web_fetch、ask_user_question、vision
+      五个一并进面，开启态 9 项（含 run_command）。
