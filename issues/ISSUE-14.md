@@ -62,12 +62,12 @@ reads_only_fn 推导：
 
 - [ ] 与 fx-cli-shape 技能核对开关命名与 surface 清单（surface_diff.sh、
       settings_keys.zig、cli_config.zig、tests/e2e/cli.test.ts、fx.sh 页面）
-- [ ] Tool 增加 sandbox_reachable 字段，comptime 推导开启面（要点 1、2）
-- [ ] gate 设置键、config_runtime 管道与传值（要点 3）
-- [ ] bridge.schemas 参数化与 codemode_tool 选面（要点 5）
-- [ ] 嵌套准入覆盖新工具面：用真实 registry 工具在 deny 模式验证逐次准入，
+- [x] Tool 增加 sandbox_reachable 字段，comptime 推导开启面（要点 1、2）
+- [x] gate 设置键、config_runtime 管道与传值（要点 3）
+- [x] bridge.schemas 参数化与 codemode_tool 选面（要点 5）
+- [x] 嵌套准入覆盖新工具面：用真实 registry 工具在 deny 模式验证逐次准入，
       不注入 mock registry（bridge.call 硬编码 builtin_tools.registry）
-- [ ] 单测 A：关闭 gate 时工具面与现状逐项且同序相等（tools.list 注入顺序
+- [x] 单测 A：关闭 gate 时工具面与现状逐项且同序相等（tools.list 注入顺序
       即 bindings.tools 顺序，bridge.zig:370）
-- [ ] 单测 B：开启态 golden 名单锁定期望面，防标记漂移
+- [x] 单测 B：开启态 golden 名单锁定期望面，防标记漂移
 - [ ] 开启态候选工具（web_fetch、ask_user_question、vision）逐个拍板记录
