@@ -25,15 +25,31 @@ test "sandbox face keeps the shipped surface whether the gate is off or on" {
         try std.testing.expectEqualStrings(expected, tool.name);
     }
 
+    // The derived face is every marked tool in registry order, then
+    // run_command. The gate selects this face; it never authorizes a call,
+    // so write and edit tools appear here and are still admitted per call.
     const open = bridge.sandboxFace(registry, true);
-    // First implementation marks exactly the shipped set; the gate only
-    // selects the face, it does not widen it until tools are marked.
-    try std.testing.expectEqual(@as(usize, closed.len), open.len);
-    for (closed, open) |a, b| {
-        try std.testing.expectEqualStrings(a.name, b.name);
+    const open_names = [_][]const u8{
+        "glob_files",
+        "grep_files",
+        "read_file",
+        "write_file",
+        "edit_file",
+        "web_fetch",
+        "ask_user_question",
+        "vision",
+        "run_command",
+    };
+    try std.testing.expectEqual(open_names.len, open.len);
+    for (open_names, open) |expected, tool| {
+        try std.testing.expectEqualStrings(expected, tool.name);
     }
-    try std.testing.expectEqual(false, builtin_tools.registry.lookup("write_file").?.sandbox_reachable);
+    try std.testing.expectEqual(true, builtin_tools.registry.lookup("write_file").?.sandbox_reachable);
+    try std.testing.expectEqual(true, builtin_tools.registry.lookup("edit_file").?.sandbox_reachable);
     try std.testing.expectEqual(true, builtin_tools.registry.lookup("read_file").?.sandbox_reachable);
+    try std.testing.expectEqual(false, builtin_tools.registry.lookup("shell").?.sandbox_reachable);
+    try std.testing.expectEqual(false, builtin_tools.registry.lookup("subagent").?.sandbox_reachable);
+    try std.testing.expectEqual(false, builtin_tools.registry.lookup("codemode").?.sandbox_reachable);
 }
 
 const FakeBackend = struct {

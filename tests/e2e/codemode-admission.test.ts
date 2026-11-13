@@ -58,7 +58,10 @@ afterEach(async () => {
   }
 });
 
-function createIsolatedRoot(): IsolatedRoot {
+function createIsolatedRoot(
+  extraExperimental: Record<string, boolean> = {},
+  permission: Record<string, unknown> = {},
+): IsolatedRoot {
   const root = realpathSync(
     mkdtempSync(join(tmpdir(), "fx-codemode-admission-e2e-")),
   );
@@ -71,8 +74,8 @@ function createIsolatedRoot(): IsolatedRoot {
     JSON.stringify({
       sandbox: "none",
       permission_mode: "auto",
-      permission: {},
-      experimental: { codemode: true },
+      permission,
+      experimental: { codemode: true, ...extraExperimental },
     }) + "\n",
   );
   roots.push(root);
@@ -580,6 +583,52 @@ describe("codemode nested admission parity", () => {
     expect(report.pattern).toBe("string");
     expect(report.required).toBe("pattern");
   }, TIMEOUT);
+
+test(
+  "a nested write_file on the derived face is still denied by admission",
+  async () => {
+    // A configured deny is the authority the derived face must not bypass.
+    const root = createIsolatedRoot({ codemode_derived_surface: true }, { edit: "deny" });
+    const target = join(root.workspace, "script-write.txt");
+    const script =
+      'text(tools.call("write_file", JSON.stringify({ path: ' +
+      JSON.stringify(target) +
+      ', content: "scripted" })));';
+    const gateway = startGateway([
+      fakeGatewayToolCall("surface-write-1", "codemode", { script }),
+      fakeGatewayFinalText("SURFACE_WRITE_FINAL"),
+    ]);
+    rmSync(target, { force: true });
+    try {
+      const result = await runFx(
+        ["ask", "--quiet", "--json", "--no-save", USER_PROMPT],
+        {
+          cwd: root.workspace,
+          env: gatewayEnv(root, gateway),
+          timeoutMs: TIMEOUT,
+        },
+      );
+      expect(
+        result.code,
+        `stdout: \${result.stdout}
+stderr: \${result.stderr}`,
+      ).toBe(0);
+      // The derived face only widens which names the script can write down:
+      // the write is denied by admission and never touches the workspace.
+      expect(existsSync(target)).toBe(false);
+      const denial = JSON.parse(
+        stripNestedCallSummary(
+          toolResultText(gateway.requests[1]!.body, "surface-write-1"),
+        ).trim(),
+      ) as { denied?: boolean; reason?: string };
+      expect(denial.denied).toBe(true);
+      expect(denial.reason).toBeTruthy();
+    } finally {
+      rmSync(target, { force: true });
+    }
+  },
+  TIMEOUT,
+);
 
 describe.skipIf(!tmuxAvailable())("tui: codemode nested permission slots", () => {
   test(
