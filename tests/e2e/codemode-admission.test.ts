@@ -38,8 +38,9 @@ const TIMEOUT = 30_000;
 // - runFx resolves on the child's "close" event (eval-helpers.ts:514-545,
 //   stdio all pipe), so it waits for pipe EOF, not for fx to exit.
 // - Ordering: product budget 30s < assertion window 45s < nested sleep 60s
-//   <= harness wall 60s. The wall must exceed the nested sleep so fx is
-//   killed by the budget, never by this test.
+//   (commanded length; the budget ends it at 30s) <= harness wall 60s. The
+//   wall is headroom over the budget kill plus fx's cleanup and the 45s
+//   window, so fx is killed by the budget, never by this test.
 // - bun:test case-level timeout (90s, second arg below) must stay above the
 //   wall, or the case dies before fx finishes its budget cleanup.
 const BUDGET_TEST_TIMEOUT = 60_000;
