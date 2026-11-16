@@ -1,6 +1,6 @@
 # ISSUE-19 — turn_finished(.paused) 释放 lifecycle 记录不加 fence，迟到的 progress/terminal 事件杀死整个交互式会话
 
-- **状态**: fixing
+- **状态**: closed
 - **发现时间**: 2026-11-16
 - **来源**: 交互式会话实测崩溃（session M9m4sqAtN-5_，fx v0.0.16 @ b58759a89）
 - **严重度**: 高（一次可恢复的事件时序问题导致整个应用退出，丢失当前会话画面）
