@@ -26,3 +26,13 @@
   排查中断轮询的慢路径入手。
 - PR #2 的 ready 条件按 AGENTS.md 依赖 CI 全绿；若三项短期无法修复，
   可考虑先把修复 PR 拆出单独跑，或在 fork 上确认 baseline 后调整预期。
+
+## 失败 2 取证结论（T-17-impl-2）
+
+跨平台取证（macOS arm64 ReleaseSafe 本机 + node:22-bookworm 容器）check 级结果逐字节一致，三项 MUST（request-state-echoed / jsonrpc-id-different / no-state-omitted）均报 "Tool was not called by client or MRTR flow not completed"：**真实缺陷，非环境性**。已单开 issues/ISSUE-18.md 跟踪修复；处置采用 baseline-with-link（expected-failures.yml 加三项并挂 ISSUE-18，条目随修复通过自到期强制移除）。复现注意事项（D4）记录在 ISSUE-18。
+
+## 处置
+
+- 失败 1（printf 词形守卫）：T-17-impl-1 修复（红 ba42135c4 / 绿 947c25785 / 注释 cde032e6e），复审3 approve-with-comments，走 type:bug PR。
+- 失败 3（e2e 超时）：T-17-impl-2 修复（cf6a83796 / 注释 effe3342c），复审3 approve 并背书 code 断言偏离，走 type:maintenance PR。
+- 失败 2（conformance）：取证定案真实缺陷，转 issues/ISSUE-18.md + baseline-with-link。

@@ -18,6 +18,8 @@ GitHub runner ubuntu-24.04（Image 20261111.370.1）的 /usr/bin/printf 是 uuti
 - 不依赖任何 printf 实现的选项语义（B1 的实证要求按构造消解）；覆盖未知长选项与 -h/-V 全类（N5 覆盖真空一并关掉）。
 - 已证安全的对照："-leading" 数据类在真 runner 上原样通过（CI 只挂 --help 一项），拒绝它是保守方向的已知 UX 成本，接受（N3：auto 模式无人工屏）。
 - **UX 成本显式化（R2）**：拒绝把命令从 .captured review-free 通道移入 automaticReviewOutcome（tool_admission.zig:1139），用户可见面只是额外延迟；且**每次调用都重新规划、重新评审**——除 AGENTS.md 已述机制外无按拒绝原因的跨回合缓存。
+- **评审3 C1 补记**：成本不止延迟——tool_admission.zig:79 默认 auto_classifier 为 .disabled()，:998-1000 直通 reviewerUnavailableOutcome，:947-957 返回 deny/review_unavailable：**未配置评审器的用户**会从本来正确的 review-free BSD printf 运行变为硬拒绝。须写进 PR body 与权限手册页（Documentation 规则）。日常受影响面例：printf '%d
+' -5（C4）离开 review-free 通道。
 
 ### 改动清单（按 B2 粒度，不虚报）
 1. planPrintf 守卫本体（含注释引本 issue 与评审）。
