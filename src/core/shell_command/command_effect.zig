@@ -685,6 +685,15 @@ fn planPrintf(
         return .{ .approval_required = .unsupported_argument };
     };
     if (words.len - 2 != conversions) return .{ .approval_required = .unsupported_argument };
+    // ISSUE-17 failure 1: the uutils printf that ships on ubuntu-24.04 GitHub
+    // runners parses dash-leading data words as flags (--help, --version,
+    // unknown short options), so a native run diverges from the shell builtin.
+    // Reject the whole word shape instead of enumerating option semantics,
+    // which keeps the rejection reason identical on every target OS
+    // (issues/ISSUE-17-plan-v2.md, R1 + R2c).
+    for (words[2..]) |word| {
+        if (word.len != 0 and word[0] == '-') return .{ .approval_required = .unsupported_argument };
+    }
 
     var argv: std.ArrayList([]const u8) = .empty;
     try argv.append(alloc, policy.executable);
@@ -1263,6 +1272,27 @@ fn buildPrintfCommand(
     return command.toOwnedSlice(alloc);
 }
 
+fn printfVersionDiagnostic(buf: []u8, argv0: []const u8) []const u8 {
+    // ISSUE-17 failure 1 (N7/N-c): identify which printf implementation a
+    // native mismatch came from. BSD printf has no --version (usage on
+    // stderr, nonzero exit), so fall back to that first line and say so.
+    const result = std.process.run(std.testing.allocator, std.testing.io, .{
+        .argv = &[_][]const u8{ argv0, "--version" },
+    }) catch return "printf --version diagnostic: unavailable (spawn failed)";
+    defer std.testing.allocator.free(result.stdout);
+    defer std.testing.allocator.free(result.stderr);
+    const succeeded = switch (result.term) {
+        .exited => |code| code == 0,
+        else => false,
+    };
+    const source = if (succeeded) result.stdout else result.stderr;
+    const first_line_end = std.mem.findScalar(u8, source, '\n') orelse source.len;
+    const first_line = std.mem.trimEnd(u8, source[0..first_line_end], " \t");
+    const capped = first_line[0..@min(first_line.len, 200)];
+    if (succeeded) return std.mem.print(buf, "printf --version first line: {s}", .{capped}) catch "printf --version diagnostic: unavailable";
+    return std.mem.print(buf, "printf --version unavailable, stderr first line: {s}", .{capped}) catch "printf --version diagnostic: unavailable";
+}
+
 fn expectNativePrintfEquivalent(command: []const u8, target_os: std.Target.Os.Tag) !void {
     var admission = try expectDirect(command, target_os);
     defer admission.deinit(std.testing.allocator);
@@ -1285,8 +1315,10 @@ fn expectNativePrintfEquivalent(command: []const u8, target_os: std.Target.Os.Ta
         !std.mem.eql(u8, shell_result.stdout, direct_result.stdout) or
         !std.mem.eql(u8, shell_result.stderr, direct_result.stderr))
     {
+        var version_buf: [512]u8 = undefined;
+        const version_diagnostic = printfVersionDiagnostic(&version_buf, argv[0]);
         std.debug.print(
-            "native printf mismatch target={s} command={s} shell_term={any} direct_term={any} shell_stdout={any} direct_stdout={any} shell_stderr={any} direct_stderr={any}\n",
+            "native printf mismatch target={s} command={s} shell_term={any} direct_term={any} shell_stdout={any} direct_stdout={any} shell_stderr={any} direct_stderr={any} {s}\n",
             .{
                 @tagName(target_os),
                 command,
@@ -1296,6 +1328,7 @@ fn expectNativePrintfEquivalent(command: []const u8, target_os: std.Target.Os.Ta
                 direct_result.stdout,
                 shell_result.stderr,
                 direct_result.stderr,
+                version_diagnostic,
             },
         );
         return error.TestExpectedEqual;
