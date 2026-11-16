@@ -1,6 +1,6 @@
 # T-15-impl 实现报告 — ISSUE-15：codemode 工具目录预算 + searchTools/describeTool
 
-工作树：/Users/admin/Project/Zig/fx-pi3，分支 T-15-impl（基于 origin/main 2e9d2ef9f）。
+工作树：/Users/example/fx-pi3，分支 T-15-impl（基于 origin/main 2e9d2ef9f）。
 
 ## 提交
 
