@@ -691,6 +691,10 @@ fn planPrintf(
     // Reject the whole word shape instead of enumerating option semantics,
     // which keeps the rejection reason identical on every target OS
     // (issues/ISSUE-17-plan-v2.md, R1 + R2c).
+    // The empty-word exemption is load-bearing twice: it keeps printf '%s' ''
+    // review-free, and it is the only reason the count check keeps independent
+    // coverage (the zero-data surplus fixture feeds data_classes[0] == "",
+    // which this guard cannot see). Do not tighten it.
     for (words[2..]) |word| {
         if (word.len != 0 and word[0] == '-') return .{ .approval_required = .unsupported_argument };
     }
