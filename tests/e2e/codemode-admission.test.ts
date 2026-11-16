@@ -32,6 +32,17 @@ import {
 // call reports.
 
 const TIMEOUT = 30_000;
+// Wall clock for the budget-expiry case only (T-17 / ISSUE-17 failure 3,
+// R3 decision: keep the 30s/45s windows, raise the harness wall).
+// Timing invariants, fixed on purpose — do not "tighten the flake":
+// - runFx resolves on the child's "close" event (eval-helpers.ts:514-545,
+//   stdio all pipe), so it waits for pipe EOF, not for fx to exit.
+// - Ordering: product budget 30s < assertion window 45s < nested sleep 60s
+//   <= harness wall 60s. The wall must exceed the nested sleep so fx is
+//   killed by the budget, never by this test.
+// - bun:test case-level timeout (90s, second arg below) must stay above the
+//   wall, or the case dies before fx finishes its budget cleanup.
+const BUDGET_TEST_TIMEOUT = 60_000;
 const COMMAND_APPROVAL_PROMPT = "Would you like to run the following command?";
 const USER_PROMPT = "Run the prepared parity probe and report the result.";
 const CALL_ID_PLACEHOLDER = "@CALL_ID@";
@@ -218,14 +229,22 @@ test("nested run_command is killed when the codemode script budget expires", asy
   try {
     const result = await runFx(
       ["ask", "--quiet", "--json", "--no-save", "run the budget test"],
-      { cwd: root.workspace, env: gatewayEnv(root, gateway), timeoutMs: TIMEOUT },
+      { cwd: root.workspace, env: gatewayEnv(root, gateway), timeoutMs: BUDGET_TEST_TIMEOUT },
     );
     const elapsedS = (Date.now() - startedAt) / 1000;
-    expect(result.code, "stderr: " + result.stderr.slice(0, 400)).not.toBe(0);
+    expect(result.timedOut).toBe(false);
+    // Budget expiry is not a process failure: fx kills the script at the
+    // budget, hands the model a Timeout error tool result, and exits 0
+    // (same contract as the failed-script case below). A non-zero/null
+    // code here only ever came from the old 30s harness wall SIGKILLing
+    // fx mid-cleanup, which the raised wall and the timedOut guard above
+    // now rule out.
+    expect(result.code, "stderr: " + result.stderr.slice(0, 400)).toBe(0);
     expect(elapsedS).toBeGreaterThan(20);
     expect(elapsedS).toBeLessThan(45);
     // The failure detail is not echoed by --quiet --json; the model
     // receives it as the follow-up request's tool result.
+    expect(gateway.requests.length).toBe(2);
     const request = JSON.parse(gateway.requests[1]!.body) as {
       prompt?: Array<{ content?: Array<Record<string, unknown>> }>;
     };
@@ -239,7 +258,7 @@ test("nested run_command is killed when the codemode script budget expires", asy
   } finally {
     rmSync(root.workspace, { recursive: true, force: true });
   }
-}, 90000);
+}, 90000); // > BUDGET_TEST_TIMEOUT (R3: keep the wall under the case timeout)
 
 test("a failed script keeps partial output and nested call summary", async () => {
   const root = createIsolatedRoot();
