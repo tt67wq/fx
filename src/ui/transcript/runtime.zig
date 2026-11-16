@@ -2753,6 +2753,25 @@ test "paused tool turn can resume the same lifecycle identity before finalizatio
 
     try std.testing.expectEqual(@as(u64, 0), runtime.finalizedToolTurnWatermark());
     try std.testing.expect(runtime.toolActivityRecord(id) == null);
+    // A late progress/terminal arriving in the released window is neither fenced
+    // nor resumable-identifiable, so it must be dropped without error and without
+    // touching any transcript entry, while the turn stays resumable (see
+    // issues/ISSUE-19.md).
+    try std.testing.expectEqual(
+        @as(?types.ToolActivityKind, null),
+        try runtime.applyToolLifecycle(alloc, .{ .progress = .{
+            .id = id,
+            .text = "late progress",
+        } }),
+    );
+    try std.testing.expectEqual(
+        @as(?types.ToolActivityKind, null),
+        try runtime.applyToolLifecycle(alloc, .{ .terminal = .{
+            .id = id,
+            .outcome = .{ .kind = .failed, .summary = "late terminal" },
+        } }),
+    );
+    try std.testing.expectEqual(@as(u64, 0), runtime.finalizedToolTurnWatermark());
     var paused_source = try runtime.prepareTranscriptSource(alloc, null);
     defer paused_source.deinit(alloc);
     try std.testing.expect(std.mem.find(
@@ -6060,7 +6079,11 @@ pub const TranscriptRuntime = struct {
                 "progress without lifecycle turn_id={d}",
                 .{id.turn_id},
             );
-            return error.UnknownToolLifecycleIdentity;
+            // tests/tla unknown; unfenced absence is structurally ambiguous with a
+            // paused-release or pre-restart window (call ids are reused), so a late
+            // event must never be fatal. See issues/ISSUE-19.md.
+            traceLateLifecycleEvent(id, "progress");
+            return null;
         };
         if (record.phase == .terminal) {
             traceLateLifecycleEvent(id, "progress");
@@ -6096,7 +6119,11 @@ pub const TranscriptRuntime = struct {
                 "terminal without lifecycle turn_id={d}",
                 .{id.turn_id},
             );
-            return error.UnknownToolLifecycleIdentity;
+            // Unfenced absence is structurally ambiguous with a paused-release or
+            // pre-restart window (call ids are reused), so a late event must never
+            // be fatal. See issues/ISSUE-19.md.
+            traceLateLifecycleEvent(id, "terminal");
+            return null;
         };
         const line = try lifecycleTerminalLine(alloc, outcome.kind, outcome.summary);
         defer alloc.free(line);

@@ -13537,16 +13537,18 @@ test "transcript lifecycle identity updates are idempotent and atomic" {
     try std.testing.expectEqual(alias_before, runtime.toolActivityRecord(lifecycleId(1, "alias")).?.entry_id);
     try std.testing.expectEqual(target_before, runtime.toolActivityRecord(lifecycleId(1, "target")).?.entry_id);
     const records_before = runtime.toolActivityRecordCount();
-    try std.testing.expectError(
-        error.UnknownToolLifecycleIdentity,
-        runtime.applyToolLifecycle(alloc, .{ .progress = .{
+    // Unfenced absence (paused release, pre-restart window) is not fatal: late
+    // progress/terminal are traced and dropped without touching any entry.
+    try std.testing.expectEqual(
+        @as(?types.ToolActivityKind, null),
+        try runtime.applyToolLifecycle(alloc, .{ .progress = .{
             .id = lifecycleId(1, "missing"),
             .text = "progress",
         } }),
     );
-    try std.testing.expectError(
-        error.UnknownToolLifecycleIdentity,
-        runtime.applyToolLifecycle(alloc, .{ .terminal = .{
+    try std.testing.expectEqual(
+        @as(?types.ToolActivityKind, null),
+        try runtime.applyToolLifecycle(alloc, .{ .terminal = .{
             .id = lifecycleId(1, "missing"),
             .outcome = .{ .kind = .failed, .summary = "failed" },
         } }),

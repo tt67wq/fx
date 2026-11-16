@@ -579,3 +579,28 @@ test "lifecycle transition reports focus changes from immutable snapshots" {
     changed.snapshot.focused_entry_id = 7;
     try std.testing.expect(changed.focus_changed());
 }
+
+test "releasePausedTurn drops records without fencing the turn" {
+    const alloc = std.testing.allocator;
+    var state = ToolActivityState{};
+    defer state.deinit(alloc);
+    const id = types.ToolLifecycleId{ .turn_id = 9, .call_id = "paused-tool" };
+    try state.ensureRecordCapacity(alloc);
+    // Records own their strings; dupe so releasePausedTurn can free them.
+    state.putOwnedRecord(.{
+        .turn_id = id.turn_id,
+        .call_id = try alloc.dupe(u8, id.call_id),
+    }, try alloc.dupe(u8, "read_file"), .read, 3, .authoritative);
+
+    state.releasePausedTurn(alloc, id.turn_id);
+
+    try std.testing.expectEqual(@as(usize, 0), state.recordCount());
+    // A released paused turn is staged, not finalized: it must stay resumable
+    // under the same lifecycle identity (see issues/ISSUE-19.md).
+    try std.testing.expectEqual(@as(u64, 0), state.finalized_turn_watermark);
+    try std.testing.expect(!state.isFenced(id.turn_id));
+    try std.testing.expectEqual(
+        StartAdmission.accepted,
+        state.admitStart(id),
+    );
+}
