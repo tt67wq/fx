@@ -1,7 +1,7 @@
 # ISSUE-18 implementation report
 
-Branch `T-18-impl` in `/Users/admin/Project/Zig/fx-pi2`, based on `3253b6e2c`.
-Implements the finalized plan (Option A) from `/Users/admin/Project/Zig/fx-pi3/issue18-fix-plan.md`
+Branch `T-18-impl` in `/Users/example/fx-piX`, based on `3253b6e2c`.
+Implements the finalized plan (Option A) from `/Users/example/fx-piX/issue18-fix-plan.md`
 with no redesign. Forensics in `issue18-investigation.md` (branch `T-18-plan-a`).
 
 ## Commits, in TDD order
