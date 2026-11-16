@@ -452,3 +452,180 @@ test "codemode named call runs alongside tools.call" {
     defer result.deinit();
     try std.testing.expectEqual(@as(usize, 2), fake.calls);
 }
+
+const budget_schemas = [_]bindings.ToolSchema{
+    .{ .name = "glob_files", .schema_json =
+    \\{"description":"match files","inputSchema":{"type":"object","properties":{"pattern":{"type":"string"}}}}
+    },
+    .{ .name = "write_file", .schema_json =
+    \\{"description":"write a file to disk","inputSchema":{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}}}}
+    },
+};
+
+test "searchTools and describeTool are injected globals that leave tools untouched" {
+    var host = Host.init(std.testing.allocator, .{});
+    defer host.deinit();
+    host.setToolSchemas(&budget_schemas);
+
+    var result = try host.eval(
+        \\var before_keys = Object.keys(tools).join();
+        \\var before_wl = JSON.stringify(tools.__codemode_whitelist);
+        \\searchTools("file");
+        \\describeTool("glob_files");
+        \\typeof searchTools + "," + typeof describeTool + "," +
+        \\(Object.keys(tools).join() === before_keys) + "," +
+        \\(JSON.stringify(tools.__codemode_whitelist) === before_wl)
+    );
+    defer result.deinit();
+    try std.testing.expectEqualStrings("function,function,true,true", result.value);
+}
+
+test "tools.list stays unfiltered and unannotated when the budget does not trigger" {
+    var host = Host.init(std.testing.allocator, .{});
+    defer host.deinit();
+    host.setToolSchemas(&budget_schemas);
+    host.catalog_budget = 64 * 1024;
+
+    var result = try host.eval(
+        \\var list = tools.list();
+        \\var extra = Object.getOwnPropertyNames(list).filter(function (p) { return p !== "0" && p !== "1" && p !== "length"; }).join();
+        \\list.length + "|" + props + "|" + (("omitted" in list) || ("hint" in list))
+    );
+    defer result.deinit();
+    try std.testing.expectEqualStrings("2||false", result.value);
+}
+
+test "tools.list appends omitted and hint own properties when the budget triggers" {
+    var host = Host.init(std.testing.allocator, .{});
+    defer host.deinit();
+    host.setToolSchemas(&budget_schemas);
+    // Total schema bytes are a few hundred; this budget triggers and
+    // leaves room only for tier zero after the notice floor.
+    host.catalog_budget = 400;
+
+    var result = try host.eval(
+        \\var list = tools.list();
+        \\var iterated = [];
+        \\for (const entry of list) iterated.push(entry.name);
+        \\list.length + "|" + iterated.join() + "|" +
+        \\list.omitted.map(function (o) { return o.name + ":" + o.oversized; }).join() + "|" +
+        \\(typeof list.hint === "string" && list.hint.indexOf("searchTools") >= 0)
+    );
+    defer result.deinit();
+    try std.testing.expectEqualStrings("1|glob_files|write_file:false|true", result.value);
+}
+
+test "omitted and hint stay invisible to map, index access, and JSON round trips" {
+    var host = Host.init(std.testing.allocator, .{});
+    defer host.deinit();
+    host.setToolSchemas(&budget_schemas);
+    host.catalog_budget = 400;
+
+    var result = try host.eval(
+        \\var list = tools.list();
+        \\var mapped = list.map(function (e) { return e.name; }).join();
+        \\var indexed = list[1] === undefined;
+        \\var parsed = JSON.parse(JSON.stringify(list));
+        \\mapped + "|" + indexed + "|" + parsed.length + "|" + Array.isArray(parsed)
+    );
+    defer result.deinit();
+    try std.testing.expectEqualStrings("glob_files|true|1|true", result.value);
+}
+
+test "searchTools finds tools dropped from the listing and returns fresh objects" {
+    var host = Host.init(std.testing.allocator, .{});
+    defer host.deinit();
+    host.setToolSchemas(&budget_schemas);
+    host.catalog_budget = 400;
+
+    var result = try host.eval(
+        \\var first = searchTools("write a file");
+        \\var hit = first.find(function (h) { return h.name === "write_file"; });
+        \\first.length + "|" + (hit !== undefined) + "|" + (typeof hit.description === "string") + "|" +
+        \\(function () { first[0].name = "mutated"; return searchTools("write")[0].name !== "mutated"; })()
+    );
+    defer result.deinit();
+    try std.testing.expectEqualStrings("2|true|true|true", result.value);
+}
+
+test "searchTools validates the query and the limit option" {
+    var host = Host.init(std.testing.allocator, .{});
+    defer host.deinit();
+    host.setToolSchemas(&budget_schemas);
+
+    var result = try host.eval(
+        \\var results = [];
+        \\function probe(fn) { try { fn(); results.push("ok"); } catch (e) { results.push(e.name); } }
+        \\probe(() => searchTools(42));
+        \\probe(() => searchTools("file", { limit: 0 }));
+        \\probe(() => searchTools("file", { limit: -1 }));
+        \\probe(() => searchTools("file", { limit: 1.5 }));
+        \\probe(() => searchTools("file", { limit: "8" }));
+        \\probe(() => searchTools("file", { limit: 1 }));
+        \\results.join()
+    );
+    defer result.deinit();
+    try std.testing.expectEqualStrings("TypeError,TypeError,TypeError,TypeError,TypeError,ok", result.value);
+}
+
+test "searchTools defaults the limit to eight" {
+    var host = Host.init(std.testing.allocator, .{});
+    defer host.deinit();
+    var schemas: [10]bindings.ToolSchema = undefined;
+    var names: [10][]const u8 = undefined;
+    var bufs: [10][64]u8 = undefined;
+    var json_bufs: [10][96:0]u8 = undefined;
+    for (0..10) |i| {
+        names[i] = try std.mem.print(&bufs[i], "tool_{d}", .{i});
+        const json = try std.mem.printSentinel(&json_bufs[i], "{{\"description\":\"common haystack\"}}", .{}, 0);
+        schemas[i] = .{ .name = names[i], .schema_json = json };
+    }
+    host.setToolSchemas(&schemas);
+
+    var result = try host.eval("searchTools(\"haystack\").length");
+    defer result.deinit();
+    try std.testing.expectEqualStrings("8", result.value);
+}
+
+test "describeTool returns the same shape as a tools.list element" {
+    var host = Host.init(std.testing.allocator, .{});
+    defer host.deinit();
+    host.setToolSchemas(&budget_schemas);
+
+    var result = try host.eval(
+        \\var described = describeTool("glob_files");
+        \\var listed = tools.list()[0];
+        \\JSON.stringify(described) === JSON.stringify(listed)
+    );
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true", result.value);
+}
+
+test "describeTool throws a TypeError with suggestions for an unknown name" {
+    var host = Host.init(std.testing.allocator, .{});
+    defer host.deinit();
+    host.setToolSchemas(&budget_schemas);
+
+    var result = try host.eval(
+        \\try { describeTool("glob_filez"); "did not throw"; }
+        \\catch (e) { e.name + "|" + (e.message.indexOf("glob_files") >= 0) + "|" + (e.message.indexOf("searchTools") >= 0) }
+    );
+    defer result.deinit();
+    try std.testing.expectEqualStrings("TypeError|true|true", result.value);
+}
+
+test "describeTool covers a tool the listing dropped" {
+    var host = Host.init(std.testing.allocator, .{});
+    defer host.deinit();
+    host.setToolSchemas(&budget_schemas);
+    host.catalog_budget = 400;
+
+    var result = try host.eval(
+        \\var described = describeTool("write_file");
+        \\described.name + "|" + (typeof described.description === "string") + "|" +
+        \\(typeof described.parameters === "object") + "|" +
+        \\(typeof described.parameters.properties.content === "object")
+    );
+    defer result.deinit();
+    try std.testing.expectEqualStrings("write_file|true|true|true", result.value);
+}

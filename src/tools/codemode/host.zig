@@ -1,6 +1,7 @@
 const std = @import("std");
 const io_mod = @import("../../core/shared/io.zig");
 const bindings = @import("bindings.zig");
+const discovery = @import("discovery.zig");
 
 // Zig 0.17 removed @cImport; build.zig translates the vendored public header
 // into this module.
@@ -90,6 +91,15 @@ pub const Host = struct {
     /// bridge. The shipped set unless the gate selected the derived face.
     /// Borrowed: the bridge owns it for the life of the eval.
     tool_face: []const bindings.Tool = &bindings.tools,
+
+    /// The byte budget for the tools.list() catalog, injected by the
+    /// caller when the derived surface is live and the configured limit
+    /// is not off. Null keeps the catalog whole (closed face or off).
+    catalog_budget: ?usize = null,
+    /// The search index behind searchTools and describeTool, built from
+    /// the injected schemas. The host owns the index memory; strings in
+    /// it are borrowed from the schemas and live as long as they do.
+    discovery_index: ?*discovery.Index = null,
     text_buf: std.ArrayList(u8) = .empty,
     console_buf: std.ArrayList(u8) = .empty,
 
@@ -98,6 +108,7 @@ pub const Host = struct {
     }
 
     pub fn deinit(self: *Host) void {
+        self.clearDiscoveryIndex();
         if (self.context) |ctx| {
             c.JS_FreeContext(ctx);
             self.context = null;
@@ -144,6 +155,16 @@ pub const Host = struct {
 
     pub fn setToolSchemas(self: *Host, schemas: []const bindings.ToolSchema) void {
         self.tool_schemas = schemas;
+        self.clearDiscoveryIndex();
+        if (schemas.len == 0) return;
+        self.discovery_index = discovery.build(self.allocator, schemas) catch null;
+    }
+
+    fn clearDiscoveryIndex(self: *Host) void {
+        if (self.discovery_index) |index| {
+            index.deinit(self.allocator);
+            self.discovery_index = null;
+        }
     }
 
     pub fn setToolFace(self: *Host, face: []const bindings.Tool) void {
@@ -997,6 +1018,8 @@ test {
     // Pull the sandbox thread model and the tool bridge tests into every
     // test build.
     _ = @import("bindings_tests.zig");
+    _ = @import("catalog.zig");
+    _ = @import("discovery.zig");
     _ = @import("sandbox.zig");
 }
 
