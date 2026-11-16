@@ -27,12 +27,43 @@
 - PR #2 的 ready 条件按 AGENTS.md 依赖 CI 全绿；若三项短期无法修复，
   可考虑先把修复 PR 拆出单独跑，或在 fork 上确认 baseline 后调整预期。
 
-## 失败 2 取证结论（T-17-impl-2）
+## 失败 2 取证结论（T-17-impl-2，2026-11-16）
 
-跨平台取证（macOS arm64 ReleaseSafe 本机 + node:22-bookworm 容器）check 级结果逐字节一致，三项 MUST（request-state-echoed / jsonrpc-id-different / no-state-omitted）均报 "Tool was not called by client or MRTR flow not completed"：**真实缺陷，非环境性**。已单开 issues/ISSUE-18.md 跟踪修复；处置采用 baseline-with-link（expected-failures.yml 加三项并挂 ISSUE-18，条目随修复通过自到期强制移除）。复现注意事项（D4）记录在 ISSUE-18。
+### 方法
+pinned runner（@modelcontextprotocol/conformance 0.2.0-alpha.10，rev
+a9896553900a2ef61787b57adfcbbe936a8ab1f9）直接对 conformance fixture 跑
+sep-2322-client-request-state 单场景，带 --verbose --output-dir 保留 check 级
+checks.json（绕开 run.ts:33 mkdtemp / :65 finally 删除）。两端：
 
-## 处置
+- macOS 本机（Darwin 27.0.0 arm64，node 26.12.1，bun 1.4.2，macOS fx 二进制）。
+- Linux docker（node:22-bookworm，glibc 2.36，node 22.23.5，bun 1.4.4，
+  fx 交叉编译 aarch64-linux-gnu Debug；container 内核 6.8.0-100-generic）。
 
-- 失败 1（printf 词形守卫）：T-17-impl-1 修复（红 ba42135c4 / 绿 947c25785 / 注释 cde032e6e），复审3 approve-with-comments，走 type:bug PR。
-- 失败 3（e2e 超时）：T-17-impl-2 修复（cf6a83796 / 注释 effe3342c），复审3 approve 并背书 code 断言偏离，走 type:maintenance PR。
-- 失败 2（conformance）：取证定案真实缺陷，转 issues/ISSUE-18.md + baseline-with-link。
+### check 级结果（两端逐字节一致）
+2 passed, 3 failed（与 CI 旧 main run 43348575668 的场景级签名一致）：
+
+| check id | macOS | Linux |
+| --- | --- | --- |
+| sep-2322-client-parallel-isolation | SUCCESS | SUCCESS |
+| sep-2322-default-result-type-complete | SUCCESS | SUCCESS |
+| sep-2322-client-request-state-echoed | FAILURE | FAILURE |
+| sep-2322-client-jsonrpc-id-different | FAILURE | FAILURE |
+| sep-2322-client-no-state-omitted | FAILURE | FAILURE |
+
+三个失败项 details.message 均为：
+"Tool was not called by client or MRTR flow not completed"
+
+### 结论：真实缺陷（非环境性）
+失败在 macOS 与 Linux 完全一致（同 check 集、同 message、同 2/5 比例），
+排除 Linux 特有的 I/O/时序差异。这是 client（fx 的 conformance 适配层）对
+SEP-2322 MRTR 请求状态记账的确定性缺口：echoed（requestState 回显）、
+jsonrpc-id-different（新 JSON-RPC id）、no-state-omitted（未指定状态时省略
+requestState）三项 MUST 未满足，且 runner 报的是同一上游症状（MRTR 流未完成
+到工具调用），与平台无关。
+
+### 处置（conductor 决策 D3，2026-11-16）
+
+- 已单开 issues/ISSUE-18.md 跟踪修复（含本节证据与复现注意事项 D4）。
+- baseline-with-link：expected-failures.yml 已加三项并挂 ISSUE-18。评审3 已
+  指出"永久静音"论断自相矛盾，baseline 条目自带到期规则（check 开始通过
+  即 CI 红），修复落地后自然强制移除。
