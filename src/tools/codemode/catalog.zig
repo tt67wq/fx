@@ -62,11 +62,80 @@ pub const Group = struct {
 /// item that does not fit cascades every later item in its group into
 /// omitted (AlwaysLoaded semantics: no skip-large-fit-small).
 pub fn selectGroups(alloc: Allocator, groups: []const Group, budget: usize) Allocator.Error!Selection {
-    _ = alloc;
-    _ = groups;
-    _ = budget;
-    // Red skeleton: selection lands with the green commit.
-    return .{ .indexes = &.{}, .omitted = &.{}, .triggered = false };
+    var total: usize = 0;
+    var count: usize = 0;
+    for (groups) |group| {
+        for (group.schemas) |schema| total += schema.schema_json.len;
+        count += group.schemas.len;
+    }
+    // Gate two: at or under budget the listing stays whole, byte for byte.
+    if (total <= budget) {
+        const indexes = try alloc.alloc(usize, count);
+        for (0..count) |i| indexes[i] = i;
+        return .{ .indexes = indexes, .omitted = &.{}, .triggered = false };
+    }
+
+    // The notice floor is reserved before any entry is placed, so a
+    // triggered catalog always has room for the omitted list and hint.
+    const entries_budget = budget -| catalog_notice_floor_bytes;
+    const flags = try alloc.alloc(bool, count);
+    for (flags) |*flag| flag.* = false;
+    // Tier zero is exempt: its entries are always listed and never consume
+    // the entries budget, because they are today's existing behavior and
+    // cannot be dropped. Tier one and two share what is left, in tier
+    // order, face order inside the tier; the first entry that does not fit
+    // cascades every later non-exempt entry into omitted (AlwaysLoaded
+    // semantics: no skip-large-fit-small).
+    var cascade = false;
+    var used: usize = 0;
+    const tiers = [_]Tier{ .t0, .t1, .t2 };
+    for (tiers) |tier| {
+        var n: usize = 0;
+        for (groups) |group| {
+            for (group.schemas) |schema| {
+                if (tierOf(schema.name) == tier) {
+                    if (tier == .t0) {
+                        flags[n] = true;
+                    } else if (!cascade and used + schema.schema_json.len <= entries_budget) {
+                        flags[n] = true;
+                        used += schema.schema_json.len;
+                    } else {
+                        cascade = true;
+                    }
+                }
+                n += 1;
+            }
+        }
+    }
+
+    // Output stays in face order: listed indexes and omitted entries both.
+    var listed_count: usize = 0;
+    var omitted_count: usize = 0;
+    for (flags) |flag| {
+        if (flag) listed_count += 1 else omitted_count += 1;
+    }
+    const indexes = try alloc.alloc(usize, listed_count);
+    const omitted = try alloc.alloc(Omitted, omitted_count);
+    var listed_index: usize = 0;
+    var omitted_index: usize = 0;
+    var n: usize = 0;
+    for (groups) |group| {
+        for (group.schemas) |schema| {
+            if (flags[n]) {
+                indexes[listed_index] = n;
+                listed_index += 1;
+            } else {
+                omitted[omitted_index] = .{
+                    .name = schema.name,
+                    .bytes = schema.schema_json.len,
+                    .oversized = schema.schema_json.len > budget,
+                };
+                omitted_index += 1;
+            }
+            n += 1;
+        }
+    }
+    return .{ .indexes = indexes, .omitted = omitted, .triggered = true };
 }
 
 /// One-group convenience wrapper for the whole face.
@@ -164,9 +233,10 @@ test "catalog triggers selection one byte over the budget" {
         .{ .name = "vision", .schema_json = c.buf },
     };
     const total = schemas[0].schema_json.len + schemas[1].schema_json.len + schemas[2].schema_json.len;
-    // One byte over: the byte gate opens. The notice floor then leaves no
-    // room for entries, so tier zero stays and the rest go omitted.
-    const selection = try select(arena, &schemas, total + 1);
+    // One byte under the total: the byte gate opens. The notice floor
+    // then leaves no room for entries, so tier zero stays and the rest
+    // go omitted.
+    const selection = try select(arena, &schemas, total - 1);
     try std.testing.expectEqual(true, selection.triggered);
     try std.testing.expectEqual(@as(usize, 1), selection.indexes.len);
     try std.testing.expectEqualStrings("glob_files", schemas[selection.indexes[0]].name);
@@ -184,7 +254,7 @@ test "catalog exempts tier zero and cascades later omissions" {
     // skip past the cascade.
     const a = try makeSchema(arena, "read_file", 40);
     const b = try makeSchema(arena, "write_file", 30);
-    const c = try makeSchema(arena, "web_fetch", 200);
+    const c = try makeSchema(arena, "web_fetch", 600);
     const d = try makeSchema(arena, "vision", 10);
     const e = try makeSchema(arena, "run_command", 40);
     const schemas = [_]bindings.ToolSchema{

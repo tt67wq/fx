@@ -14,6 +14,7 @@ pub const Name = enum {
     project_instruction_file_bytes,
     project_instructions_total_bytes,
     image_adapter_output_bytes,
+    codemode_catalog_bytes,
 
     pub fn defaultBytes(self: Name) usize {
         return switch (self) {
@@ -28,6 +29,7 @@ pub const Name = enum {
             .project_instruction_file_bytes => 64 * 1024,
             .project_instructions_total_bytes => 128 * 1024,
             .image_adapter_output_bytes => 20 * 1024,
+            .codemode_catalog_bytes => 16 * 1024,
         };
     }
 
@@ -98,6 +100,7 @@ pub const Values = struct {
     project_instruction_file_bytes: Resolved = defaultResolved(.project_instruction_file_bytes),
     project_instructions_total_bytes: Resolved = defaultResolved(.project_instructions_total_bytes),
     image_adapter_output_bytes: Resolved = defaultResolved(.image_adapter_output_bytes),
+    codemode_catalog_bytes: Resolved = defaultResolved(.codemode_catalog_bytes),
 
     pub fn get(self: Values, name: Name) Resolved {
         return switch (name) {
@@ -138,6 +141,7 @@ pub const Overrides = struct {
     project_instruction_file_bytes: ?Resolved = null,
     project_instructions_total_bytes: ?Resolved = null,
     image_adapter_output_bytes: ?Resolved = null,
+    codemode_catalog_bytes: ?Resolved = null,
 
     pub fn get(self: Overrides, name: Name) ?Resolved {
         return switch (name) {

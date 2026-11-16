@@ -2,6 +2,7 @@ const std = @import("std");
 const io_mod = @import("../../core/shared/io.zig");
 const bindings = @import("bindings.zig");
 const discovery = @import("discovery.zig");
+const catalog = @import("catalog.zig");
 
 // Zig 0.17 removed @cImport; build.zig translates the vendored public header
 // into this module.
@@ -329,6 +330,17 @@ pub const Host = struct {
         }
         if (c.JS_SetPropertyStr(ctx, global, "console", console_obj) < 0) return error.BindingFailed;
 
+        // searchTools and describeTool are unconditional globals: the
+        // discovery layer covers the whole injected face, listed or not,
+        // and both are read-only projections of tool_schemas. They never
+        // touch the whitelist or the tools object.
+        const search_fn = c.JS_NewCFunction(ctx, searchToolsCallback, "searchTools", 1);
+        if (c.JS_IsException(search_fn)) return error.BindingFailed;
+        if (c.JS_SetPropertyStr(ctx, global, "searchTools", search_fn) < 0) return error.BindingFailed;
+        const describe_fn = c.JS_NewCFunction(ctx, describeToolCallback, "describeTool", 1);
+        if (c.JS_IsException(describe_fn)) return error.BindingFailed;
+        if (c.JS_SetPropertyStr(ctx, global, "describeTool", describe_fn) < 0) return error.BindingFailed;
+
         const tools_obj = c.JS_NewObject(ctx);
         if (c.JS_IsException(tools_obj)) return error.BindingFailed;
         const list_fn = c.JS_NewCFunction(ctx, toolsListCallback, "list", 0);
@@ -567,73 +579,308 @@ fn toolsListCallback(ctx: ?*c.JSContext, _: c.JSValue, _: c_int, _: [*c]c.JSValu
     const context = ctx orelse return js_exception;
     const host: *Host = @ptrCast(@alignCast(c.JS_GetContextOpaque(context) orelse return js_exception));
     const schemas = host.tool_schemas orelse &.{};
+
+    // The budget path is a pure listing filter: it decides which schemas
+    // this array presents. The whitelist, the named functions, and the
+    // tools.call admission are untouched, so a dropped tool stays callable
+    // and searchable (see the read-only tests in bindings_tests.zig).
+    var selection: ?catalog.Selection = null;
+    var selection_arena_state = std.heap.ArenaAllocator.init(host.allocator);
+    defer selection_arena_state.deinit();
+    if (host.catalog_budget) |budget| {
+        selection = catalog.select(selection_arena_state.allocator(), schemas, budget) catch |err| switch (err) {
+            error.OutOfMemory => return c.JS_ThrowOutOfMemory(context),
+        };
+    }
+
     const array = c.JS_NewArray(context);
     if (c.JS_IsException(array)) return array;
-    for (schemas, 0..) |tool_schema, index| {
-        const parsed = c.JS_ParseJSON(context, tool_schema.schema_json.ptr, tool_schema.schema_json.len, "<tools.list schema>");
-        if (c.JS_IsException(parsed)) {
-            c.JS_FreeValue(context, array);
-            return parsed;
-        }
-        const description = c.JS_GetPropertyStr(context, parsed, "description");
-        const input_schema = c.JS_GetPropertyStr(context, parsed, "inputSchema");
-        // The parsed wrapper is dropped after its two properties move out.
-        // A moved-out property is a plain string/object value, not a
-        // reference into the wrapper, so freeing it here is safe.
-        c.JS_FreeValue(context, parsed);
-        if (c.JS_IsException(description) or c.JS_IsException(input_schema)) {
-            c.JS_FreeValue(context, description);
-            c.JS_FreeValue(context, input_schema);
-            c.JS_FreeValue(context, array);
-            return js_exception;
-        }
 
+    if (selection) |sel| {
+        for (sel.indexes, 0..) |schema_index, position| {
+            if (appendListEntry(context, array, position, schemas[schema_index]) != 0) {
+                c.JS_FreeValue(context, array);
+                return js_exception;
+            }
+        }
+    } else {
+        for (schemas, 0..) |tool_schema, index| {
+            if (appendListEntry(context, array, index, tool_schema) != 0) {
+                c.JS_FreeValue(context, array);
+                return js_exception;
+            }
+        }
+    }
+
+    // omitted and hint are own properties on the array, invisible to
+    // for..of, map, indexing, and JSON round trips, so scripts written
+    // against the whole-face shape keep working unchanged.
+    if (selection) |sel| {
+        if (sel.triggered) {
+            if (appendCatalogNotice(context, array, sel) != 0) {
+                c.JS_FreeValue(context, array);
+                return js_exception;
+            }
+        }
+    }
+    return array;
+}
+
+/// Parses one schema, extracts description and inputSchema, and returns
+/// the {name, description, parameters} entry, or an exception value.
+fn buildListEntry(context: *c.JSContext, tool_schema: bindings.ToolSchema) c.JSValue {
+    const parsed = c.JS_ParseJSON(context, tool_schema.schema_json.ptr, tool_schema.schema_json.len, "<codemode schema>");
+    if (c.JS_IsException(parsed)) return parsed;
+    const description = c.JS_GetPropertyStr(context, parsed, "description");
+    const input_schema = c.JS_GetPropertyStr(context, parsed, "inputSchema");
+    // The parsed wrapper is dropped after its two properties move out.
+    // A moved-out property is a plain string/object value, not a
+    // reference into the wrapper, so freeing it here is safe.
+    c.JS_FreeValue(context, parsed);
+    if (c.JS_IsException(description) or c.JS_IsException(input_schema)) {
+        c.JS_FreeValue(context, description);
+        c.JS_FreeValue(context, input_schema);
+        return js_exception;
+    }
+
+    const entry = c.JS_NewObject(context);
+    if (c.JS_IsException(entry)) {
+        c.JS_FreeValue(context, description);
+        c.JS_FreeValue(context, input_schema);
+        return entry;
+    }
+    const name = c.JS_NewStringLen(context, tool_schema.name.ptr, tool_schema.name.len);
+    if (c.JS_IsException(name)) {
+        c.JS_FreeValue(context, entry);
+        c.JS_FreeValue(context, description);
+        c.JS_FreeValue(context, input_schema);
+        return name;
+    }
+    // From here each JS_SetPropertyStr failure frees every value not yet
+    // stored, matching the cleanup pattern this callback had before the
+    // catalog budget split the loop into helpers.
+    if (c.JS_SetPropertyStr(context, entry, "name", name) < 0) {
+        c.JS_FreeValue(context, entry);
+        c.JS_FreeValue(context, description);
+        c.JS_FreeValue(context, input_schema);
+        return js_exception;
+    }
+    if (c.JS_SetPropertyStr(context, entry, "description", description) < 0) {
+        c.JS_FreeValue(context, entry);
+        c.JS_FreeValue(context, input_schema);
+        return js_exception;
+    }
+    if (c.JS_SetPropertyStr(context, entry, "parameters", input_schema) < 0) {
+        c.JS_FreeValue(context, entry);
+        return js_exception;
+    }
+    return entry;
+}
+
+/// Stores one entry at position in the array. Returns 0 on success; on
+/// failure every value it still owns is freed and -1 is returned, with
+/// the array left for the caller to free.
+fn appendListEntry(context: *c.JSContext, array: c.JSValue, position: usize, tool_schema: bindings.ToolSchema) c_int {
+    const entry = buildListEntry(context, tool_schema);
+    if (c.JS_IsException(entry)) return -1;
+    // A failed array store leaves ownership of entry with the caller,
+    // so it is freed here like every value the writes rejected.
+    if (c.JS_SetPropertyUint32(context, array, @intCast(position), entry) < 0) {
+        c.JS_FreeValue(context, entry);
+        return -1;
+    }
+    return 0;
+}
+
+/// Attaches the omitted list and the discovery hint to a triggered
+/// catalog array. Returns 0 on success; on failure every value it still
+/// owns is freed and -1 is returned.
+fn appendCatalogNotice(context: *c.JSContext, array: c.JSValue, selection: catalog.Selection) c_int {
+    const omitted = c.JS_NewArray(context);
+    if (c.JS_IsException(omitted)) return -1;
+    for (selection.omitted, 0..) |omitted_entry, index| {
+        const item = c.JS_NewObject(context);
+        if (c.JS_IsException(item)) {
+            c.JS_FreeValue(context, omitted);
+            return -1;
+        }
+        const name = c.JS_NewStringLen(context, omitted_entry.name.ptr, omitted_entry.name.len);
+        if (c.JS_IsException(name)) {
+            c.JS_FreeValue(context, item);
+            c.JS_FreeValue(context, omitted);
+            return -1;
+        }
+        if (c.JS_SetPropertyStr(context, item, "name", name) < 0) {
+            c.JS_FreeValue(context, item);
+            c.JS_FreeValue(context, omitted);
+            return -1;
+        }
+        const bytes = c.JS_NewInt64(context, @intCast(omitted_entry.bytes));
+        if (c.JS_SetPropertyStr(context, item, "bytes", bytes) < 0) {
+            c.JS_FreeValue(context, item);
+            c.JS_FreeValue(context, omitted);
+            return -1;
+        }
+        const oversized = c.JS_NewBool(context, omitted_entry.oversized);
+        if (c.JS_SetPropertyStr(context, item, "oversized", oversized) < 0) {
+            c.JS_FreeValue(context, item);
+            c.JS_FreeValue(context, omitted);
+            return -1;
+        }
+        if (c.JS_SetPropertyUint32(context, omitted, @intCast(index), item) < 0) {
+            c.JS_FreeValue(context, item);
+            c.JS_FreeValue(context, omitted);
+            return -1;
+        }
+    }
+    if (c.JS_SetPropertyStr(context, array, "omitted", omitted) < 0) {
+        c.JS_FreeValue(context, omitted);
+        return -1;
+    }
+    const hint = c.JS_NewStringLen(context, discovery.catalog_hint.ptr, discovery.catalog_hint.len);
+    if (c.JS_IsException(hint)) return -1;
+    if (c.JS_SetPropertyStr(context, array, "hint", hint) < 0) {
+        return -1;
+    }
+    return 0;
+}
+
+fn searchToolsCallback(ctx: ?*c.JSContext, _: c.JSValue, argc: c_int, argv: [*c]c.JSValue) callconv(.c) c.JSValue {
+    const context = ctx orelse return js_exception;
+    const host: *Host = @ptrCast(@alignCast(c.JS_GetContextOpaque(context) orelse return js_exception));
+    if (argc < 1 or !c.JS_IsString(argv[0])) {
+        return c.JS_ThrowTypeError(context, "searchTools requires a query string");
+    }
+    var limit: usize = discovery.default_search_limit;
+    if (argc >= 2 and c.JS_IsObject(argv[1])) {
+        const limit_value = c.JS_GetPropertyStr(context, argv[1], "limit");
+        if (!c.JS_IsUndefined(limit_value)) {
+            if (!c.JS_IsNumber(limit_value)) {
+                c.JS_FreeValue(context, limit_value);
+                return c.JS_ThrowTypeError(context, "searchTools limit must be a positive integer");
+            }
+            var as_float: f64 = 0;
+            _ = c.JS_ToFloat64(context, &as_float, limit_value);
+            if (as_float != @trunc(as_float) or as_float < 1.0 or as_float > 65536.0) {
+                c.JS_FreeValue(context, limit_value);
+                return c.JS_ThrowTypeError(context, "searchTools limit must be a positive integer");
+            }
+            limit = @intFromFloat(as_float);
+        }
+        c.JS_FreeValue(context, limit_value);
+    }
+    var query_len: usize = 0;
+    const query_ptr = c.JS_ToCStringLen(context, &query_len, argv[0]) orelse return js_exception;
+    defer c.JS_FreeCString(context, query_ptr);
+
+    const index = host.discovery_index orelse {
+        // No schemas injected: no tool can match any query. The empty
+        // result keeps the global callable instead of throwing on a
+        // surface that simply has nothing to search.
+        return c.JS_NewArray(context);
+    };
+    const hits = index.search(host.allocator, query_ptr[0..query_len], limit) catch |err| switch (err) {
+        error.OutOfMemory => return c.JS_ThrowOutOfMemory(context),
+    };
+    defer host.allocator.free(hits);
+
+    const array = c.JS_NewArray(context);
+    if (c.JS_IsException(array)) return array;
+    for (hits, 0..) |hit, position| {
         const entry = c.JS_NewObject(context);
         if (c.JS_IsException(entry)) {
-            c.JS_FreeValue(context, description);
-            c.JS_FreeValue(context, input_schema);
             c.JS_FreeValue(context, array);
             return entry;
         }
-        const name = c.JS_NewStringLen(context, tool_schema.name.ptr, tool_schema.name.len);
+        const name = c.JS_NewStringLen(context, hit.name.ptr, hit.name.len);
         if (c.JS_IsException(name)) {
             c.JS_FreeValue(context, entry);
-            c.JS_FreeValue(context, description);
-            c.JS_FreeValue(context, input_schema);
             c.JS_FreeValue(context, array);
             return name;
         }
-        // From here each JS_SetPropertyStr failure frees the value it was
-        // handed (the property write does not take ownership on failure),
-        // plus every value not yet stored. This closes the leak the old
-        // name-only loop had on its JS_SetPropertyUint32 path.
         if (c.JS_SetPropertyStr(context, entry, "name", name) < 0) {
             c.JS_FreeValue(context, entry);
-            c.JS_FreeValue(context, description);
-            c.JS_FreeValue(context, input_schema);
             c.JS_FreeValue(context, array);
             return js_exception;
+        }
+        const description = c.JS_NewStringLen(context, hit.description.ptr, hit.description.len);
+        if (c.JS_IsException(description)) {
+            c.JS_FreeValue(context, entry);
+            c.JS_FreeValue(context, array);
+            return description;
         }
         if (c.JS_SetPropertyStr(context, entry, "description", description) < 0) {
             c.JS_FreeValue(context, entry);
-            c.JS_FreeValue(context, input_schema);
             c.JS_FreeValue(context, array);
             return js_exception;
         }
-        if (c.JS_SetPropertyStr(context, entry, "parameters", input_schema) < 0) {
-            c.JS_FreeValue(context, entry);
-            c.JS_FreeValue(context, array);
-            return js_exception;
-        }
-        // A failed array store leaves ownership of entry with the caller,
-        // so it is freed here like every value the writes rejected.
-        if (c.JS_SetPropertyUint32(context, array, @intCast(index), entry) < 0) {
+        if (c.JS_SetPropertyUint32(context, array, @intCast(position), entry) < 0) {
             c.JS_FreeValue(context, entry);
             c.JS_FreeValue(context, array);
             return js_exception;
         }
     }
     return array;
+}
+
+fn describeToolCallback(ctx: ?*c.JSContext, _: c.JSValue, argc: c_int, argv: [*c]c.JSValue) callconv(.c) c.JSValue {
+    const context = ctx orelse return js_exception;
+    const host: *Host = @ptrCast(@alignCast(c.JS_GetContextOpaque(context) orelse return js_exception));
+    if (argc < 1 or !c.JS_IsString(argv[0])) {
+        return c.JS_ThrowTypeError(context, "describeTool requires a tool name string");
+    }
+    var name_len: usize = 0;
+    const name_ptr = c.JS_ToCStringLen(context, &name_len, argv[0]) orelse return js_exception;
+    defer c.JS_FreeCString(context, name_ptr);
+    const name = name_ptr[0..name_len];
+
+    const schemas = host.tool_schemas orelse &.{};
+    var found: ?bindings.ToolSchema = null;
+    for (schemas) |tool_schema| {
+        if (std.mem.eql(u8, tool_schema.name, name)) {
+            found = tool_schema;
+            break;
+        }
+    }
+    // The lookup covers the whole injected face, not the budgeted
+    // listing, so a tool the catalog dropped still describes fully.
+    const tool_schema = found orelse return throwUnknownTool(context, host, name);
+    return buildListEntry(context, tool_schema);
+}
+
+/// Throws the unknown-name TypeError with up to five did-you-mean
+/// candidates and a searchTools pointer. Degrades to a plain message
+/// when the suggestion build cannot allocate.
+fn throwUnknownTool(context: *c.JSContext, host: *Host, name: []const u8) c.JSValue {
+    var message = std.ArrayList(u8).empty;
+    defer message.deinit(host.allocator);
+    message.appendSlice(host.allocator, "unknown codemode tool: ") catch {};
+    message.appendSlice(host.allocator, name) catch {};
+    var candidates: []const []const u8 = &.{};
+    if (host.discovery_index) |index| {
+        candidates = index.suggest(host.allocator, name, discovery.max_describe_candidates) catch &.{};
+    }
+    defer if (candidates.len > 0) host.allocator.free(candidates);
+    var listed_any = false;
+    for (candidates) |candidate| {
+        if (!listed_any) {
+            message.appendSlice(host.allocator, ". did you mean: ") catch break;
+            listed_any = true;
+        } else {
+            message.appendSlice(host.allocator, ", ") catch break;
+        }
+        message.appendSlice(host.allocator, candidate) catch break;
+    }
+    if (listed_any) message.appendSlice(host.allocator, "?") catch {};
+    message.appendSlice(host.allocator, ". use searchTools(\"") catch {};
+    message.appendSlice(host.allocator, name) catch {};
+    message.appendSlice(host.allocator, "\") to discover tools") catch {};
+    const sentinel = host.allocator.allocSentinel(u8, message.items.len, 0) catch {
+        return c.JS_ThrowTypeError(context, "unknown codemode tool");
+    };
+    @memcpy(sentinel[0..message.items.len], message.items);
+    defer host.allocator.free(sentinel);
+    return c.JS_ThrowTypeError(context, "%s", sentinel.ptr);
 }
 
 fn toolsCallCallback(ctx: ?*c.JSContext, _: c.JSValue, argc: c_int, argv: [*c]c.JSValue) callconv(.c) c.JSValue {

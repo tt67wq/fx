@@ -11,6 +11,7 @@ const result_store = @import("../../core/session/result_store.zig");
 const session_child_store = @import("../../core/session/session_child_store.zig");
 const shared_testing = @import("../../core/shared/testing_allocator.zig");
 const text_utils = @import("../../core/shared/text_utils.zig");
+const context_limits = @import("../../core/config/context_limits.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -222,6 +223,22 @@ fn formatSuccessBody(
 /// carries the script call's execution frame, including the runtime context
 /// the nested admission path shares and the worker cancel flag the sandbox
 /// interrupt handler polls.
+/// Gate wiring for the tools.list() catalog budget: the resolved
+/// codemode_catalog_bytes limit when the derived surface is live and the
+/// limit is not off, null otherwise.
+fn catalogBudgetFor(derived_surface: bool, limits: context_limits.Values) ?usize {
+    if (!derived_surface) return null;
+    return limits.get(.codemode_catalog_bytes).value.normalBytes();
+}
+
+test "catalog budget gate opens only on the derived surface with a non-off limit" {
+    var limits = context_limits.Values{};
+    try std.testing.expectEqual(@as(?usize, 16 * 1024), catalogBudgetFor(true, limits));
+    try std.testing.expectEqual(@as(?usize, null), catalogBudgetFor(false, limits));
+    limits.set(.codemode_catalog_bytes, .{ .value = .off, .source = .command_line });
+    try std.testing.expectEqual(@as(?usize, null), catalogBudgetFor(true, limits));
+}
+
 pub fn call(ctx: tool_dispatch.DispatchContext, erased: tool_dispatch.ToolInput) tool_dispatch.DispatchError!tool_dispatch.ToolResult {
     const state = ctx.codemode_host orelse return .{
         .failure = try ctx.allocator.dupe(u8, unavailable_message),
@@ -257,6 +274,12 @@ pub fn call(ctx: tool_dispatch.DispatchContext, erased: tool_dispatch.ToolInput)
     sandbox.host.setToolBackend(bridge.backend(state));
     sandbox.host.setToolFace(face);
     sandbox.host.setToolSchemas(tool_schemas);
+
+    // Gate one (structure): only the derived surface can enter the
+    // budget path, so the shipped four-tool face stays byte-identical.
+    // Gate three (config): an off limit disables selection. Gate two
+    // (total bytes vs budget) is decided per call inside catalog.select.
+    sandbox.host.catalog_budget = catalogBudgetFor(state.derived_surface, ctx.context_limits);
 
     sandbox.start() catch |err| {
         return .{ .failure = try ctx.allocator.print("codemode script failed: {s}", .{@errorName(err)}) };

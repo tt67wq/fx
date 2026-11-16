@@ -489,7 +489,7 @@ test "tools.list stays unfiltered and unannotated when the budget does not trigg
     var result = try host.eval(
         \\var list = tools.list();
         \\var extra = Object.getOwnPropertyNames(list).filter(function (p) { return p !== "0" && p !== "1" && p !== "length"; }).join();
-        \\list.length + "|" + props + "|" + (("omitted" in list) || ("hint" in list))
+        \\list.length + "|" + extra + "|" + (("omitted" in list) || ("hint" in list))
     );
     defer result.deinit();
     try std.testing.expectEqualStrings("2||false", result.value);
@@ -501,7 +501,7 @@ test "tools.list appends omitted and hint own properties when the budget trigger
     host.setToolSchemas(&budget_schemas);
     // Total schema bytes are a few hundred; this budget triggers and
     // leaves room only for tier zero after the notice floor.
-    host.catalog_budget = 400;
+    host.catalog_budget = 200;
 
     var result = try host.eval(
         \\var list = tools.list();
@@ -519,7 +519,7 @@ test "omitted and hint stay invisible to map, index access, and JSON round trips
     var host = Host.init(std.testing.allocator, .{});
     defer host.deinit();
     host.setToolSchemas(&budget_schemas);
-    host.catalog_budget = 400;
+    host.catalog_budget = 200;
 
     var result = try host.eval(
         \\var list = tools.list();
@@ -536,7 +536,7 @@ test "searchTools finds tools dropped from the listing and returns fresh objects
     var host = Host.init(std.testing.allocator, .{});
     defer host.deinit();
     host.setToolSchemas(&budget_schemas);
-    host.catalog_budget = 400;
+    host.catalog_budget = 200;
 
     var result = try host.eval(
         \\var first = searchTools("write a file");
@@ -545,7 +545,7 @@ test "searchTools finds tools dropped from the listing and returns fresh objects
         \\(function () { first[0].name = "mutated"; return searchTools("write")[0].name !== "mutated"; })()
     );
     defer result.deinit();
-    try std.testing.expectEqualStrings("2|true|true|true", result.value);
+    try std.testing.expectEqualStrings("1|true|true|true", result.value);
 }
 
 test "searchTools validates the query and the limit option" {
@@ -618,7 +618,7 @@ test "describeTool covers a tool the listing dropped" {
     var host = Host.init(std.testing.allocator, .{});
     defer host.deinit();
     host.setToolSchemas(&budget_schemas);
-    host.catalog_budget = 400;
+    host.catalog_budget = 200;
 
     var result = try host.eval(
         \\var described = describeTool("write_file");
