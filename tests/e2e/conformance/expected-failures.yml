@@ -2,11 +2,12 @@
 # @modelcontextprotocol/conformance 0.2.0-alpha.10
 # Source revision a9896553900a2ef61787b57adfcbbe936a8ab1f9
 #
-# SEP-2322 client request-state checks: real defect (cross-platform reproduced,
-# see issues/ISSUE-18.md). Baseline entries self-expire: when a check starts
-# passing, the runner exits nonzero and flags the stale entry, so remove these
-# three when ISSUE-18 lands.
-client:
-  - 'sep-2322-client-request-state:sep-2322-client-request-state-echoed'
-  - 'sep-2322-client-request-state:sep-2322-client-jsonrpc-id-different'
-  - 'sep-2322-client-request-state:sep-2322-client-no-state-omitted'
+# Known failures of fx against the official suite, by check id. The runner
+# exits nonzero when a check not listed here fails, or when a listed check
+# starts passing, so every entry needs a reason and an issue to point at and
+# removal belongs in the change that fixes it.
+#
+# No open entries: the three SEP-2322 client request-state checks of ISSUE-18
+# pass since headless `fx ask` declares the elicitation capability it can
+# answer with, so a multi round-trip request reaches its retry round.
+client: []

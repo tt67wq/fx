@@ -1979,7 +1979,11 @@ exec "$FX_MCP_FIXTURE_RUNTIME" "$FX_MCP_FIXTURE_PATH"`,
         for (const entry of wire) {
           const meta = entry.message.params?._meta as Record<string, unknown>;
           expect(meta["io.modelcontextprotocol/protocolVersion"]).toBe("2026-07-28");
-          expect(meta["io.modelcontextprotocol/clientCapabilities"]).toEqual({});
+          // Headless `fx ask` declares the elicitation forms it answers by
+          // cancelling, so an input_required round continues (ISSUE-18).
+          expect(meta["io.modelcontextprotocol/clientCapabilities"]).toEqual({
+            elicitation: { form: {}, url: {} },
+          });
         }
       } else {
         expect(new Set(wire.map((entry) => entry.pid)).size).toBe(1);
@@ -2188,7 +2192,7 @@ exec "$FX_MCP_FIXTURE_RUNTIME" "$FX_MCP_FIXTURE_PATH"`,
     await expectFixtureProcessesExited(wire);
   }, 30_000);
 
-  test("noninteractive fx ask returns typed input-required without fabricating a continuation", async () => {
+  test("noninteractive fx ask cancels an input_required round without inventing an answer", async () => {
     const root = createRoot("ask-mrtr", MODERN_FIXTURE, {
       mode: "mrtr_input_required",
     });
@@ -2203,21 +2207,26 @@ exec "$FX_MCP_FIXTURE_RUNTIME" "$FX_MCP_FIXTURE_PATH"`,
       },
     );
 
-    // With no way to ask, the call ends and the model hears why; nothing is
-    // made up and sent back to the server.
+    // A run with no screen still completes the round trip: it answers the
+    // server's question with cancel, which invents nothing, and the model hears
+    // the server's own answer to a cancelled question (ISSUE-18).
     expect(result.code).toBe(0);
     expect(JSON.parse(result.stdout).output).toContain("MRTR Ask boundary complete.");
     expect(activeGateway.requests).toHaveLength(3);
-    expect(toolResultText(activeGateway.requests[2]?.body ?? "", "call_mcp")).toBe(
-      "MCP server 'fixture' ended the call: the server asked for input fx can't give.",
+    expect(toolResultText(activeGateway.requests[2]?.body ?? "", "call_mcp")).toContain(
+      "continued after elicitation",
     );
-    expect(activeGateway.requests[1]?.body).not.toContain("inputResponses");
     const wire = readWire(root.wireLogPath);
     const calls = wire.filter(
       (entry) => entry.message.method === "tools/call",
     );
-    expect(calls).toHaveLength(1);
+    // The retry is its own request: a bare cancel under the server's own key,
+    // the state echoed back, and a different id than the round it answers.
+    expect(calls).toHaveLength(2);
     expect(calls[0]?.message.params?.inputResponses).toBeUndefined();
+    expect(calls[1]?.message.params?.inputResponses).toEqual({ confirm: { action: "cancel" } });
+    expect(calls[1]?.message.params?.requestState).toBe("opaque");
+    expect(calls[1]?.message.id).not.toBe(calls[0]?.message.id);
     await expectFixtureProcessesExited(wire);
   }, 30_000);
 
@@ -3895,13 +3904,16 @@ describe("MCP stdio servers", () => {
     await expectFixtureProcessesExited(wire);
   }, 40_000);
 
-  test("fx ask with no way to ask tells the model the server wanted input", async () => {
+  test("fx ask with no screen cancels the question and reports the server's answer", async () => {
     const root = createRoot("v2-no-asker", MODERN_FIXTURE, { mode: "mrtr_input_required" });
     gateway = startToolGateway("V2_INPUT_DECLINED_SEEN");
     const result = await ask(root, "Call the MRTR MCP fixture.");
     expect(result.code).toBe(0);
     expect(result.stdout).toContain("V2_INPUT_DECLINED_SEEN");
-    expect(modelSaw()).toContain("the server asked for input fx can't give");
+    // The call survives its question round: the model hears the server's answer
+    // to a cancelled elicitation, and never a choice no user made.
+    expect(modelSaw()).toContain("continued after elicitation");
+    expect(modelSaw()).not.toContain("the server asked for input fx can't give");
   }, 25_000);
 
   test("a search for a server that isn't configured says so", async () => {

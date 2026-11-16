@@ -1848,7 +1848,12 @@ fn runPromptInternal(alloc: Allocator, prompt: []const u8, permission_override: 
 
     try ctx.checkCancellation();
     if (options.deps.load_mcp_host) |load_host| {
-        ctx.mcp_host = try load_host(alloc, startup.workspace_root, ctx.toolRegistry(), .{ .questions = ctx.mcp_elicitation_capabilities });
+        // What the host can answer is a protocol capability, not a question UI:
+        // a run without a TTY still answers a server's input request, by
+        // cancelling each question it has no screen for, so a multi round-trip
+        // request reaches its retry round instead of ending unsupported. The
+        // screen itself stays gated on `mcp_elicitation_capabilities` below.
+        ctx.mcp_host = try load_host(alloc, startup.workspace_root, ctx.toolRegistry(), .{ .questions = .{ .form = true, .url = true } });
         if (ctx.mcp_host) |h| try reportUnapprovedMcpServers(&ctx, h);
     }
     try ctx.checkCancellation();

@@ -205,7 +205,12 @@ function assertModernWire(
     expect(meta?.["io.modelcontextprotocol/protocolVersion"]).toBe(
       MODERN_MCP_VERSION,
     );
-    expect(meta?.["io.modelcontextprotocol/clientCapabilities"]).toEqual({});
+    // A headless run declares the elicitation forms it can answer: it cancels a
+    // question it has no screen for, so a multi round-trip request still
+    // reaches its retry round (ISSUE-18).
+    expect(meta?.["io.modelcontextprotocol/clientCapabilities"]).toEqual({
+      elicitation: { form: {}, url: {} },
+    });
     expect(entry.headers.accept).toBe(
       "application/json, text/event-stream",
     );
