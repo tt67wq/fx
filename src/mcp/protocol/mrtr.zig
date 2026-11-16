@@ -195,3 +195,25 @@ test "a retry answers each key as written and echoes the state, or leaves both o
     try bare.end();
     try testing.expectEqualStrings("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{}}", out.written());
 }
+
+test "a retry with no state to echo writes no requestState key at all" {
+    // ISSUE-18, sep-2322-client-no-state-omitted: the round carried
+    // inputRequests and no requestState, so the retry answers and leaves the
+    // field out entirely rather than writing an empty one.
+    var round: Round = .{};
+    try parse("{\"inputRequests\":{\"confirm\":{\"method\":\"elicitation/create\",\"params\":{\"message\":\"m\"}}}}", &round);
+    try testing.expect(round.state == null);
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    var w: wire.Writer = try .request(&out.writer, 5, "tools/call", .{});
+    try writeRetry(&w, .{ .requests = round.slice(), .values = &.{"{\"action\":\"cancel\"}"}, .state = round.state });
+    try w.end();
+    // Compared as bytes, so a retry that writes an empty requestState, or moves
+    // the answers under `_meta`, fails here instead of at the conformance server.
+    try testing.expectEqualStrings(
+        "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"tools/call\",\"params\":{\"inputResponses\":{\"confirm\":{\"action\":\"cancel\"}}}}",
+        out.written(),
+    );
+    try testing.expect(std.mem.find(u8, out.written(), "requestState") == null);
+    try testing.expect(std.mem.find(u8, out.written(), "_meta") == null);
+}

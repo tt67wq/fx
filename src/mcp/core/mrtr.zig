@@ -324,3 +324,25 @@ test "an input_required with neither field, and steps after the end, change noth
     try testing.expect(out.ignored);
     try testing.expectEqual(@as(usize, 0), out.effects().len);
 }
+
+test "a supported input_required round asks the host and retries with that round's state" {
+    // ISSUE-18: the retry round exists only when the round's input requests
+    // match a declared capability, so a headless run that declares none has no
+    // retry at all. Both halves are pinned: the fix adds the declaration, and
+    // this rule stays exactly as it was.
+    var c: Chain = .init(.{});
+    var out = steps(&c, &.{ .start, .{ .answered = .{ .input_required = .{ .requests = 1, .state = true, .supported = true } } } });
+    try testing.expectEqualSlices(Effect, &.{.ask_host}, out.effects());
+    try testing.expectEqual(Phase.asking, c.phase);
+    out = steps(&c, &.{.provided});
+    // Round 2 names round 1 as the state it echoes, so the host sends the
+    // bytes that round brought and answers the one request it was asked.
+    try testing.expectEqualSlices(Effect, &.{.{ .send = .{ .round = 2, .state = 1, .responses = 1 } }}, out.effects());
+    try testing.expectEqual(@as(u8, 1), c.sent_state);
+    try testing.expectEqual(@as(u8, 1), c.responded);
+    // Input the client did not declare still ends the chain without asking the
+    // host: declaring a capability did not soften that rule.
+    var undeclared: Chain = .init(.{});
+    out = steps(&undeclared, &.{ .start, .{ .answered = .{ .input_required = .{ .requests = 1, .state = true, .supported = false } } } });
+    try testing.expectEqualSlices(Effect, &.{.{ .deliver = .unsupported_input }}, out.effects());
+}

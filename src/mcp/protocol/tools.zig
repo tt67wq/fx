@@ -428,3 +428,43 @@ test "reads tool call answers" {
     try testing.expect(failed.result.is_error);
     try testing.expectEqualStrings("[1,2]", failed.result.structured.?);
 }
+
+test "an input_required retry is its own request: new id, fields in params, meta only when set" {
+    // ISSUE-18: the round that answers input_required continues the chain as a
+    // new JSON-RPC request, so its id differs from the round it answers, and
+    // the retry fields ride in `params`, where a 2026 server reads them.
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    try writeCall(&out.writer, 7, .{}, "ask", "{}", .{});
+    try out.writer.writeByte('\n');
+    try writeCall(&out.writer, 8, .{}, "ask", "{}", .{
+        .requests = &.{.{ .key = "\"confirm\"", .kind = .elicitation, .raw = "{}", .params = null }},
+        .values = &.{"{\"action\":\"cancel\"}"},
+        .state = "\"st\\u00e9-\\\"x\"",
+    });
+    var parts: [2][]const u8 = undefined;
+    var n: usize = 0;
+    var lines = std.mem.splitScalar(u8, out.written(), '\n');
+    while (lines.next()) |line| : (n += 1) parts[n] = line;
+    try testing.expectEqual(@as(usize, 2), n);
+    try testing.expectEqualStrings(
+        "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/call\",\"params\":{\"name\":\"ask\",\"arguments\":{}}}",
+        parts[0],
+    );
+    // The state comes back as the bytes the server wrote, escape and all.
+    try testing.expectEqualStrings(
+        "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"tools/call\",\"params\":{\"name\":\"ask\",\"arguments\":{},\"inputResponses\":{\"confirm\":{\"action\":\"cancel\"}},\"requestState\":\"st\\u00e9-\\\"x\"}}",
+        parts[1],
+    );
+    // `_meta` is written only when the caller has a version and capabilities
+    // to declare, so the retry carries nothing the server did not ask for.
+    try testing.expect(std.mem.find(u8, out.written(), "_meta") == null);
+    var meta_out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer meta_out.deinit();
+    try writeCall(&meta_out.writer, 9, .{ .modern = .{
+        .protocol_version = "2026-07-28",
+        .client_capabilities = "{\"elicitation\":{\"form\":{}}}",
+        .client_info = null,
+    } }, "ask", "{}", .{});
+    try testing.expect(std.mem.find(u8, meta_out.written(), "\"_meta\":{") != null);
+}
