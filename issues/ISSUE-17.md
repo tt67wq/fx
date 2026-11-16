@@ -1,5 +1,7 @@
 # ISSUE-17 — fork main 三个 CI 失败为既有问题（非 ISSUE-14 引入）
 
+> **状态：已关闭（2026-11-16）**。失败1 经 PR #3（词形守卫）修复、失败3 经 PR #4（预算墙 + 护栏）修复、失败2 取证定案为真实缺陷转 issues/ISSUE-18.md 并以 baseline-with-link 挂账。两 PR 已合入 main（7cf52c067、a9f18ea4a）；main CI 应当全绿，最终验证见该 run。PR #2 rebase 后重跑 CI 即可清除三个既有失败。
+
 - **状态**: open
 - **发现时间**: 2026-11-13
 - **来源**: PR #2 CI 分诊（run 43364009093 @ 681cc5f8 对照旧 main run 43348575668 @ 13713b9b）
