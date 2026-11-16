@@ -31,3 +31,11 @@ Fix the adapter's SEP-2322 MRTR request-state bookkeeping so all three MUST chec
 ## Decision recorded (ISSUE-17 D3)
 
 baseline-with-link: expected-failures.yml carries the three checks with this issue as the reason link until the fix lands.
+
+## Resolution (closed)
+
+Fixed in merge 06300b549 (branch T-18-impl, merged 2026-11-16). Root cause (verified by wire capture): headless fx ask declared no elicitation capability in initialize, so the MRTR chain ended with unsupported_input on the first input_required answer and the retry round never reached the server. The wire layer was already correct.
+
+Fix (Option A): src/core/cli/cli_ask.zig declares elicitation form and url for headless runs; the question screen stays TTY-gated, so a run without a UI answers each question with exactly {action: cancel} and the multi round-trip request completes. src/mcp/ behavior unchanged (test-only additions).
+
+Evidence: sep-2322-client-request-state 5 passed 0 failed locally; full conformance suite 440 passed 0 failed; new e2e tests/e2e/mcp-mrtr.test.ts pinned red before the fix and green after (independently reproduced by the reviewer); baseline entries removed with the fix. Follow-ups: H5 mixed-round headless gap; fx.sh/docs MCP page needs one line (headless elicitation answers cancel); mcp-stdio updated assertions to be confirmed by CI.
