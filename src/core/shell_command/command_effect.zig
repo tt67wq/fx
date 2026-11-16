@@ -1307,7 +1307,6 @@ test "planner admits the reviewed direct command matrix" {
         "printf 'hello\\n'",
         "printf x",
         "printf '%%'",
-        "printf '%s' '--help'",
         "printf '%s%s' one two",
         "printf '$(touch x)'",
         "pwd",
@@ -1338,6 +1337,9 @@ test "planner admits the reviewed direct command matrix" {
         var admission = try expectDirect(command, .macos);
         admission.deinit(std.testing.allocator);
     }
+
+    // ISSUE-17 failure 1: rejected by the planPrintf word-shape guard.
+    try expectApproval("printf '%s' '--help'", false, .macos, .unsupported_argument);
 
     try expectApproval(
         "wc -c < input.txt",
@@ -1651,7 +1653,6 @@ test "planner implements the total portable printf grammar" {
         "printf 'hello\\n'",
         "printf '%%%%'",
         "printf '%s' ''",
-        "printf '%s' '-leading'",
         "printf '%s' '100%'",
         "printf '%s' '\\x41'",
         "printf '%s' 'caf\u{00e9}'",
@@ -1687,6 +1688,23 @@ test "planner implements the total portable printf grammar" {
     };
     for (rejected) |command| {
         try expectApproval(command, false, .macos, .unsupported_argument);
+    }
+}
+
+test "planner rejects dash-leading printf data words" {
+    // ISSUE-17 failure 1: the uutils printf on ubuntu-24.04 runners parses
+    // dash-leading data words as flags (--help, --version, unknown short
+    // options), so planPrintf rejects the whole class by word shape instead of
+    // enumerating option semantics (issues/ISSUE-17-plan-v2.md, R1 + R2c).
+    // The rejection reason is identical on every target OS.
+    const commands = [_][]const u8{
+        "printf '%s' '--help'",
+        "printf '%s' '--version'",
+        "printf '%s' '-x'",
+    };
+    for (commands) |command| {
+        try expectApproval(command, false, .macos, .unsupported_argument);
+        try expectApproval(command, false, .linux, .unsupported_argument);
     }
 }
 
@@ -1728,8 +1746,14 @@ test "planner generated printf grammar accepts only exact productions and data c
         for (data_classes) |data| {
             const command = try buildPrintfCommand(alloc, format, &.{data});
             defer alloc.free(command);
-            var admission = try expectDirect(command, .linux);
-            admission.deinit(alloc);
+            // ISSUE-17 failure 1: dash-leading data words leave the
+            // review-free channel once the planPrintf word-shape guard lands.
+            if (std.mem.eql(u8, data, "-leading")) {
+                try expectApproval(command, false, .linux, .unsupported_argument);
+            } else {
+                var admission = try expectDirect(command, .linux);
+                admission.deinit(alloc);
+            }
         }
 
         const missing = try buildPrintfCommand(alloc, format, &.{});
@@ -1748,8 +1772,12 @@ test "planner generated printf grammar accepts only exact productions and data c
         for (data_classes) |second| {
             const command = try buildPrintfCommand(alloc, "%s:%s", &.{ first, second });
             defer alloc.free(command);
-            var admission = try expectDirect(command, .macos);
-            admission.deinit(alloc);
+            if (std.mem.eql(u8, first, "-leading") or std.mem.eql(u8, second, "-leading")) {
+                try expectApproval(command, false, .macos, .unsupported_argument);
+            } else {
+                var admission = try expectDirect(command, .macos);
+                admission.deinit(alloc);
+            }
         }
     }
 
@@ -1777,13 +1805,13 @@ test "planner generated printf grammar accepts only exact productions and data c
 }
 
 test "planner preserves accepted printf argv exactly" {
-    var admission = try expectDirect("printf '%s%s' '-x' 'caf\u{00e9}'", .macos);
+    var admission = try expectDirect("printf '%s%s' 'a b' 'caf\u{00e9}'", .macos);
     defer admission.deinit(std.testing.allocator);
     const argv = admission.direct_read_only.stages[0].argv;
     try std.testing.expectEqual(@as(usize, 4), argv.len);
     try std.testing.expectEqualStrings("/usr/bin/printf", argv[0]);
     try std.testing.expectEqualStrings("%s%s", argv[1]);
-    try std.testing.expectEqualStrings("-x", argv[2]);
+    try std.testing.expectEqualStrings("a b", argv[2]);
     try std.testing.expectEqualStrings("caf\u{00e9}", argv[3]);
 }
 
@@ -1795,13 +1823,17 @@ test "planner native printf forms match shell-visible execution" {
         "printf x",
         "printf 'hello\\n'",
         "printf '%%'",
-        "printf '%s' '--help'",
         "printf '%s%s' one two",
         "printf '%s' 'caf\u{00e9}'",
     };
     for (commands) |command| {
         try expectNativePrintfEquivalent(command, builtin.target.os.tag);
     }
+
+    // ISSUE-17 failure 1: the uutils printf on ubuntu-24.04 runners consumes a
+    // dash-leading data word as a flag, so the planner rejects it instead of
+    // claiming shell-visible equivalence (issues/ISSUE-17-plan-v2.md).
+    try expectApproval("printf '%s' '--help'", false, builtin.target.os.tag, .unsupported_argument);
 }
 
 test "planner generated native printf matrix matches shell bytes status and stderr" {
@@ -1832,14 +1864,22 @@ test "planner generated native printf matrix matches shell bytes status and stde
         for (data_classes) |data| {
             const command = try buildPrintfCommand(alloc, format, &.{data});
             defer alloc.free(command);
-            try expectNativePrintfEquivalent(command, builtin.target.os.tag);
+            if (std.mem.eql(u8, data, "-leading")) {
+                try expectApproval(command, false, builtin.target.os.tag, .unsupported_argument);
+            } else {
+                try expectNativePrintfEquivalent(command, builtin.target.os.tag);
+            }
         }
     }
     for (data_classes) |first| {
         for (data_classes) |second| {
             const command = try buildPrintfCommand(alloc, "%s:%s", &.{ first, second });
             defer alloc.free(command);
-            try expectNativePrintfEquivalent(command, builtin.target.os.tag);
+            if (std.mem.eql(u8, first, "-leading") or std.mem.eql(u8, second, "-leading")) {
+                try expectApproval(command, false, builtin.target.os.tag, .unsupported_argument);
+            } else {
+                try expectNativePrintfEquivalent(command, builtin.target.os.tag);
+            }
         }
     }
 }
