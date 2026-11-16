@@ -1,6 +1,6 @@
 # ISSUE-14 — codemode 工具面从硬编码改为可配置
 
-- **状态**: fixing
+- **状态**: closed（2026-11-16。九工具面 + experimental.codemode_derived_surface 开关已合入 main（PR #2 内容经 codemode-derived-surface 分支全部进入 main，head 681cc5f8 为 main 祖先）；main CI 全绿 run 43801281832。ISSUE-15 解除阻塞。）
 - **发现时间**: 2026-11-10
 - **来源**: fx codemode 与 pi 1.5.1 源码对比
 - **工作量**: 中
