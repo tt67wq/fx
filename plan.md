@@ -1,6 +1,6 @@
 # T-21-plan 实现方案：codemode 目录预算通知与配置打磨（F2/F4/F5/F6）
 
-依据：`issues/ISSUE-21.md`、`/Users/admin/Project/Zig/fx/.agents/tasks/T-15-plan/review-copy.md` §7 非 blocking F2/F4/F5/F6。
+依据：`issues/ISSUE-21.md`、`/Users/example/Project/Zig/fx/.agents/tasks/T-15-plan/review-copy.md` §7 非 blocking F2/F4/F5/F6。
 实测口径（本工作树，`python3` 按字面量拼接统计）：`discovery.catalog_hint` 404 B；单个 `omitted` 条目序列化 48 到 70 B（`vision` 48，`write_file` 52，`ask_user_question` 59，`acp_delegate_cancel` 61，26 字符 MCP 名 70），均值 58 B；数组自有属性开销 `,"hint":"…"` 10 B、`,"omitted":[…]` 13 B。
 
 F5 与 F2 联动，地板值按 F5 之后的通知体积定，两条一起落。落地顺序建议：F4 → F5（含 Selection 字段）→ F2（地板值与注释、哨兵测试）→ F6（独立）。
