@@ -1,6 +1,6 @@
 # T-12-plan 实现方案：codemode 输出超限头尾保留并给回读路径
 
-对应 `issues/ISSUE-12.md`。工作树 `/Users/admin/Project/Zig/fx-pi1`（分支 `T-12-plan`）。本文只做方案，不改 `src/`。
+对应 `issues/ISSUE-12.md`。工作树 `/Users/example/Project/Zig/fx-pi1`（分支 `T-12-plan`）。本文只做方案，不改 `src/`。
 
 ## 0. 锚点核实结论（两处与 conductor 锚点不同，须先纠偏）
 
