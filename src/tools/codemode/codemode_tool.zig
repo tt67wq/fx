@@ -223,23 +223,38 @@ fn formatSuccessBody(
 /// carries the script call's execution frame, including the runtime context
 /// the nested admission path shares and the worker cancel flag the sandbox
 /// interrupt handler polls.
+/// One gate decision: the resolved codemode_catalog_bytes limit and where
+/// it came from, so the notice names the source without re-deriving it.
+const CatalogBudget = struct {
+    bytes: ?usize,
+    source: context_limits.Source,
+};
+
 /// Gate wiring for the tools.list() catalog budget: the resolved
 /// codemode_catalog_bytes limit when the derived surface is live and the
-/// limit is not off, null otherwise.
-fn catalogBudgetFor(derived_surface: bool, limits: context_limits.Values) ?usize {
-    if (!derived_surface) return null;
-    return limits.get(.codemode_catalog_bytes).value.normalBytes();
+/// limit is not off, null bytes otherwise.
+fn catalogBudgetFor(derived_surface: bool, limits: context_limits.Values) CatalogBudget {
+    if (!derived_surface) return .{ .bytes = null, .source = .compiled_default };
+    const resolved = limits.get(.codemode_catalog_bytes);
+    return .{ .bytes = resolved.value.normalBytes(), .source = resolved.source };
 }
 
 test "catalog budget gate opens only on the derived surface with a non-off limit" {
     var limits = context_limits.Values{};
+    const default_gate = catalogBudgetFor(true, limits);
     try std.testing.expectEqual(
         @as(?usize, context_limits.Name.codemode_catalog_bytes.defaultBytes()),
-        catalogBudgetFor(true, limits),
+        default_gate.bytes,
     );
-    try std.testing.expectEqual(@as(?usize, null), catalogBudgetFor(false, limits));
+    try std.testing.expectEqual(context_limits.Source.compiled_default, default_gate.source);
+    try std.testing.expectEqual(@as(?usize, null), catalogBudgetFor(false, limits).bytes);
     limits.set(.codemode_catalog_bytes, .{ .value = .off, .source = .command_line });
-    try std.testing.expectEqual(@as(?usize, null), catalogBudgetFor(true, limits));
+    try std.testing.expectEqual(@as(?usize, null), catalogBudgetFor(true, limits).bytes);
+    // The source travels with the gate so the notice can name it.
+    limits.set(.codemode_catalog_bytes, .{ .value = .{ .bytes = 4096 }, .source = .command_line });
+    const overridden = catalogBudgetFor(true, limits);
+    try std.testing.expectEqual(@as(?usize, 4096), overridden.bytes);
+    try std.testing.expectEqual(context_limits.Source.command_line, overridden.source);
 }
 
 pub fn call(ctx: tool_dispatch.DispatchContext, erased: tool_dispatch.ToolInput) tool_dispatch.DispatchError!tool_dispatch.ToolResult {
@@ -282,7 +297,9 @@ pub fn call(ctx: tool_dispatch.DispatchContext, erased: tool_dispatch.ToolInput)
     // budget path, so the shipped four-tool face stays byte-identical.
     // Gate three (config): an off limit disables selection. Gate two
     // (total bytes vs budget) is decided per call inside catalog.select.
-    sandbox.host.catalog_budget = catalogBudgetFor(state.derived_surface, ctx.context_limits);
+    const catalog_budget = catalogBudgetFor(state.derived_surface, ctx.context_limits);
+    sandbox.host.catalog_budget = catalog_budget.bytes;
+    sandbox.host.catalog_source = catalog_budget.source;
 
     sandbox.start() catch |err| {
         return .{ .failure = try ctx.allocator.print("codemode script failed: {s}", .{@errorName(err)}) };

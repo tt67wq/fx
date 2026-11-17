@@ -17,6 +17,13 @@ pub const catalog_hint =
     "describeTool(name) returns one tool's full {name, description, parameters} schema. " ++
     "Unknown describeTool names throw with suggestions; use searchTools to discover names.";
 
+/// Budget notice appended to the tail of the catalog hint when the byte
+/// gate opens. Shape follows the tool_search limit notice in
+/// src/core/mcp/tool_search.zig: observed / effective / source / override.
+pub const catalog_budget_clause =
+    " Budget: observed={d} bytes effective={d} bytes source={s}; " ++
+    "override with --context-limit codemode_catalog_bytes=BYTES|off.";
+
 /// Maximum did-you-mean candidates describeTool reports for an unknown name.
 pub const max_describe_candidates = 5;
 

@@ -525,6 +525,20 @@ test "tools.list appends omitted and hint own properties when the budget trigger
     try std.testing.expectEqualStrings("1|glob_files|write_file:false|true|true|true", result.value);
 }
 
+test "catalog hint renders the configured source label" {
+    var host = Host.init(std.testing.allocator, .{});
+    defer host.deinit();
+    host.setToolSchemas(&budget_schemas);
+    host.catalog_budget = 200;
+    host.catalog_source = .command_line;
+
+    var result = try host.eval(
+        \\tools.list().hint.indexOf("source=command line") >= 0
+    );
+    defer result.deinit();
+    try std.testing.expectEqualStrings("true", result.value);
+}
+
 test "omitted and hint stay invisible to map, index access, and JSON round trips" {
     var host = Host.init(std.testing.allocator, .{});
     defer host.deinit();

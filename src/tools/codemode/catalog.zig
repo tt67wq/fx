@@ -44,6 +44,9 @@ pub const Selection = struct {
     indexes: []usize,
     omitted: []Omitted,
     triggered: bool,
+    /// Total schema bytes the gate compared against the budget, so the
+    /// notice's observed value matches the gate decision exactly.
+    observed_bytes: usize,
 };
 
 /// A group of schemas placed together. v1 has exactly one group (the whole
@@ -68,7 +71,7 @@ pub fn selectGroups(alloc: Allocator, groups: []const Group, budget: usize) Allo
     if (total <= budget) {
         const indexes = try alloc.alloc(usize, count);
         for (0..count) |i| indexes[i] = i;
-        return .{ .indexes = indexes, .omitted = &.{}, .triggered = false };
+        return .{ .indexes = indexes, .omitted = &.{}, .triggered = false, .observed_bytes = total };
     }
 
     // The notice floor is reserved before any entry is placed, so a
@@ -131,7 +134,7 @@ pub fn selectGroups(alloc: Allocator, groups: []const Group, budget: usize) Allo
             n += 1;
         }
     }
-    return .{ .indexes = indexes, .omitted = omitted, .triggered = true };
+    return .{ .indexes = indexes, .omitted = omitted, .triggered = true, .observed_bytes = total };
 }
 
 /// One-group convenience wrapper for the whole face.

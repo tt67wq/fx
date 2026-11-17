@@ -3,6 +3,7 @@ const io_mod = @import("../../core/shared/io.zig");
 const bindings = @import("bindings.zig");
 const discovery = @import("discovery.zig");
 const catalog = @import("catalog.zig");
+const context_limits = @import("../../core/config/context_limits.zig");
 
 // Zig 0.17 removed @cImport; build.zig translates the vendored public header
 // into this module.
@@ -97,6 +98,10 @@ pub const Host = struct {
     /// caller when the derived surface is live and the configured limit
     /// is not off. Null keeps the catalog whole (closed face or off).
     catalog_budget: ?usize = null,
+    /// Where that budget came from, rendered in the notice. The caller
+    /// sets it together with catalog_budget; the default names the
+    /// compiled-in limit.
+    catalog_source: context_limits.Source = .compiled_default,
     /// The search index behind searchTools and describeTool, built from
     /// the injected schemas. The host owns the index memory; strings in
     /// it are borrowed from the schemas and live as long as they do.
@@ -617,9 +622,18 @@ fn toolsListCallback(ctx: ?*c.JSContext, _: c.JSValue, _: c_int, _: [*c]c.JSValu
     // against the whole-face shape keep working unchanged.
     if (selection) |sel| {
         if (sel.triggered) {
-            if (appendCatalogNotice(context, array, sel) != 0) {
-                c.JS_FreeValue(context, array);
-                return js_exception;
+            if (host.catalog_budget) |budget| {
+                if (appendCatalogNotice(
+                    context,
+                    array,
+                    selection_arena_state.allocator(),
+                    sel,
+                    budget,
+                    host.catalog_source,
+                ) != 0) {
+                    c.JS_FreeValue(context, array);
+                    return js_exception;
+                }
             }
         }
     }
@@ -695,7 +709,14 @@ fn appendListEntry(context: *c.JSContext, array: c.JSValue, position: usize, too
 /// Attaches the omitted list and the discovery hint to a triggered
 /// catalog array. Returns 0 on success; on failure every value it still
 /// owns is freed and -1 is returned.
-fn appendCatalogNotice(context: *c.JSContext, array: c.JSValue, selection: catalog.Selection) c_int {
+fn appendCatalogNotice(
+    context: *c.JSContext,
+    array: c.JSValue,
+    alloc: Allocator,
+    selection: catalog.Selection,
+    budget: usize,
+    source: context_limits.Source,
+) c_int {
     const omitted = c.JS_NewArray(context);
     if (c.JS_IsException(omitted)) return -1;
     for (selection.omitted, 0..) |omitted_entry, index| {
@@ -737,7 +758,15 @@ fn appendCatalogNotice(context: *c.JSContext, array: c.JSValue, selection: catal
         c.JS_FreeValue(context, omitted);
         return -1;
     }
-    const hint = c.JS_NewStringLen(context, discovery.catalog_hint.ptr, discovery.catalog_hint.len);
+    // The notice renders into the selection arena: the byte string lives
+    // only as long as the JS_NewStringLen copy below needs it.
+    const clause = alloc.print(discovery.catalog_budget_clause, .{
+        selection.observed_bytes,
+        budget,
+        source.label(),
+    }) catch return -1;
+    const hint_text = alloc.print("{s}{s}", .{ discovery.catalog_hint, clause }) catch return -1;
+    const hint = c.JS_NewStringLen(context, hint_text.ptr, hint_text.len);
     if (c.JS_IsException(hint)) return -1;
     if (c.JS_SetPropertyStr(context, array, "hint", hint) < 0) {
         return -1;
