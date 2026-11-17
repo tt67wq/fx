@@ -503,16 +503,26 @@ test "tools.list appends omitted and hint own properties when the budget trigger
     // leaves room only for tier zero after the notice floor.
     host.catalog_budget = 200;
 
-    var result = try host.eval(
+    // F5: the hint tail carries the budget notice in the tool_search
+    // shape: observed equals the bytes the gate compared, effective is
+    // the configured budget, and the override is named.
+    const observed_total = budget_schemas[0].schema_json.len + budget_schemas[1].schema_json.len;
+    var script_buf: [1024]u8 = undefined;
+    const script = try std.mem.print(&script_buf,
         \\var list = tools.list();
         \\var iterated = [];
         \\for (const entry of list) iterated.push(entry.name);
+        \\var observed_clause = "observed={d} bytes effective=200 bytes source=compiled default";
         \\list.length + "|" + iterated.join() + "|" +
-        \\list.omitted.map(function (o) { return o.name + ":" + o.oversized; }).join() + "|" +
-        \\(typeof list.hint === "string" && list.hint.indexOf("searchTools") >= 0)
-    );
+        \\list.omitted.map(function (o) {{ return o.name + ":" + o.oversized; }}).join() + "|" +
+        \\(typeof list.hint === "string" && list.hint.indexOf("searchTools") >= 0) + "|" +
+        \\(list.hint.indexOf(observed_clause) >= 0) + "|" +
+        \\(list.hint.indexOf("--context-limit codemode_catalog_bytes=BYTES|off") >= 0)
+    , .{observed_total});
+
+    var result = try host.eval(script);
     defer result.deinit();
-    try std.testing.expectEqualStrings("1|glob_files|write_file:false|true", result.value);
+    try std.testing.expectEqualStrings("1|glob_files|write_file:false|true|true|true", result.value);
 }
 
 test "omitted and hint stay invisible to map, index access, and JSON round trips" {
