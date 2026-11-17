@@ -34,3 +34,7 @@ text 输出超限改头尾保留，全文按 shell 的句柄机制落盘，结�
 规模估算：源码约 300-400 行 + 测试 400-600 行，风险集中在 spill 对象穿过
 DispatchContext 注入链与集成层 capability 夹具。**暂缓**：改动中等偏大，
 先做性价比更高的 issue，回头再开团。
+
+## 处置
+
+已合入 main（T-12-impl，a8921136c）：捕获帽 64KiB→1MiB 并计数丢弃（text/console 两流独立，host.zig）；共享预览改头尾各半（result_store.previewText 走 writeHeadTailOmittedBounded，UTF-8 边界安全，omitted 数字精确）；失败路径同改 + 成功路径捕获帽标记；统一 omitted 标记常量（text_utils，与 cm/shell 逐字节对齐）；落盘回读沿用 execution_memory→result_store→read_tool_result 既有路径，零新增权限面。验收：fmt/build test/e2e 155 pass/真机探针头尾哨兵+中段逐字节回读全过。独立验证 approve-with-comments（T-12-verify e32e75dff）。方案/报告/验证归档 .agents/tasks/T-12-impl/。后续打磨见 ISSUE-22。
