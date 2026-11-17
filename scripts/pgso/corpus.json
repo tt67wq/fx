@@ -147,5 +147,6 @@
       "test_file": "codemode-cancel.test.ts"
     },
     {"name": "verify-codemode-admission", "argv": ["bun", "test", "--max-concurrency", "1", "./codemode-admission.test.ts"], "test_file": "codemode-admission.test.ts"},
+    {"name": "verify-codemode-output", "argv": ["bun", "test", "--max-concurrency", "1", "./codemode-output.test.ts"], "test_file": "codemode-output.test.ts", "requires_tmux": false},
     {"name": "verify-mcp-mrtr", "argv": ["bun", "test", "--max-concurrency", "1", "./mcp-mrtr.test.ts"], "test_file": "mcp-mrtr.test.ts"}]
 }
