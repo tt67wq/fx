@@ -836,6 +836,8 @@ test "large result storage creates stable handle and bounded preview" {
     defer alloc.free(dir);
 
     var bytes: [large_result_threshold_bytes + 128]u8 = @splat('x');
+    bytes[0..11].* = "STORED-HEAD".*;
+    bytes[bytes.len - 11 ..].* = "STORED-TAIL".*;
     const prepared = try prepare(alloc, dir, "call/1", "run_command", bytes.len, bytes[0..], 64 * 1024);
     defer alloc.free(prepared.model_output);
     defer alloc.free(@constCast(prepared.memory.output_handle.?));
@@ -843,6 +845,9 @@ test "large result storage creates stable handle and bounded preview" {
 
     try std.testing.expect(prepared.memory.truncated);
     try std.testing.expect(prepared.memory.preview.?.len <= preview_bytes);
+    // The preview keeps the head and the tail of the stored bytes.
+    try std.testing.expect(std.mem.find(u8, prepared.memory.preview.?, "STORED-HEAD") != null);
+    try std.testing.expect(std.mem.find(u8, prepared.memory.preview.?, "STORED-TAIL") != null);
     try std.testing.expect(std.mem.find(u8, prepared.model_output, prepared.memory.output_handle.?) != null);
 
     const again = try prepare(alloc, dir, "call/1", "run_command", bytes.len, bytes[0..], 64 * 1024);
@@ -860,7 +865,8 @@ test "a v2 session stores results and images as blobs named by their hash (D44)"
     defer capability.deinit();
 
     var bytes: [large_result_threshold_bytes + 128]u8 = @splat('x');
-    bytes[3] = '\n';
+    bytes[0..12].* = "V2STOREDHEAD".*;
+    bytes[bytes.len - 12 ..].* = "V2STOREDTAIL".*;
     const prepared = try prepareManaged(alloc, &capability, "call/1", "run_command", bytes.len, bytes[0..], 64 * 1024);
     defer alloc.free(prepared.model_output);
     defer alloc.free(@constCast(prepared.memory.output_handle.?));
@@ -871,6 +877,9 @@ test "a v2 session stores results and images as blobs named by their hash (D44)"
     try std.testing.expectEqualStrings(expected, handle);
     try std.testing.expect(isStoredTextHandle(handle));
     try std.testing.expect(std.mem.find(u8, prepared.model_output, handle) != null);
+    // The preview keeps the head and the tail of the stored bytes.
+    try std.testing.expect(std.mem.find(u8, prepared.memory.preview.?, "V2STOREDHEAD") != null);
+    try std.testing.expect(std.mem.find(u8, prepared.memory.preview.?, "V2STOREDTAIL") != null);
     try std.testing.expectEqual(@as(usize, 1), memory.count());
 
     // The same bytes from another call are the same blob.
@@ -1049,8 +1058,10 @@ test "inline cap and stored preview keep complete codepoints" {
     defer alloc.free(stored.model_output);
     defer alloc.free(@constCast(stored.memory.output_handle.?));
     defer alloc.free(@constCast(stored.memory.preview.?));
-    try std.testing.expectEqual(@as(usize, preview_bytes - 1), stored.memory.preview.?.len);
-    try std.testing.expect(std.mem.endsWith(u8, stored.memory.preview.?, "\xc3\xa9"));
+    try std.testing.expect(stored.memory.preview.?.len <= preview_bytes);
+    try std.testing.expect(std.mem.startsWith(u8, stored.memory.preview.?, "x"));
+    // The tail keeps the last whole codepoints of the stored text.
+    try std.testing.expect(std.mem.endsWith(u8, stored.memory.preview.?, stored_text[stored_text.len - 8 ..]));
     try std.testing.expect(std.unicode.utf8ValidateSlice(stored.memory.preview.?));
 }
 
@@ -1062,6 +1073,8 @@ test "large result handles never expose token-shaped call ids" {
     defer alloc.free(dir);
 
     var bytes: [large_result_threshold_bytes + 1]u8 = @splat('x');
+    bytes[0..11].* = "PLAIN-HEAD1".*;
+    bytes[bytes.len - 11 ..].* = "PLAIN-TAIL2".*;
     const secret_id = "sk-abcdefghijklmnop";
     const prepared = try prepare(
         alloc,
@@ -1082,6 +1095,40 @@ test "large result handles never expose token-shaped call ids" {
     try std.testing.expect(
         std.mem.find(u8, prepared.model_output, secret_id) == null,
     );
+    // The preview keeps the head and the tail of the stored bytes.
+    try std.testing.expect(std.mem.find(u8, prepared.memory.preview.?, "PLAIN-HEAD1") != null);
+    try std.testing.expect(std.mem.find(u8, prepared.memory.preview.?, "PLAIN-TAIL2") != null);
+}
+
+test "stored preview keeps head and tail with the exact omitted count" {
+    const alloc = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir = try io_mod.dirRealpathAlloc(alloc, tmp.dir, ".");
+    defer alloc.free(dir);
+
+    const head_sentinel = "PREVIEW-HEAD|";
+    const tail_sentinel = "|PREVIEW-TAIL";
+    var bytes: [head_sentinel.len + large_result_threshold_bytes + 256 + tail_sentinel.len]u8 = @splat('x');
+    @memcpy(bytes[0..head_sentinel.len], head_sentinel);
+    @memcpy(bytes[bytes.len - tail_sentinel.len ..], tail_sentinel);
+    const prepared = try prepare(alloc, dir, "call/9", "run_command", bytes.len, bytes[0..], 64 * 1024);
+    defer alloc.free(prepared.model_output);
+    defer alloc.free(@constCast(prepared.memory.output_handle.?));
+    defer alloc.free(@constCast(prepared.memory.preview.?));
+
+    const preview = prepared.memory.preview.?;
+    try std.testing.expect(preview.len <= preview_bytes);
+    try std.testing.expect(std.mem.find(u8, preview, head_sentinel) != null);
+    try std.testing.expect(std.mem.find(u8, preview, tail_sentinel) != null);
+
+    // The shared omission marker sits between the kept head and tail and
+    // names exactly the bytes the preview does not show.
+    const marker_open = std.mem.find(u8, preview, "\n...[").?;
+    const marker_close = std.mem.find(u8, preview, " bytes omitted]...\n").?;
+    const omitted = try std.fmt.parseInt(usize, preview[marker_open + "\n...[".len .. marker_close], 10);
+    const kept = preview[0..marker_open].len + preview[marker_close + " bytes omitted]...\n".len ..].len;
+    try std.testing.expectEqual(bytes.len - kept, omitted);
 }
 
 const PrepareRoute = enum {
@@ -1105,6 +1152,8 @@ fn expectLargeResultPreparationLeavesNoOrphan(route: PrepareRoute) !void {
     defer capability.deinit();
 
     var bytes: [large_result_threshold_bytes + 128]u8 = @splat('x');
+    bytes[0..11].* = "ORPHAN-HEAD".*;
+    bytes[bytes.len - 11 ..].* = "ORPHAN-TAIL".*;
     var reached_success = false;
     var fail_index: usize = 0;
     while (fail_index < 128) : (fail_index += 1) {
@@ -1181,6 +1230,8 @@ fn expectExistingLargeResultSurvivesPreparationFailure(
     defer capability.deinit();
 
     var bytes: [large_result_threshold_bytes + 128]u8 = @splat('x');
+    bytes[0..11].* = "RESEED-HEAD".*;
+    bytes[bytes.len - 11 ..].* = "RESEED-TAIL".*;
     const seeded_handle = try storeLargeResultManaged(
         base,
         &capability,
