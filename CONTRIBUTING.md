@@ -18,7 +18,7 @@ You need:
 - [Bun](https://bun.sh) and [tmux](https://github.com/tmux/tmux) for the end-to-end tests.
 - [hyperfine](https://github.com/sharkdp/hyperfine), if you want to run the startup benchmark locally.
 
-The unit tests and most end-to-end tests don't call a model. To try a change that does, sign in as the [README](README.md#quick-start) describes or set `AI_GATEWAY_API_KEY`.
+The unit tests and most end-to-end tests don't call a model. To try a change that does, set `AI_GATEWAY_API_KEY`.
 
 Clone the repository, or your fork if you're an outside contributor, and build fx:
 
