@@ -1237,10 +1237,15 @@ test "codemode text stops at the output buffer cap" {
         \\drops;
     );
     defer result.deinit();
-    // text reports truncation, but the script still finishes normally.
+    // text reports truncation, but the script still finishes normally, and
+    // the dropped bytes are counted instead of lost silently.
     try std.testing.expectEqualStrings("3", result.value);
     try std.testing.expectEqual(@as(usize, 32), result.text.len);
     for (result.text) |byte| try std.testing.expectEqual(@as(u8, 'x'), byte);
+    // The first call fills the cap and drops 68; the next two drop whole.
+    try std.testing.expectEqual(@as(usize, 268), result.text_dropped_bytes);
+    try std.testing.expectEqual(@as(usize, 0), result.console_dropped_bytes);
+    try std.testing.expectEqual(@as(usize, 32), result.capture_limit_bytes);
 }
 
 test "codemode console.log stops at the output buffer cap" {
@@ -1256,6 +1261,56 @@ test "codemode console.log stops at the output buffer cap" {
     try std.testing.expectEqualStrings("3", result.value);
     try std.testing.expectEqual(@as(usize, 32), result.console.len);
     for (result.console) |byte| try std.testing.expectEqual(@as(u8, 'x'), byte);
+    // 68 dropped inside the first call, plus its newline, plus two whole
+    // calls with their newlines once the cap is full.
+    try std.testing.expectEqual(@as(usize, 271), result.console_dropped_bytes);
+    try std.testing.expectEqual(@as(usize, 0), result.text_dropped_bytes);
+}
+
+test "codemode text returns true inside the capture cap and false only past it" {
+    var host = Host.init(std.testing.allocator, .{ .output_buffer_bytes = 32 });
+    defer host.deinit();
+
+    var result = try host.eval(
+        \\const inside = text("a".repeat(31));
+        \\const fills = text("b");
+        \\const past = text("c");
+        \\`${inside}/${fills}/${past}`;
+    );
+    defer result.deinit();
+    // Threshold moves, semantics do not: every append that fits under the
+    // cap reports true, only the one that cannot fit reports false.
+    try std.testing.expectEqualStrings("true/true/false", result.value);
+    try std.testing.expectEqual(@as(usize, 32), result.text.len);
+    try std.testing.expectEqual(@as(usize, 1), result.text_dropped_bytes);
+}
+
+test "codemode text and console dropped bytes count independently" {
+    var host = Host.init(std.testing.allocator, .{ .output_buffer_bytes = 32 });
+    defer host.deinit();
+
+    var result = try host.eval(
+        \\text("t".repeat(50));
+        \\console.log("c".repeat(50));
+        \\1;
+    );
+    defer result.deinit();
+    try std.testing.expectEqual(@as(usize, 18), result.text_dropped_bytes);
+    // console.log also counts the newline it cannot append.
+    try std.testing.expectEqual(@as(usize, 19), result.console_dropped_bytes);
+}
+
+test "codemode capture cap is 1MiB and a bigger script still finishes" {
+    var host = Host.init(std.testing.allocator, .{});
+    defer host.deinit();
+
+    var result = try host.eval(
+        \\text("x".repeat(1024 * 1024 + 100));
+        \\1;
+    );
+    defer result.deinit();
+    try std.testing.expectEqual(@as(usize, 1024 * 1024), result.text.len);
+    try std.testing.expectEqual(@as(usize, 100), result.text_dropped_bytes);
 }
 
 test "codemode exposes no host globals" {
@@ -1310,16 +1365,21 @@ test {
 }
 
 test "takePartialOutput moves captured buffers to the caller" {
-    var host = Host.init(std.testing.allocator, .{});
+    var host = Host.init(std.testing.allocator, .{ .output_buffer_bytes = 12 });
     defer host.deinit();
-    _ = appendCapped(&host, &host.text_buf, "partial text");
-    _ = appendCapped(&host, &host.console_buf, "console line\n");
+    _ = appendCapped(&host, &host.text_buf, &host.text_dropped_bytes, "partial text");
+    _ = appendCapped(&host, &host.console_buf, &host.console_dropped_bytes, "console line\n");
 
     const partial = host.takePartialOutput();
     defer host.allocator.free(partial.text);
     defer host.allocator.free(partial.console);
     try std.testing.expectEqualStrings("partial text", partial.text);
     try std.testing.expectEqualStrings("console line\n", partial.console);
+    // The failure path sees the dropped counts and the cap that produced
+    // them alongside the buffers.
+    try std.testing.expectEqual(@as(usize, 0), partial.text_dropped_bytes);
+    try std.testing.expectEqual(@as(usize, 1), partial.console_dropped_bytes);
+    try std.testing.expectEqual(@as(usize, 12), partial.capture_limit_bytes);
 
     // The buffers are emptied: a later take yields empty slices, and deinit
     // must not double free what the caller now owns.
