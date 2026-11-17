@@ -592,6 +592,36 @@ test "searchTools validates the query and the limit option" {
     try std.testing.expectEqualStrings("TypeError,TypeError,TypeError,TypeError,TypeError,ok", result.value);
 }
 
+test "searchTools limit errors split shape from the maximum" {
+    // F6: a positive integer over the cap is not a shape error. The old
+    // probe test keeps covering the TypeError shape; this one pins the
+    // message text for each side of the split, including the Infinity
+    // case that must report the shape message, and the 65536 boundary
+    // that stays allowed.
+    var host = Host.init(std.testing.allocator, .{});
+    defer host.deinit();
+    host.setToolSchemas(&budget_schemas);
+
+    var result = try host.eval(
+        \\var results = [];
+        \\function probe(fn) { try { fn(); results.push("ok"); } catch (e) { results.push(e.message); } }
+        \\probe(() => searchTools("file", { limit: 0 }));
+        \\probe(() => searchTools("file", { limit: 100000 }));
+        \\probe(() => searchTools("file", { limit: 65536 }));
+        \\probe(() => searchTools("file", { limit: Infinity }));
+        \\probe(() => searchTools("file", { limit: -1 }));
+        \\results.join()
+    );
+    defer result.deinit();
+    try std.testing.expectEqualStrings(
+        "searchTools limit must be a positive integer" ++
+            ",searchTools limit must not exceed 65536" ++
+            ",ok,searchTools limit must be a positive integer" ++
+            ",searchTools limit must be a positive integer",
+        result.value,
+    );
+}
+
 test "searchTools defaults the limit to eight" {
     var host = Host.init(std.testing.allocator, .{});
     defer host.deinit();
