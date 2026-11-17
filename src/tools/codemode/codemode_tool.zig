@@ -428,17 +428,22 @@ test "failure body records duration and partial output" {
     );
 }
 
-test "failure body truncates oversized output and flags summary overflow" {
+test "failure body keeps head and tail of oversized output" {
     const big = try std.testing.allocator.alloc(u8, 10_000);
     @memset(big, 'x');
+    @memcpy(big[0..9], "HEAD-SENT");
+    @memcpy(big[big.len - 9 ..], "TAIL-SENT");
     defer std.testing.allocator.free(big);
     const empty = try std.testing.allocator.dupe(u8, "");
     defer std.testing.allocator.free(empty);
     const body = try formatFailureBody(std.testing.allocator, "codemode script failed: Timeout", .{ .text = big, .console = empty }, &.{}, true);
     defer std.testing.allocator.free(body);
-    // The body keeps only the display head of the captured output and marks
-    // the truncation; the overflow flag surfaces as an explicit note.
-    try std.testing.expect(std.mem.find(u8, body, "truncated") != null);
+    // A timed-out script's last lines are the ones the model needs, so the
+    // body keeps head and tail joined by the shared omission marker; the
+    // overflow flag still surfaces as an explicit note.
+    try std.testing.expect(std.mem.find(u8, body, "HEAD-SENT") != null);
+    try std.testing.expect(std.mem.find(u8, body, "TAIL-SENT") != null);
+    try std.testing.expect(std.mem.find(u8, body, " bytes omitted]...") != null);
     try std.testing.expect(body.len < 8192);
     try std.testing.expect(std.mem.find(u8, body, "additional calls") != null);
 }
@@ -491,6 +496,20 @@ test "success body summary covers every outcome and the overflow note" {
 // Plan v2 group 1: without nested calls the four output forms are byte
 // identical to today's success assembly. This locks the invariant the
 // green change must preserve; it passes before the summary exists.
+test "success body appends the capture cap marker only when bytes dropped" {
+    const allocator = std.testing.allocator;
+
+    const plain = try formatSuccessBody(allocator, "logged\n", "", "", &.{}, false, 0);
+    defer allocator.free(plain);
+    try std.testing.expectEqualStrings("logged\n", plain);
+
+    const capped = try formatSuccessBody(allocator, "logged\n", "", "", &.{}, false, 268);
+    defer allocator.free(capped);
+    // The capture cap marker rides at the end of the body and names the
+    // bytes even the stored copy is missing.
+    try std.testing.expectEqualStrings("logged\n\n...[268 bytes omitted]...\n", capped);
+}
+
 test "success body without nested calls matches today's four forms" {
     const allocator = std.testing.allocator;
 
