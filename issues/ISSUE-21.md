@@ -1,6 +1,6 @@
 # ISSUE-21 — codemode 目录预算通知与配置打磨（T-15 复审 F2/F4/F5/F6）
 
-- **状态**: open
+- **状态**: closed
 - **发现时间**: 2026-11-17
 - **来源**: T-15-impl 复审（review.md @ T-15-review 6a059a98f）非 blocking findings
 - **工作量**: 小
@@ -27,3 +27,8 @@ ISSUE-15 实现复审指出四条同主题打磨项：目录预算的通知与�
 - [ ] F4 默认值单源
 - [ ] F5 通知补键名/字节/来源/override（对齐 tool_search.zig:349 先例）
 - [ ] F6 limit 报错拆两条消息 + 测试
+
+
+## 处置
+
+四条全部落地并合入 main（T-21-impl，ec2aeccbe）：F4 默认预算单源于 context_limits；F5 预算通知追加 hint 尾部（observed/effective/source + --context-limit override）；F2 地板 512→1024 并钉哨兵测试；F6 limit 报错拆两条（含 Infinity 与 65536 边界）。独立验证 approve-with-comments（verify.md，T-21-verify cb88db4b4）。方案/报告归档 .agents/tasks/T-21-impl/。
