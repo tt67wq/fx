@@ -8,6 +8,10 @@ const Allocator = std.mem.Allocator;
 /// the caller passes no explicit limit.
 pub const default_search_limit: usize = 8;
 
+/// Hard cap for an explicit searchTools limit; the host rejects anything
+/// above it with its own message, distinct from the shape error.
+pub const max_search_limit: usize = 65536;
+
 /// The hint attached to a triggered tools.list() catalog. It must only
 /// name APIs that actually exist in the sandbox.
 pub const catalog_hint =

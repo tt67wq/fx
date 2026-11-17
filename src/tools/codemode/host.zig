@@ -790,9 +790,19 @@ fn searchToolsCallback(ctx: ?*c.JSContext, _: c.JSValue, argc: c_int, argv: [*c]
             }
             var as_float: f64 = 0;
             _ = c.JS_ToFloat64(context, &as_float, limit_value);
-            if (as_float != @trunc(as_float) or as_float < 1.0 or as_float > 65536.0) {
+            // Shape first, then the cap: a positive integer over the cap is
+            // a range error, and Infinity must report the shape message.
+            // isFinite guards Infinity, which the cap comparison alone no
+            // longer catches now that the messages are split.
+            if (!std.math.isFinite(as_float) or as_float != @trunc(as_float) or as_float < 1.0) {
                 c.JS_FreeValue(context, limit_value);
                 return c.JS_ThrowTypeError(context, "searchTools limit must be a positive integer");
+            }
+            if (as_float > discovery.max_search_limit) {
+                c.JS_FreeValue(context, limit_value);
+                // QuickJS reads variadic arguments as int: pass c_int, not
+                // the 64-bit constant.
+                return c.JS_ThrowTypeError(context, "searchTools limit must not exceed %d", @as(c_int, @intCast(discovery.max_search_limit)));
             }
             limit = @intFromFloat(as_float);
         }
