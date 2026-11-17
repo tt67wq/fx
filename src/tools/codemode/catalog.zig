@@ -6,9 +6,14 @@ const builtin_tools = @import("../../builtins/tools.zig");
 const Allocator = std.mem.Allocator;
 
 /// Bytes reserved for the omitted list and hint on a triggered selection.
-/// The floor is taken before entries are placed, mirroring the notification
-/// floor in host.zig (options_output_floor_bytes).
-pub const catalog_notice_floor_bytes: usize = 512;
+/// The floor is taken before entries are placed: it covers the full hint
+/// (base text plus budget clause) and up to six omitted entries at the
+/// worst per-entry size. A longer omission list makes the total exceed the
+/// budget; the remedy there is capping the omitted entries (see the
+/// catalog_notice_name_count precedent in skill_runtime.zig), not raising
+/// this floor. Mirrors the notification floor in host.zig
+/// (options_output_floor_bytes).
+pub const catalog_notice_floor_bytes: usize = 1024;
 
 /// Placement priority. Tier zero is the catalog exemption the codemode
 /// contract text already names: these four tools are today's existing
@@ -74,8 +79,8 @@ pub fn selectGroups(alloc: Allocator, groups: []const Group, budget: usize) Allo
         return .{ .indexes = indexes, .omitted = &.{}, .triggered = false, .observed_bytes = total };
     }
 
-    // The notice floor is reserved before any entry is placed, so a
-    // triggered catalog always has room for the omitted list and hint.
+    // The notice floor is reserved before any entry is placed: listed
+    // entries plus the expected notice stay inside the configured budget.
     const entries_budget = budget -| catalog_notice_floor_bytes;
     const flags = try alloc.alloc(bool, count);
     for (flags) |*flag| flag.* = false;
@@ -283,11 +288,14 @@ test "catalog exempts tier zero and cascades later omissions" {
     // Tier zero first and last in face order; a small tier-one item fits,
     // a big tier-two item does not, and the small item after it must not
     // skip past the cascade.
-    const a = try makeSchema(arena, "read_file", 40);
-    const b = try makeSchema(arena, "write_file", 30);
-    const c = try makeSchema(arena, "web_fetch", 600);
-    const d = try makeSchema(arena, "vision", 10);
-    const e = try makeSchema(arena, "run_command", 40);
+    // Fills are sized above the notice floor so the budget, which is
+    // derived from the floor, still sits under the face total and opens
+    // the byte gate.
+    const a = try makeSchema(arena, "read_file", 400);
+    const b = try makeSchema(arena, "write_file", 300);
+    const c = try makeSchema(arena, "web_fetch", 800);
+    const d = try makeSchema(arena, "vision", 100);
+    const e = try makeSchema(arena, "run_command", 400);
     const schemas = [_]bindings.ToolSchema{
         .{ .name = "read_file", .schema_json = a.buf },
         .{ .name = "write_file", .schema_json = b.buf },
@@ -410,8 +418,8 @@ test "catalog cascade is global across tiers when a tier-one entry does not fit"
         .{ .name = "vision", .schema_json = c.buf },
     };
     // The 772-byte total over a 700 budget opens the byte gate; the notice
-    // floor leaves 188 entries bytes: enough for vision alone, not for
-    // write_file.
+    // floor exceeds the budget, so the entries budget saturates to zero and
+    // only tier zero stays listed.
     const selection = try select(arena, &schemas, 700);
     try std.testing.expectEqual(true, selection.triggered);
     try std.testing.expectEqual(@as(usize, 1), selection.indexes.len);
@@ -424,12 +432,12 @@ test "catalog cascade is global across tiers when a tier-one entry does not fit"
 }
 
 test "catalog oversized caliber sits at the whole budget, not the entries budget" {
-    // Budget 1000 reserves the 512-byte notice floor first, so the entries
-    // budget is 488. An entry between the two (648 bytes) cannot place but
-    // would fit a whole-budget catalog, so it is omitted WITHOUT the flag;
-    // only an entry larger than the whole budget (2045 bytes) is marked
-    // oversized. Asserting false in between pins the caliber against a
-    // future switch to comparing against the entries budget.
+    // Budget 1000 reserves the 1024-byte notice floor first, so the
+    // entries budget saturates to zero. The middle entry (648 bytes) cannot
+    // place but would fit a whole-budget catalog, so it is omitted WITHOUT
+    // the flag; only an entry larger than the whole budget (2045 bytes) is
+    // marked oversized. Asserting false in between pins the caliber against
+    // a future switch to comparing against the entries budget.
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
