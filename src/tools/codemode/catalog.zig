@@ -359,3 +359,64 @@ test "catalog selection is deterministic for identical inputs" {
         try std.testing.expectEqual(x.oversized, y.oversized);
     }
 }
+
+test "catalog cascade is global across tiers when a tier-one entry does not fit" {
+    // Face order: read_file (tier zero), write_file (tier one, large),
+    // vision (tier two, small). The budget leaves entries room for vision
+    // but not for write_file; per the documented global cascade the first
+    // non-fitting entry omits every later non-exempt entry, so vision is
+    // omitted too even though it would fit on its own. A per-tier reading
+    // would inline it, so this test pins the implemented caliber.
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const a = try makeSchema(arena, "read_file", 20);
+    const b = try makeSchema(arena, "write_file", 600);
+    const c = try makeSchema(arena, "vision", 10);
+    const schemas = [_]bindings.ToolSchema{
+        .{ .name = "read_file", .schema_json = a.buf },
+        .{ .name = "write_file", .schema_json = b.buf },
+        .{ .name = "vision", .schema_json = c.buf },
+    };
+    // The 772-byte total over a 700 budget opens the byte gate; the notice
+    // floor leaves 188 entries bytes: enough for vision alone, not for
+    // write_file.
+    const selection = try select(arena, &schemas, 700);
+    try std.testing.expectEqual(true, selection.triggered);
+    try std.testing.expectEqual(@as(usize, 1), selection.indexes.len);
+    try std.testing.expectEqualStrings("read_file", schemas[selection.indexes[0]].name);
+    try std.testing.expectEqual(@as(usize, 2), selection.omitted.len);
+    try std.testing.expectEqualStrings("write_file", selection.omitted[0].name);
+    try std.testing.expectEqualStrings("vision", selection.omitted[1].name);
+    try std.testing.expectEqual(false, selection.omitted[0].oversized);
+    try std.testing.expectEqual(false, selection.omitted[1].oversized);
+}
+
+test "catalog oversized caliber sits at the whole budget, not the entries budget" {
+    // Budget 1000 reserves the 512-byte notice floor first, so the entries
+    // budget is 488. An entry between the two (648 bytes) cannot place but
+    // would fit a whole-budget catalog, so it is omitted WITHOUT the flag;
+    // only an entry larger than the whole budget (2045 bytes) is marked
+    // oversized. Asserting false in between pins the caliber against a
+    // future switch to comparing against the entries budget.
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const a = try makeSchema(arena, "read_file", 20);
+    const b = try makeSchema(arena, "web_fetch", 600);
+    const c = try makeSchema(arena, "vision", 2000);
+    const schemas = [_]bindings.ToolSchema{
+        .{ .name = "read_file", .schema_json = a.buf },
+        .{ .name = "web_fetch", .schema_json = b.buf },
+        .{ .name = "vision", .schema_json = c.buf },
+    };
+    const selection = try select(arena, &schemas, 1000);
+    try std.testing.expectEqual(true, selection.triggered);
+    try std.testing.expectEqual(@as(usize, 1), selection.indexes.len);
+    try std.testing.expectEqualStrings("read_file", schemas[selection.indexes[0]].name);
+    try std.testing.expectEqual(@as(usize, 2), selection.omitted.len);
+    try std.testing.expectEqualStrings("web_fetch", selection.omitted[0].name);
+    try std.testing.expectEqual(false, selection.omitted[0].oversized);
+    try std.testing.expectEqualStrings("vision", selection.omitted[1].name);
+    try std.testing.expectEqual(true, selection.omitted[1].oversized);
+}

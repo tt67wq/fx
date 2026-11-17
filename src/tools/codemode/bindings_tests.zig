@@ -629,3 +629,37 @@ test "describeTool covers a tool the listing dropped" {
     defer result.deinit();
     try std.testing.expectEqualStrings("write_file|true|true|true", result.value);
 }
+
+const budget_face = [_]bindings.Tool{
+    .{ .name = "glob_files" },
+    .{ .name = "write_file" },
+};
+
+test "a tool outside the budgeted catalog is still callable and searchable" {
+    // The catalog budget drops write_file from tools.list(); the whitelist
+    // and the named functions come from the face, so both call paths must
+    // still reach the backend instead of reporting an unknown tool
+    // (proposal-b 2(c): the callable face equals the pre-budget face).
+    var host = Host.init(std.testing.allocator, .{});
+    defer host.deinit();
+    host.setToolFace(&budget_face);
+    host.setToolSchemas(&budget_schemas);
+    host.catalog_budget = 200;
+    var fake = FakeBackend{};
+    host.setToolBackend(.{ .ctx = &fake, .call = FakeBackend.call });
+
+    var result = try host.eval(
+        \\var listed = tools.list().map(function (e) { return e.name; });
+        \\var out = [];
+        \\out.push(listed.join());
+        \\out.push(listed.indexOf("write_file") < 0);
+        \\out.push(await tools.call("write_file", { path: "notes.txt" }));
+        \\out.push(await tools.write_file({ path: "notes.txt" }));
+        \\out.push(searchTools("write").some(function (h) { return h.name === "write_file"; }));
+        \\out.join("|")
+    );
+    defer result.deinit();
+    try std.testing.expectEqualStrings("glob_files|true|{\"ok\":true}|{\"ok\":true}|true", result.value);
+    try std.testing.expectEqual(@as(usize, 2), fake.calls);
+    try std.testing.expectEqualStrings("write_file", fake.last_tool);
+}
