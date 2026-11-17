@@ -72,10 +72,23 @@ pub fn writeHeadTailBounded(
 /// the model sees one truncation shape everywhere.
 pub const omitted_bytes_marker_template = "\n...[{d} bytes omitted]...\n";
 
+/// Widest rendered marker: fixed wording plus the 20 digits of the
+/// widest usize. Callers size their stack buffers from this constant.
+pub const omitted_bytes_marker_max_len: usize = 44;
+
+comptime {
+    var widest_buf: [48]u8 = undefined;
+    const widest = std.mem.print(&widest_buf, omitted_bytes_marker_template, .{std.math.maxInt(usize)}) catch unreachable;
+    std.debug.assert(widest.len == omitted_bytes_marker_max_len);
+}
+
 /// Formats the shared omission marker into 'buf' and returns the marker
-/// slice. 'buf' must hold at least 44 bytes: the fixed wording plus the
-/// 20 digits of the widest usize; callers pass a stack buffer.
+/// slice. 'buf' must hold at least omitted_bytes_marker_max_len bytes;
+/// callers pass a stack buffer sized from that constant.
 pub fn formatOmittedBytesMarker(buf: []u8, omitted: usize) []const u8 {
+    // Pinned by the comptime assertion below the template: the widest
+    // rendering is 44 bytes and every caller passes a 48-byte stack
+    // buffer, so the print below cannot fail on a valid call.
     return std.mem.print(buf, omitted_bytes_marker_template, .{omitted}) catch unreachable;
 }
 

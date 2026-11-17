@@ -1,6 +1,6 @@
 # ISSUE-22 — codemode 输出保留后续打磨（T-12 验证 C1-C3）
 
-- **状态**: open
+- **状态**: closed
 - **发现时间**: 2026-11-17
 - **来源**: T-12-impl 独立验证（verify.md @ T-12-verify e32e75dff）非 blocking comments
 - **工作量**: 小
@@ -21,3 +21,7 @@ ISSUE-12 主体验证通过，验证员留下三条非阻塞打磨项：
 ## 处置
 
 （待完成）
+
+## 处置
+
+已亲改并合入 main：C1 两项都做（max_options_output_tokens 16_384→262_144 匹配 1MiB 捕获帽 + tools.zig 描述校准）；C2 失败正文按流追加共享 omitted 标记（无 drop 时逐字节不变）；C3 新增 omitted_bytes_marker_max_len=44 常量 + comptime 实渲断言钉死下界，catch unreachable 注释改为被断言保护。验收：fmt/build test/e2e 161 pass 全绿；真机探针两例（声明 262144 token 无 capture drop、超帽失败体精确标出 8192）。

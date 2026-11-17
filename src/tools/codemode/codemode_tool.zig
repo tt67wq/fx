@@ -78,6 +78,16 @@ const success_summary_title = "Nested tool calls (not undone):";
 /// Appends the display head and tail of captured output, joined by the
 /// shared omission marker, so a timed-out or thrown script's last lines
 /// stay visible.
+/// Appends the shared omission marker naming the capture-cap dropped
+/// byte count for one stream. Appends nothing when nothing was dropped,
+/// so ordinary failure bodies stay byte-identical.
+fn appendCaptureCapMarker(out: *std.ArrayList(u8), allocator: Allocator, dropped_bytes: usize) Allocator.Error!void {
+    if (dropped_bytes == 0) return;
+    var marker_buf: [text_utils.omitted_bytes_marker_max_len]u8 = undefined;
+    const marker = text_utils.formatOmittedBytesMarker(&marker_buf, dropped_bytes);
+    try out.appendSlice(allocator, marker);
+}
+
 fn appendFailureOutputHead(out: *std.ArrayList(u8), allocator: Allocator, bytes: []const u8) Allocator.Error!void {
     var trimmed: std.Io.Writer.Allocating = .init(allocator);
     defer trimmed.deinit();
@@ -111,10 +121,12 @@ fn formatFailureBody(
         if (has_text) {
             out.appendSlice(allocator, "\n\nPartial output before failure:\n") catch break :blk;
             appendFailureOutputHead(&out, allocator, partial.?.text) catch break :blk;
+            appendCaptureCapMarker(&out, allocator, partial.?.text_dropped_bytes) catch break :blk;
         }
         if (has_console) {
             out.appendSlice(allocator, "\n\nConsole output before failure:\n") catch break :blk;
             appendFailureOutputHead(&out, allocator, partial.?.console) catch break :blk;
+            appendCaptureCapMarker(&out, allocator, partial.?.console_dropped_bytes) catch break :blk;
         }
         if (nested_calls.len > 0 or nested_overflow) {
             out.appendSlice(allocator, "\n\n") catch break :blk;
@@ -456,6 +468,31 @@ test "failure body keeps head and tail of oversized output" {
     try std.testing.expect(std.mem.find(u8, body, "additional calls") != null);
 }
 
+test "failure body appends capture cap markers only when bytes dropped" {
+    const text = try std.testing.allocator.dupe(u8, "found 3 files");
+    defer std.testing.allocator.free(text);
+    const console = try std.testing.allocator.dupe(u8, "logged line");
+    defer std.testing.allocator.free(console);
+
+    // No drops: body is unchanged from the plain shape.
+    const plain = try formatFailureBody(std.testing.allocator, "codemode script failed: Timeout", .{ .text = text, .console = console }, &.{}, false);
+    defer std.testing.allocator.free(plain);
+    try std.testing.expectEqual(@as(usize, 0), std.mem.count(u8, plain, "bytes omitted]..."));
+
+    // Capture cap hit on both streams: each stream's body ends with the
+    // shared marker naming that stream's dropped count.
+    const body = try formatFailureBody(std.testing.allocator, "codemode script failed: Timeout", .{
+        .text = text,
+        .console = console,
+        .text_dropped_bytes = 500_000,
+        .console_dropped_bytes = 700,
+        .capture_limit_bytes = 1024 * 1024,
+    }, &.{}, false);
+    defer std.testing.allocator.free(body);
+    try std.testing.expect(std.mem.find(u8, body, "...[500000 bytes omitted]...") != null);
+    try std.testing.expect(std.mem.find(u8, body, "...[700 bytes omitted]...") != null);
+}
+
 // Plan v2 group 1: the success body puts the summary at the head, before
 // console/text/value, so a 4KiB externalized preview still shows it.
 // Golden hand-computed from the plan's format: title, record lines, one
@@ -760,8 +797,8 @@ fn optionsInteger(value: std.json.Value) OptionsParseError!u64 {
 
 /// Clamps declared options into the effective sandbox budget: the declared
 /// timeout replaces the host default, and the declared token budget becomes
-/// an output byte cap at 4 bytes per token, saturated at the host's 64KiB
-/// hard cap and never below the 1KiB floor.
+/// an output byte cap at 4 bytes per token, saturated at the host's hard
+/// cap (max_options_output_tokens) and never below the 1KiB floor.
 fn effectiveScriptOptions(options: ScriptOptions) EffectiveOptions {
     const timeout_ms: usize = if (options.timeout_ms) |declared|
         @intCast(declared)
@@ -819,12 +856,23 @@ test "effectiveScriptOptions clamps timeout and saturates tokens" {
     try std.testing.expectEqual(@as(usize, 60_000), declared.timeout_ms);
     try std.testing.expectEqual(@as(usize, 16_384), declared.output_buffer_bytes);
 
-    // A huge token value saturates at the token cap, below the 1MiB
-    // capture cap, and never overflows.
+    // A huge token value saturates at the token cap, which now matches
+    // the 1MiB capture cap, and never overflows.
     const huge = effectiveScriptOptions(.{ .max_output_tokens = std.math.maxInt(u64) });
-    try std.testing.expectEqual(@as(usize, 64 * 1024), huge.output_buffer_bytes);
+    try std.testing.expectEqual(@as(usize, 1024 * 1024), huge.output_buffer_bytes);
 
     // Small token values hold the floor.
     const tiny = effectiveScriptOptions(.{ .max_output_tokens = 1 });
     try std.testing.expectEqual(@as(usize, 1_024), tiny.output_buffer_bytes);
+}
+
+test "effectiveScriptOptions token ceiling reaches the capture cap" {
+    // C1: the declared-token ceiling now matches the 1MiB capture cap, so
+    // a script that declares a big budget gets the same buffer as one
+    // that declares nothing, and the tools.zig description stays true.
+    const at_cap = effectiveScriptOptions(.{ .max_output_tokens = 262_144 });
+    try std.testing.expectEqual(@as(usize, 1024 * 1024), at_cap.output_buffer_bytes);
+
+    const over_cap = effectiveScriptOptions(.{ .max_output_tokens = 262_145 });
+    try std.testing.expectEqual(@as(usize, 1024 * 1024), over_cap.output_buffer_bytes);
 }
