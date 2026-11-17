@@ -67,24 +67,24 @@ pub fn validate(_: tool_dispatch.DispatchContext, _: tool_dispatch.ToolInput) to
 const unavailable_message = "codemode is not available in this session.";
 
 /// Evaluates the script on the dedicated sandbox thread. The dispatch context
-/// The display head of captured output in a failure body. The 64KiB
-/// capture cap stays the first limit; this head is a second,
-/// presentation-only trim so one failure result cannot flood the context.
+/// The display budget of captured output in a failure body. The 1MiB
+/// capture cap stays the first limit; this trim is a second,
+/// presentation-only bound so one failure result cannot flood the context.
 const max_failure_output_head_bytes: usize = 4 * 1024;
 
-/// Appends the display head of captured output, with a truncation marker
-/// when the captured bytes exceed it.
 const failure_summary_title = "Nested tool calls before failure (not undone):";
 const success_summary_title = "Nested tool calls (not undone):";
 
+/// Appends the display head and tail of captured output, joined by the
+/// shared omission marker, so a timed-out or thrown script's last lines
+/// stay visible.
 fn appendFailureOutputHead(out: *std.ArrayList(u8), allocator: Allocator, bytes: []const u8) Allocator.Error!void {
-    const head = bytes[0..@min(bytes.len, max_failure_output_head_bytes)];
-    try out.appendSlice(allocator, head);
-    if (bytes.len > head.len) {
-        var buf: [96]u8 = undefined;
-        const marker = std.mem.print(&buf, "... output truncated ({d} more bytes)", .{bytes.len - head.len}) catch return error.OutOfMemory;
-        try out.appendSlice(allocator, marker);
-    }
+    var trimmed: std.Io.Writer.Allocating = .init(allocator);
+    defer trimmed.deinit();
+    text_utils.writeHeadTailOmittedBounded(&trimmed.writer, bytes, max_failure_output_head_bytes, .down) catch return error.OutOfMemory;
+    const display = trimmed.toOwnedSlice() catch return error.OutOfMemory;
+    defer allocator.free(display);
+    try out.appendSlice(allocator, display);
 }
 
 /// Assembles the failure body: the headline, plus the captured partial
@@ -144,8 +144,10 @@ fn failureBody(
 /// Appends the success body output: console, then text, then the
 /// completion value when the script called neither text() nor console.log
 /// ("1 + 1" must answer "2", not an empty output the model reads as
-/// silence and retries against).
-fn appendSuccessOutput(out: *std.ArrayList(u8), allocator: Allocator, console: []const u8, text: []const u8, value: []const u8) Allocator.Error!void {
+/// silence and retries against). When the capture cap dropped bytes, one
+/// shared marker line rides at the end so the model knows even the stored
+/// copy is missing them.
+fn appendSuccessOutput(out: *std.ArrayList(u8), allocator: Allocator, console: []const u8, text: []const u8, value: []const u8, capture_dropped_bytes: usize) Allocator.Error!void {
     try out.appendSlice(allocator, console);
     if (console.len > 0 and !std.mem.endsWith(u8, console, "\n")) try out.appendSlice(allocator, "\n");
     try out.appendSlice(allocator, text);
@@ -153,6 +155,10 @@ fn appendSuccessOutput(out: *std.ArrayList(u8), allocator: Allocator, console: [
     if (out.items.len == 0 and value.len > 0 and !std.mem.eql(u8, value, "undefined")) {
         try out.appendSlice(allocator, value);
         try out.appendSlice(allocator, "\n");
+    }
+    if (capture_dropped_bytes > 0) {
+        var marker_buf: [48]u8 = undefined;
+        try out.appendSlice(allocator, text_utils.formatOmittedBytesMarker(&marker_buf, capture_dropped_bytes));
     }
 }
 
@@ -194,10 +200,11 @@ fn formatSuccessBody(
     value: []const u8,
     nested_calls: []const tool_runtime.NestedCallRecord,
     nested_overflow: bool,
+    capture_dropped_bytes: usize,
 ) Allocator.Error![]u8 {
     var body: std.ArrayList(u8) = .empty;
     defer body.deinit(allocator);
-    try appendSuccessOutput(&body, allocator, console, text, value);
+    try appendSuccessOutput(&body, allocator, console, text, value, capture_dropped_bytes);
     if (nested_calls.len == 0 and !nested_overflow) {
         return body.toOwnedSlice(allocator);
     }
@@ -345,6 +352,7 @@ pub fn call(ctx: tool_dispatch.DispatchContext, erased: tool_dispatch.ToolInput)
         result.value,
         state.nested_calls[0..state.nested_call_count],
         state.nested_call_overflow,
+        result.text_dropped_bytes + result.console_dropped_bytes,
     ) catch return error.OutOfMemory;
     return .{ .success = body };
 }
@@ -457,7 +465,7 @@ test "success body puts the nested call summary at the head" {
         .{ .name = "read_file", .outcome = .ok, .duration_ms = 123 },
         .{ .name = "run_command", .outcome = .failure, .duration_ms = 45 },
     };
-    const body = try formatSuccessBody(std.testing.allocator, "", "", "done", &records, false);
+    const body = try formatSuccessBody(std.testing.allocator, "", "", "done", &records, false, 0);
     defer std.testing.allocator.free(body);
     try std.testing.expectEqualStrings(
         "Nested tool calls (not undone):\n" ++
@@ -478,7 +486,7 @@ test "success body summary covers every outcome and the overflow note" {
         .{ .name = "glob_files", .outcome = .denied, .duration_ms = 0 },
         .{ .name = "grep_files", .outcome = .cancelled, .duration_ms = 7 },
     };
-    const body = try formatSuccessBody(std.testing.allocator, "logged\n", "", "", &records, true);
+    const body = try formatSuccessBody(std.testing.allocator, "logged\n", "", "", &records, true, 0);
     defer std.testing.allocator.free(body);
     try std.testing.expectEqualStrings(
         "Nested tool calls (not undone):\n" ++
@@ -513,19 +521,19 @@ test "success body appends the capture cap marker only when bytes dropped" {
 test "success body without nested calls matches today's four forms" {
     const allocator = std.testing.allocator;
 
-    const console_only = try formatSuccessBody(allocator, "logged\n", "", "", &.{}, false);
+    const console_only = try formatSuccessBody(allocator, "logged\n", "", "", &.{}, false, 0);
     defer allocator.free(console_only);
     try std.testing.expectEqualStrings("logged\n", console_only);
 
-    const text_only = try formatSuccessBody(allocator, "", "result", "", &.{}, false);
+    const text_only = try formatSuccessBody(allocator, "", "result", "", &.{}, false, 0);
     defer allocator.free(text_only);
     try std.testing.expectEqualStrings("result\n", text_only);
 
-    const value_only = try formatSuccessBody(allocator, "", "", "42", &.{}, false);
+    const value_only = try formatSuccessBody(allocator, "", "", "42", &.{}, false, 0);
     defer allocator.free(value_only);
     try std.testing.expectEqualStrings("42\n", value_only);
 
-    const empty = try formatSuccessBody(allocator, "", "", "", &.{}, false);
+    const empty = try formatSuccessBody(allocator, "", "", "", &.{}, false, 0);
     defer allocator.free(empty);
     try std.testing.expectEqualStrings("", empty);
 }
@@ -555,7 +563,7 @@ test "success body renders 32 records plus the overflow note" {
         @splat(.{ .name = "glob_files", .outcome = .ok, .duration_ms = 5 });
     const overflow_line: []const u8 = "- ... additional calls not recorded\n";
     const repeated: []const u8 = text_utils.repeat("- glob_files: ok (5ms)\n", 32);
-    const body = try formatSuccessBody(std.testing.allocator, "", "", "done", &records, true);
+    const body = try formatSuccessBody(std.testing.allocator, "", "", "done", &records, true, 0);
     defer std.testing.allocator.free(body);
     try std.testing.expectEqualStrings(
         "Nested tool calls (not undone):\n" ++
@@ -611,7 +619,7 @@ test "success body keeps a whole body under allocation failures" {
     var fail_index: usize = 0;
     while (fail_index < 64) : (fail_index += 1) {
         var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = fail_index });
-        const body = formatSuccessBody(failing.allocator(), "logged\n", "", "", &records, false) catch |err| switch (err) {
+        const body = formatSuccessBody(failing.allocator(), "logged\n", "", "", &records, false, 0) catch |err| switch (err) {
             // The captured output itself could not be built; there is no
             // body to return, so the failure propagates.
             error.OutOfMemory => continue,
@@ -649,7 +657,7 @@ test "externalized success result keeps the head summary visible" {
     const records = [_]tool_runtime.NestedCallRecord{
         .{ .name = "read_file", .outcome = .ok, .duration_ms = 123 },
     };
-    const body = try formatSuccessBody(allocator, "", "", "done", &records, false);
+    const body = try formatSuccessBody(allocator, "", "", "done", &records, false, 0);
     defer allocator.free(body);
     // Pad past the externalization threshold so the store externalizes and
     // the model sees only the head preview.
