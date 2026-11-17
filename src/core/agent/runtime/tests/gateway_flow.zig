@@ -5112,7 +5112,8 @@ test "processQueuedPrompt retains complete skill content without granting ordina
         hooks.tool_registry = builtin_tools.registry;
         const result: runtime_tool_contracts.ToolExecutionResult = .{
             .model_content_kind = case.kind,
-            .model_output = "SKILL START\n" ++ text_utils.repeat("required instruction\n", 1400) ++ "COMPLETE_SKILL_TAIL",
+            .model_output = "SKILL START\n" ++ text_utils.repeat("required instruction\n", 700) ++
+                "SKILL-MIDDLE-ONLY\n" ++ text_utils.repeat("required instruction\n", 700) ++ "COMPLETE_SKILL_TAIL",
         };
         hooks.exec_plans = &.{ .{ .result = result }, .{ .result = result } };
         var fixture = PromptFixture{};
@@ -5124,9 +5125,14 @@ test "processQueuedPrompt retains complete skill content without granting ordina
         try std.testing.expectEqual(count, hooks.executed_names.items.len);
         try std.testing.expectEqual(@as(usize, 2), gateway.request_bodies.items.len);
         if (case.kind == .complete_skill) {
+            // A complete skill keeps its whole content, middle included.
+            try expectBodyContains(&gateway, 1, "SKILL-MIDDLE-ONLY");
             try expectBodyContains(&gateway, 1, "COMPLETE_SKILL_TAIL");
         } else {
-            try expectBodyNotContains(&gateway, 1, "COMPLETE_SKILL_TAIL");
+            // An ordinary result's head-tail preview keeps both ends but
+            // not the middle, and never gains complete-skill status.
+            try expectBodyNotContains(&gateway, 1, "SKILL-MIDDLE-ONLY");
+            try expectBodyContains(&gateway, 1, "COMPLETE_SKILL_TAIL");
         }
     }
 }

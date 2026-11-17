@@ -1,4 +1,5 @@
 const std = @import("std");
+const text_utils = @import("../../core/shared/text_utils.zig");
 
 /// In-script cap for one shell result. The model-facing path keeps its own
 /// 64KiB truncation; this budget only bounds the host-allocated bridge string
@@ -38,8 +39,8 @@ pub fn encodeResultJson(
         const head_len = budget_bytes / 2;
         const tail_len = budget_bytes - head_len;
         const omitted = output.len - head_len - tail_len;
-        var marker_buf: [64]u8 = undefined;
-        const marker = try std.mem.print(&marker_buf, "\n...[{} bytes omitted]...\n", .{omitted});
+        var marker_buf: [48]u8 = undefined;
+        const marker = text_utils.formatOmittedBytesMarker(&marker_buf, omitted);
         try payload.ensureTotalCapacity(allocator, head_len + marker.len + tail_len);
         payload.appendSliceAssumeCapacity(output[0..head_len]);
         payload.appendSliceAssumeCapacity(marker);

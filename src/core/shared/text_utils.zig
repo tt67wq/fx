@@ -66,6 +66,53 @@ pub fn writeHeadTailBounded(
     try writer.writeAll(text[tail_start..]);
 }
 
+/// The shared omission marker for head-tail truncation: one line naming
+/// the dropped byte count. The codemode shell bridge, the codemode tool
+/// paths, and the shared result preview all print this exact wording, so
+/// the model sees one truncation shape everywhere.
+pub const omitted_bytes_marker_template = "\n...[{d} bytes omitted]...\n";
+
+/// Formats the shared omission marker into 'buf' and returns the marker
+/// slice. 'buf' must hold at least 44 bytes: the fixed wording plus the
+/// 20 digits of the widest usize; callers pass a stack buffer.
+pub fn formatOmittedBytesMarker(buf: []u8, omitted: usize) []const u8 {
+    return std.mem.print(buf, omitted_bytes_marker_template, .{omitted}) catch unreachable;
+}
+
+/// Writes text truncated to max_bytes as head + shared omission marker +
+/// tail with rune-safe cut points, computing the marker's dropped count
+/// from the bytes this call actually leaves out, so the number is exact.
+/// The output never exceeds max_bytes. The caller chooses how the
+/// retained budget splits between head and tail when it is odd.
+pub fn writeHeadTailOmittedBounded(
+    writer: *std.Io.Writer,
+    text: []const u8,
+    max_bytes: usize,
+    head_rounding: HeadRounding,
+) !void {
+    if (text.len <= max_bytes) return writer.writeAll(text);
+    // The marker length depends on the dropped digit count, which depends
+    // on the retained split. Split with the widest marker, whose count is
+    // the whole text, so the final output stays within budget however many
+    // digits the exact count loses.
+    var widest_buf: [48]u8 = undefined;
+    const widest = formatOmittedBytesMarker(&widest_buf, text.len);
+    if (max_bytes <= widest.len) return writer.writeAll(widest[0..max_bytes]);
+    const retained_bytes = max_bytes - widest.len;
+    const head_bytes = switch (head_rounding) {
+        .down => retained_bytes / 2,
+        .up => (retained_bytes + 1) / 2,
+    };
+    const tail_bytes = retained_bytes - head_bytes;
+    const head_end = utf8BackwardBoundary(text, head_bytes);
+    const tail_start = utf8ForwardBoundary(text, text.len - tail_bytes);
+    var marker_buf: [48]u8 = undefined;
+    const marker = formatOmittedBytesMarker(&marker_buf, tail_start - head_end);
+    try writer.writeAll(text[0..head_end]);
+    try writer.writeAll(marker);
+    try writer.writeAll(text[tail_start..]);
+}
+
 pub fn utf8PrefixByBytes(text: []const u8, max_bytes: usize) []const u8 {
     return text[0..utf8BackwardBoundary(text, max_bytes)];
 }
@@ -1320,6 +1367,49 @@ test "encodeTerminalSafeInline applies the byte budget after flattening" {
 
     try std.testing.expectEqualStrings("one t...", encoded.bytes);
     try std.testing.expect(encoded.truncated);
+}
+
+test "writeHeadTailOmittedBounded keeps head and tail with the exact count" {
+    var text_buf: [104]u8 = undefined;
+    @memset(&text_buf, 'x');
+    @memcpy(text_buf[0..4], "HEAD");
+    @memcpy(text_buf[100..104], "TAIL");
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    try writeHeadTailOmittedBounded(&out.writer, text_buf[0..], 32, .down);
+    const written = try out.toOwnedSlice();
+    defer std.testing.allocator.free(written);
+    // The widest marker (count = the whole text) bounds the split, so the
+    // output stays within budget; the printed count is the exact number.
+    try std.testing.expectEqualStrings("HE\n...[99 bytes omitted]...\nAIL", written);
+}
+
+test "writeHeadTailOmittedBounded keeps whole codepoints at both cuts" {
+    var text_buf: [220]u8 = undefined;
+    @memset(&text_buf, 'a');
+    @memcpy(text_buf[0..2], "ab");
+    var i: usize = 2;
+    while (i < text_buf.len) : (i += 2) {
+        @memcpy(text_buf[i..][0..2], "\xc3\xa9");
+    }
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    try writeHeadTailOmittedBounded(&out.writer, text_buf[0..], 40, .down);
+    const written = try out.toOwnedSlice();
+    defer std.testing.allocator.free(written);
+    try std.testing.expect(written.len <= 40);
+    try std.testing.expect(std.unicode.utf8ValidateSlice(written));
+    try std.testing.expect(std.mem.endsWith(u8, written, "\xc3\xa9"));
+    const marker_open = std.mem.find(u8, written, "\n...[").?;
+    const marker_close = std.mem.find(u8, written, " bytes omitted]...\n").?;
+    const omitted = try std.fmt.parseInt(usize, written[marker_open + "\n...[".len .. marker_close], 10);
+    const kept = written[0..marker_open].len + written[marker_close + " bytes omitted]...\n".len ..].len;
+    try std.testing.expectEqual(text_buf.len - kept, omitted);
+}
+
+test "formatOmittedBytesMarker matches the shared template" {
+    var buf: [48]u8 = undefined;
+    try std.testing.expectEqualStrings("\n...[7 bytes omitted]...\n", formatOmittedBytesMarker(&buf, 7));
 }
 
 test "isTerminalSafe matches byte-preserving terminal encoding" {

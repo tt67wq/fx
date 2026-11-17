@@ -634,8 +634,15 @@ fn cappedInlineOutput(alloc: Allocator, tool_name: []const u8, text: []const u8,
     return try std.mem.concat(alloc, u8, &.{ text[0..prefix_len], marker });
 }
 
+/// The model-visible preview of a stored result: head and tail halves of
+/// the text joined by the shared omission marker, so an oversized tail is
+/// visible without reading the handle. The whole preview stays within
+/// max_bytes on UTF-8 boundaries.
 pub fn previewText(alloc: Allocator, text: []const u8, max_bytes: usize) ![]u8 {
-    return try alloc.dupe(u8, text_utils.utf8PrefixByBytes(text, max_bytes));
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    defer out.deinit();
+    try text_utils.writeHeadTailOmittedBounded(&out.writer, text, max_bytes, .down);
+    return try out.toOwnedSlice();
 }
 
 /// The handle `storeLargeResultManaged` gives `text`: the name holds the call
@@ -865,8 +872,11 @@ test "a v2 session stores results and images as blobs named by their hash (D44)"
     defer capability.deinit();
 
     var bytes: [large_result_threshold_bytes + 128]u8 = @splat('x');
-    bytes[0..12].* = "V2STOREDHEAD".*;
-    bytes[bytes.len - 12 ..].* = "V2STOREDTAIL".*;
+    bytes[3] = '\n';
+    // The sentinels sit inside the fill so the byte- and line-position
+    // assertions below keep their original offsets.
+    bytes[8..20].* = "V2STOREDHEAD".*;
+    bytes[bytes.len - 20 .. bytes.len - 8].* = "V2STOREDTAIL".*;
     const prepared = try prepareManaged(alloc, &capability, "call/1", "run_command", bytes.len, bytes[0..], 64 * 1024);
     defer alloc.free(prepared.model_output);
     defer alloc.free(@constCast(prepared.memory.output_handle.?));
