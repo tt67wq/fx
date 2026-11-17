@@ -181,6 +181,14 @@ fn makeSchema(alloc: Allocator, name: []const u8, fill_len: usize) !TestSchema {
     return .{ .buf = buf[0..total :0] };
 }
 
+test "catalog owns no default budget; config does" {
+    // F4: the default budget lives in context_limits (codemode_catalog_bytes,
+    // resolved through --context-limit and settings.json). select() takes the
+    // budget as a parameter, so the catalog module must not carry a competing
+    // default that a config change would silently leave behind.
+    try std.testing.expect(!@hasDecl(@This(), "default_budget_bytes"));
+}
+
 test "catalog keeps the real nine-item derived face whole under the default budget" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
