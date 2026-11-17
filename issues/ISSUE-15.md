@@ -1,6 +1,6 @@
 # ISSUE-15 — codemode 工具目录预算与 searchTools 检索
 
-- **状态**: fixing（T-15 实现完成待合并：T-15-impl 分支红 9dfc58331 绿 90536516c + F1/F3 修复 e3fe23980，复审 approve-with-comments 6a059a98f，0 blocking；F2/F4/F5/F6 打磨项开后续 issue，F11 手册 Docs 进 MR 描述）
+- **状态**: closed（T-15 已合并 main：目录预算机制+searchTools/describeTool；预算键 context_limits.codemode_catalog_bytes 默认 16KiB；当前 9 项面不触发；F2/F4/F5/F6 打磨见 ISSUE-21）
 - **发现时间**: 2026-11-10
 - **来源**: fx codemode 与 pi 1.5.1 源码对比
 - **工作量**: 中
