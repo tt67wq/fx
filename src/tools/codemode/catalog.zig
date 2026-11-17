@@ -188,6 +188,25 @@ test "catalog owns no default budget; config does" {
     try std.testing.expect(!@hasDecl(@This(), "default_budget_bytes"));
 }
 
+test "notice floor covers the rendered hint and six omitted entries" {
+    // F2 sentinel, pinned to F5: the floor must reserve room for the full
+    // hint (base text plus the budget clause rendered with two 12-digit
+    // numbers and the longest source label) plus its own-property overhead
+    // and six omitted entries at the worst per-entry size. Adding a
+    // sentence to the hint or the clause turns this red before the floor
+    // can silently stop covering the notice.
+    const context_limits = @import("../../core/config/context_limits.zig");
+    const discovery = @import("discovery.zig");
+    var buf: [1024]u8 = undefined;
+    const clause = try std.mem.print(&buf, discovery.catalog_budget_clause, .{
+        @as(usize, 999_999_999_999),
+        @as(usize, 999_999_999_999),
+        context_limits.Source.user_workspace.label(),
+    });
+    const rendered_hint_len = discovery.catalog_hint.len + clause.len;
+    try std.testing.expect(catalog_notice_floor_bytes >= 10 + rendered_hint_len + 13 + 6 * 70);
+}
+
 test "catalog keeps the real nine-item derived face whole under the default budget" {
     // F4: the sentinel reads the shipped default from context_limits, so a
     // future default change moves the guard with it instead of pinning the
