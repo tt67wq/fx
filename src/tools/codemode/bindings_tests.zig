@@ -16,7 +16,7 @@ test "codemode tool registry holds three read-only tools plus run_command" {
     try std.testing.expect(bindings.find("write_file") == null);
 }
 
-test "sandbox face locks the shipped four names and the nine-name derived face" {
+test "sandbox face locks the shipped four names and the ten-name derived face" {
     const registry = builtin_tools.registry;
     // The shipped face is what a fresh profile gets; the default-face
     // lookups below are about that face, not the gate-open one.
@@ -26,10 +26,14 @@ test "sandbox face locks the shipped four names and the nine-name derived face" 
     for (closed_names, closed) |expected, tool| {
         try std.testing.expectEqualStrings(expected, tool.name);
     }
+    try std.testing.expect(bindings.find("run_script") == null);
+    try std.testing.expect(bindings.findIn(closed, "run_script") == null);
 
     // The derived face is every marked tool in registry order, then
-    // run_command. The gate selects this face; it never authorizes a call,
-    // so write and edit tools appear here and are still admitted per call.
+    // run_command, then run_script. The gate selects this face; it never
+    // authorizes a call, so write and edit tools appear here and are still
+    // admitted per call. run_script is script-facing only: it has no
+    // registry entry and canonicalizes onto the shell tool like run_command.
     const open = bridge.sandboxFace(registry, true);
     const open_names = [_][]const u8{
         "glob_files",
@@ -41,6 +45,7 @@ test "sandbox face locks the shipped four names and the nine-name derived face" 
         "ask_user_question",
         "vision",
         "run_command",
+        "run_script",
     };
     try std.testing.expectEqual(open_names.len, open.len);
     for (open_names, open) |expected, tool| {

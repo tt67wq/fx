@@ -22,6 +22,14 @@ pub const catalog_notice_floor_bytes: usize = 1024;
 /// tool until MCP groups arrive).
 pub const Tier = enum { t0, t1, t2 };
 
+test "run_script sits in tier two" {
+    // Plan question 4: run_script is not an exemption. Tier zero means
+    // "today's existing behavior must always be listed"; a new primitive
+    // lands in tier two and takes part in budget selection like any other
+    // non-exempt face entry.
+    try std.testing.expectEqual(Tier.t2, tierOf("run_script"));
+}
+
 pub fn tierOf(name: []const u8) Tier {
     const t0_names = [_][]const u8{ "glob_files", "grep_files", "read_file", "run_command" };
     const t1_names = [_][]const u8{ "write_file", "edit_file" };

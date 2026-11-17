@@ -355,6 +355,164 @@ test "other whitelisted tools keep their exact arguments" {
     try std.testing.expectEqualStrings("{\"path\":\"notes.txt\"}", canonical.arguments_json);
 }
 
+// --- run_script tests (T-20) ---
+
+test "run_script python canonicalizes to a fixed python3 argv through a fx temp script" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const canonical = try canonicalNestedCall(
+        arena_state.allocator(),
+        .{ .name = "run_script" },
+        "{\"language\":\"python\",\"code\":\"print('hi')\"}",
+    );
+    try std.testing.expectEqualStrings("shell", canonical.name);
+    // argv is always exactly python3 plus the fx-written temp script path;
+    // model text never becomes an argv token.
+    try std.testing.expect(std.mem.startsWith(u8, canonical.arguments_json, "{\"action\":\"run\",\"command\":\"python3 "));
+    try std.testing.expect(std.mem.endsWith(u8, canonical.arguments_json, "/script.py\"}"));
+}
+
+test "run_script shell forwards the code as the shell command" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const canonical = try canonicalNestedCall(
+        arena_state.allocator(),
+        .{ .name = "run_script" },
+        "{\"language\":\"shell\",\"code\":\"echo hi\"}",
+    );
+    try std.testing.expectEqualStrings("shell", canonical.name);
+    try std.testing.expectEqualStrings(
+        "{\"action\":\"run\",\"command\":\"echo hi\"}",
+        canonical.arguments_json,
+    );
+}
+
+test "run_script rejects a language outside the v1 enum" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    // v1 whitelist: shell + python. Neither python3 nor node may smuggle in
+    // through the language field; the interpreter token comes from the enum.
+    try std.testing.expectError(
+        error.InvalidToolArguments,
+        canonicalNestedCall(arena, .{ .name = "run_script" }, "{\"language\":\"node\",\"code\":\"1\"}"),
+    );
+    try std.testing.expectError(
+        error.InvalidToolArguments,
+        canonicalNestedCall(arena, .{ .name = "run_script" }, "{\"language\":\"python3\",\"code\":\"1\"}"),
+    );
+    try std.testing.expectError(
+        error.InvalidToolArguments,
+        canonicalNestedCall(arena, .{ .name = "run_script" }, "{\"language\":\"-python\",\"code\":\"1\"}"),
+    );
+}
+
+test "run_script rejects interpreter option fields at normalization" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    // Any field that would carry interpreter tokens (args, interpreter, ...)
+    // is an unknown field and is rejected here, in canonicalNestedCall,
+    // before admission or the shell decode layer ever sees it.
+    try std.testing.expectError(
+        error.InvalidToolArguments,
+        canonicalNestedCall(arena, .{ .name = "run_script" }, "{\"language\":\"python\",\"code\":\"1\",\"args\":[\"-c\",\"evil\"]}"),
+    );
+    try std.testing.expectError(
+        error.InvalidToolArguments,
+        canonicalNestedCall(arena, .{ .name = "run_script" }, "{\"language\":\"python\",\"code\":\"1\",\"interpreter\":\"-c\"}"),
+    );
+}
+
+test "run_script rejects a dash-prefixed file path" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    try std.testing.expectError(
+        error.InvalidToolArguments,
+        canonicalNestedCall(
+            arena_state.allocator(),
+            .{ .name = "run_script" },
+            "{\"language\":\"python\",\"code\":\"1\",\"file\":\"-rf\"}",
+        ),
+    );
+}
+
+test "run_script requires a string code" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    try std.testing.expectError(
+        error.InvalidToolArguments,
+        canonicalNestedCall(arena, .{ .name = "run_script" }, "{\"language\":\"python\"}"),
+    );
+    try std.testing.expectError(
+        error.InvalidToolArguments,
+        canonicalNestedCall(arena, .{ .name = "run_script" }, "{\"language\":\"python\",\"code\":5}"),
+    );
+    try std.testing.expectError(
+        error.InvalidToolArguments,
+        canonicalNestedCall(arena, .{ .name = "run_script" }, "[]"),
+    );
+}
+
+test "run_script clamps timeout_ms into the host options range" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const low = try canonicalNestedCall(
+        arena,
+        .{ .name = "run_script" },
+        "{\"language\":\"shell\",\"code\":\"true\",\"timeout_ms\":5}",
+    );
+    try std.testing.expectEqualStrings(
+        "{\"action\":\"run\",\"command\":\"true\",\"timeout_ms\":1000}",
+        low.arguments_json,
+    );
+    const high = try canonicalNestedCall(
+        arena,
+        .{ .name = "run_script" },
+        "{\"language\":\"shell\",\"code\":\"true\",\"timeout_ms\":500000}",
+    );
+    try std.testing.expectEqualStrings(
+        "{\"action\":\"run\",\"command\":\"true\",\"timeout_ms\":120000}",
+        high.arguments_json,
+    );
+    // A non-integer timeout is a malformed argument, not a default.
+    try std.testing.expectError(
+        error.InvalidToolArguments,
+        canonicalNestedCall(arena, .{ .name = "run_script" }, "{\"language\":\"shell\",\"code\":\"true\",\"timeout_ms\":\"soon\"}"),
+    );
+}
+
+test "schemas renders the run_script schema on the derived face" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const face = sandboxFace(builtin_tools.registry, true);
+    const injected = try schemas(arena, builtin_tools.registry, face);
+    var found = false;
+    for (injected) |schema| {
+        if (!std.mem.eql(u8, schema.name, "run_script")) continue;
+        found = true;
+        var parsed = try std.json.parseFromSlice(std.json.Value, arena, schema.schema_json, .{});
+        defer parsed.deinit();
+        const props = parsed.value.object.get("inputSchema").?.object.get("properties").?.object;
+        try std.testing.expect(props.get("language") != null);
+        try std.testing.expect(props.get("code") != null);
+        const language = props.get("language").?.object.get("enum").?.array;
+        try std.testing.expectEqual(@as(usize, 2), language.items.len);
+        try std.testing.expectEqualStrings("shell", language.items[0].string);
+        try std.testing.expectEqualStrings("python", language.items[1].string);
+        const required = parsed.value.object.get("inputSchema").?.object.get("required").?.array;
+        try std.testing.expectEqual(@as(usize, 2), required.items.len);
+        // Plan question 4: the run_script schema lands near the 300-500 byte
+        // band relative to the 16KiB catalog budget.
+        try std.testing.expect(schema.schema_json.len >= 300);
+        try std.testing.expect(schema.schema_json.len <= 768);
+    }
+    try std.testing.expect(found);
+}
+
 /// Maps a script-facing whitelist name to the registered tool that backs
 /// it. run_command is the shell tool's captured-command compatibility name
 /// (see canonicalNestedCall); every other name is its own registry entry.

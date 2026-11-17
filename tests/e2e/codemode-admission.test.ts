@@ -567,7 +567,165 @@ describe("codemode nested admission parity", () => {
   );
 });
 
-  test("tools.list exposes parsed schema objects inside scripts", async () => {
+  // --- run_script tests (T-20): multi-language execute primitive ---
+
+test("run_script python captures stdout and reports non-zero exit", async () => {
+  const root = createIsolatedRoot({ codemode_derived_surface: true });
+  const script =
+    `const ok = await tools.call("run_script", JSON.stringify({` +
+    `language: 'python', code: "print('py-ok-1137')" }));` +
+    `const bad = await tools.call("run_script", JSON.stringify({` +
+    `language: 'python', code: "import sys; print('py-err-line'); sys.exit(3)" }));` +
+    `text(JSON.stringify({ ok: JSON.parse(ok), bad: JSON.parse(bad) }));`;
+  const gateway = startGateway([
+    fakeGatewayToolCall("run-script-1", "codemode", { script }),
+    fakeGatewayFinalText("RUN_SCRIPT_DONE"),
+  ]);
+  try {
+    const result = await runFx(
+      ["ask", "--quiet", "--json", "--yolo", "--no-save", "Probe run_script."],
+      { cwd: root.workspace, env: gatewayEnv(root, gateway), timeoutMs: TIMEOUT },
+    );
+    expect(result.code, "stderr: " + result.stderr.slice(0, 400)).toBe(0);
+    const body = stripNestedCallSummary(
+      toolResultText(gateway.requests[1]!.body, "run-script-1"),
+    );
+    const report = JSON.parse(body) as {
+      ok: { exit_code: number; output: string; truncated: boolean };
+      bad: { exit_code: number; output: string };
+    };
+    expect(report.ok.exit_code).toBe(0);
+    expect(report.ok.output).toContain("py-ok-1137");
+    expect(report.ok.truncated).toBe(false);
+    expect(report.bad.exit_code).toBe(3);
+    expect(report.bad.output).toContain("py-err-line");
+  } finally {
+    rmSync(root.workspace, { recursive: true, force: true });
+  }
+}, TIMEOUT);
+
+test("run_script forwards a workspace file through CTX_FILE", async () => {
+  const root = createIsolatedRoot({ codemode_derived_surface: true });
+  writeFileSync(join(root.workspace, "big-data.txt"), "ctx-file-payload-914");
+  const script =
+    `const r = await tools.call("run_script", JSON.stringify({` +
+    `language: 'python',` +
+    `code: "import os,sys; sys.stdout.write(open(os.environ['CTX_FILE']).read())",` +
+    `file: 'big-data.txt' }));` +
+    `text(String(JSON.parse(r).output));`;
+  const gateway = startGateway([
+    fakeGatewayToolCall("ctx-file-1", "codemode", { script }),
+    fakeGatewayFinalText("CTX_FILE_DONE"),
+  ]);
+  try {
+    const result = await runFx(
+      ["ask", "--quiet", "--json", "--yolo", "--no-save", "Probe CTX_FILE."],
+      { cwd: root.workspace, env: gatewayEnv(root, gateway), timeoutMs: TIMEOUT },
+    );
+    expect(result.code, "stderr: " + result.stderr.slice(0, 400)).toBe(0);
+    const body = stripNestedCallSummary(
+      toolResultText(gateway.requests[1]!.body, "ctx-file-1"),
+    );
+    expect(body).toContain("ctx-file-payload-914");
+  } finally {
+    rmSync(root.workspace, { recursive: true, force: true });
+  }
+}, TIMEOUT);
+
+test("run_script rejects interpreter option fields at normalization", async () => {
+  const root = createIsolatedRoot({ codemode_derived_surface: true });
+  const script =
+    `var caught = "";` +
+    `try { await tools.call("run_script", JSON.stringify({` +
+    `language: 'python', code: '1', args: ['-c', 'print(1337)'] }));` +
+    `} catch (e) { caught = String(e.message || e); }` +
+    `text(caught);`;
+  const gateway = startGateway([
+    fakeGatewayToolCall("dash-reject-1", "codemode", { script }),
+    fakeGatewayFinalText("DASH_REJECT_DONE"),
+  ]);
+  try {
+    const result = await runFx(
+      ["ask", "--quiet", "--json", "--yolo", "--no-save", "Probe rejection."],
+      { cwd: root.workspace, env: gatewayEnv(root, gateway), timeoutMs: TIMEOUT },
+    );
+    expect(result.code, "stderr: " + result.stderr.slice(0, 400)).toBe(0);
+    const body = toolResultText(gateway.requests[1]!.body, "dash-reject-1");
+    expect(body).toContain("InvalidToolArguments");
+    expect(body).not.toContain("1337");
+  } finally {
+    rmSync(root.workspace, { recursive: true, force: true });
+  }
+}, TIMEOUT);
+
+test("run_script is hidden while the derived gate is closed", async () => {
+  const root = createIsolatedRoot();
+  const script =
+    `var list = tools.list();` +
+    `var names = list.map(t => t.name);` +
+    `var callErr = "";` +
+    `try { await tools.call("run_script", JSON.stringify({` +
+    `language: 'python', code: '1' }));` +
+    `} catch (e) { callErr = String(e.message || e); }` +
+    `text(JSON.stringify({ names: names.join(","), callErr: callErr }));`;
+  const gateway = startGateway([
+    fakeGatewayToolCall("gate-closed-1", "codemode", { script }),
+    fakeGatewayFinalText("GATE_CLOSED_DONE"),
+  ]);
+  try {
+    const result = await runFx(
+      ["ask", "--quiet", "--json", "--yolo", "--no-save", "Probe the closed gate."],
+      { cwd: root.workspace, env: gatewayEnv(root, gateway), timeoutMs: TIMEOUT },
+    );
+    expect(result.code, "stderr: " + result.stderr.slice(0, 400)).toBe(0);
+    const body = stripNestedCallSummary(
+      toolResultText(gateway.requests[1]!.body, "gate-closed-1"),
+    );
+    const report = JSON.parse(body) as { names: string; callErr: string };
+    expect(report.names).toBe("glob_files,grep_files,read_file,run_command");
+    expect(report.callErr).toContain("unknown codemode tool: run_script");
+  } finally {
+    rmSync(root.workspace, { recursive: true, force: true });
+  }
+}, TIMEOUT);
+
+test("run_script is listed with its schema on the derived surface", async () => {
+  const root = createIsolatedRoot({ codemode_derived_surface: true });
+  const script =
+    `var list = tools.list();` +
+    `var rs = list.find(t => t.name === "run_script");` +
+    `text(JSON.stringify({` +
+    `names: list.map(t => t.name).join(','),` +
+    `languageEnum: rs ? rs.parameters.properties.language.enum : null,` +
+    `required: rs ? rs.parameters.required.join(',') : null }));`;
+  const gateway = startGateway([
+    fakeGatewayToolCall("derived-list-1", "codemode", { script }),
+    fakeGatewayFinalText("DERIVED_LIST_DONE"),
+  ]);
+  try {
+    const result = await runFx(
+      ["ask", "--quiet", "--json", "--yolo", "--no-save", "Probe the derived list."],
+      { cwd: root.workspace, env: gatewayEnv(root, gateway), timeoutMs: TIMEOUT },
+    );
+    expect(result.code, "stderr: " + result.stderr.slice(0, 400)).toBe(0);
+    const body = stripNestedCallSummary(
+      toolResultText(gateway.requests[1]!.body, "derived-list-1"),
+    );
+    const report = JSON.parse(body) as {
+      names: string;
+      languageEnum: string[];
+      required: string;
+    };
+    expect(report.names).toContain("run_script");
+    expect(report.languageEnum).toEqual(["shell", "python"]);
+    expect(report.required).toBe("language,code");
+  } finally {
+    rmSync(root.workspace, { recursive: true, force: true });
+  }
+}, TIMEOUT);
+
+
+test("tools.list exposes parsed schema objects inside scripts", async () => {
     const root = createIsolatedRoot();
     const gateway = startGateway([
       fakeGatewayToolCall("schema-probe", "codemode", {
