@@ -233,7 +233,10 @@ fn catalogBudgetFor(derived_surface: bool, limits: context_limits.Values) ?usize
 
 test "catalog budget gate opens only on the derived surface with a non-off limit" {
     var limits = context_limits.Values{};
-    try std.testing.expectEqual(@as(?usize, 16 * 1024), catalogBudgetFor(true, limits));
+    try std.testing.expectEqual(
+        @as(?usize, context_limits.Name.codemode_catalog_bytes.defaultBytes()),
+        catalogBudgetFor(true, limits),
+    );
     try std.testing.expectEqual(@as(?usize, null), catalogBudgetFor(false, limits));
     limits.set(.codemode_catalog_bytes, .{ .value = .off, .source = .command_line });
     try std.testing.expectEqual(@as(?usize, null), catalogBudgetFor(true, limits));

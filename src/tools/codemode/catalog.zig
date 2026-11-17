@@ -10,10 +10,6 @@ const Allocator = std.mem.Allocator;
 /// floor in host.zig (options_output_floor_bytes).
 pub const catalog_notice_floor_bytes: usize = 512;
 
-/// The default budget lives in context_limits (codemode_catalog_bytes,
-/// 16 KiB); tests and the selector below only see the resolved value.
-pub const default_budget_bytes: usize = 16 * 1024;
-
 /// Placement priority. Tier zero is the catalog exemption the codemode
 /// contract text already names: these four tools are today's existing
 /// behavior and must always be listed regardless of budget. Tier one holds
@@ -190,6 +186,11 @@ test "catalog owns no default budget; config does" {
 }
 
 test "catalog keeps the real nine-item derived face whole under the default budget" {
+    // F4: the sentinel reads the shipped default from context_limits, so a
+    // future default change moves the guard with it instead of pinning the
+    // old number here.
+    const context_limits = @import("../../core/config/context_limits.zig");
+    const default_budget = context_limits.Name.codemode_catalog_bytes.defaultBytes();
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -203,9 +204,9 @@ test "catalog keeps the real nine-item derived face whole under the default budg
     // decision someone has to make explicitly, not silently.
     var total: usize = 0;
     for (schemas) |schema| total += schema.schema_json.len;
-    try std.testing.expect(total < default_budget_bytes);
+    try std.testing.expect(total < default_budget);
 
-    const selection = try select(arena, schemas, default_budget_bytes);
+    const selection = try select(arena, schemas, default_budget);
     try std.testing.expectEqual(false, selection.triggered);
     try std.testing.expectEqual(@as(usize, 9), selection.indexes.len);
     try std.testing.expectEqual(@as(usize, 0), selection.omitted.len);
