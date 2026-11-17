@@ -32,8 +32,8 @@ QuickJS 沙箱继续零 spawn，进程树与超时归 shell 运行时；新原�
 执行路径（违反 AGENTS.md「What Not To Do」）。落地：在 `canonicalNestedCall`（`bridge.zig:182-213`）
 加分支，把 `run_script{language,code,...}` 规范化为 `shell action:"run"`，`command` 由 fx 拼出固定
 argv；解释器 token 只从 `language` 枚举取，绝不信模型文本。
-选项注入收口（python `-c`/`-m` 拼接）：code 走 stdin 而非 argv，fx 只发
-`python3 -`；模型的任何带 `-` 前缀 token 一律拒。shell 类语言直接把整条命令交给 shell `action:"run"`，
+选项注入收口（python `-c`/`-m` 拼接）：code 由 fx 写入临时脚本文件（复用问 3 的 CTX_FILE 机制，host 写文件非起进程），fx 只发
+`python3 <fx临时脚本路径>`；模型的任何带 `-` 前缀 token 一律拒。（修正 B1：原稿 stdin 形态不可实现，shell action:run 允许字段无 stdin，shell.zig:80-84；临时脚本文件与 stdin 安全等价：解释器 token 来自枚举、脚本路径 fx 写入，模型文本永远不进 argv。）shell 类语言直接把整条命令交给 shell `action:"run"`，
 `command_effect.plan` 词形守卫照常生效。v1 进面语言：`shell` + `python`（node/ts 留 QuickJS 内，
 其他运行时走派生面开关）；其余语言留待后续按同规则逐个白名单放行。
 
@@ -82,7 +82,7 @@ recovery 之外。回归以确定性测试落点：`bindings_tests.zig` / `sandb
 
 ## 落地顺序（TDD，供实现票）
 
-1. 红测试：`run_script{language:"python",code}` 规范化为 `shell action:"run"` 且 argv 为 `python3 -`、code 走 stdin；
+1. 红测试：`run_script{language:"python",code}` 规范化为 `shell action:"run"` 且 argv 为 `python3 <fx临时脚本路径>`、code 经 fx 写入的临时文件（非 stdin，见 B1 修正）；
    带 `-` 前缀模型 token 被拒。2. 扩 `canonicalNestedCall`（`bridge.zig:182-213`）+ 语言白名单常量。
 3. `CTX_FILE` 临时文件注入 + env 透传。4. `sandbox_reachable`/派生面 + catalog T2 接入。
 5. 输出帽/handle 复用 `shell.encodeResultJson`。6. `--help` 与 fx.sh/docs codemode 页。
