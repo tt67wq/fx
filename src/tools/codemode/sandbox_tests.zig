@@ -1,5 +1,6 @@
 const std = @import("std");
 const io_mod = @import("../../core/shared/io.zig");
+const result_store = @import("../../core/session/result_store.zig");
 const host_mod = @import("host.zig");
 const sandbox_mod = @import("sandbox.zig");
 
@@ -181,6 +182,58 @@ test "sandbox host cancel flag reads through to host.cancelled" {
     try std.testing.expect(!sandbox.cancelRequested());
     sandbox.cancel();
     try std.testing.expect(sandbox.cancelRequested());
+}
+
+test "sandbox keeps a 200KiB capture whole and the stored preview spans head and tail" {
+    var sandbox = Sandbox.init(std.testing.allocator, .{ .timeout_ms = 30_000 });
+    var cancel_flag = std.atomic.Value(bool).init(false);
+    sandbox.cancel_flag = &cancel_flag;
+    defer sandbox.deinit();
+    try sandbox.start();
+
+    var result = try sandbox.eval(
+        \\text("CODEMODE-HEAD|" + "x".repeat(200 * 1024) + "|CODEMODE-TAIL");
+        \\1;
+    );
+    defer result.deinit();
+    const head_sentinel = "CODEMODE-HEAD|";
+    const tail_sentinel = "|CODEMODE-TAIL";
+    // The 1MiB capture cap keeps all 200KiB+ bytes whole.
+    try std.testing.expectEqual(@as(usize, 0), result.text_dropped_bytes);
+    try std.testing.expectEqual(@as(usize, head_sentinel.len + 200 * 1024 + tail_sentinel.len), result.text.len);
+    try std.testing.expect(std.mem.startsWith(u8, result.text, head_sentinel));
+    try std.testing.expect(std.mem.endsWith(u8, result.text, tail_sentinel));
+
+    // The shared session layer stores the whole text and previews head and
+    // tail; the handle reads the untouched middle back byte for byte.
+    const alloc = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir = try io_mod.dirRealpathAlloc(alloc, tmp.dir, ".");
+    defer alloc.free(dir);
+    const prepared = try result_store.prepare(alloc, dir, "call/1", "codemode", result.text.len, result.text, 64 * 1024);
+    defer alloc.free(prepared.model_output);
+    defer alloc.free(@constCast(prepared.memory.output_handle.?));
+    defer alloc.free(@constCast(prepared.memory.preview.?));
+
+    try std.testing.expect(std.mem.find(u8, prepared.model_output, head_sentinel) != null);
+    try std.testing.expect(std.mem.find(u8, prepared.model_output, tail_sentinel) != null);
+    try std.testing.expect(std.mem.find(u8, prepared.model_output, " bytes omitted]...") != null);
+    try std.testing.expect(std.mem.find(u8, prepared.model_output, "<tool_result_handle>") != null);
+
+    const handle_open = "<tool_result_handle>";
+    const handle_start = std.mem.find(u8, prepared.model_output, handle_open).? + handle_open.len;
+    const handle_end = std.mem.findPos(u8, prepared.model_output, handle_start, "</tool_result_handle>").?;
+    const handle = prepared.model_output[handle_start..handle_end];
+
+    // The middle byte range matches the original capture exactly.
+    const range_len = 64;
+    const mid_index = head_sentinel.len + 100 * 1024;
+    const stored = try result_store.readByRange(alloc, dir, handle, mid_index + 1, range_len);
+    defer alloc.free(stored);
+    const body_open = std.mem.find(u8, stored, ">\n").? + 2;
+    const stored_body = stored[body_open .. stored.len - "\n</tool_result>".len];
+    try std.testing.expectEqualStrings(result.text[mid_index .. mid_index + range_len], stored_body);
 }
 
 test "sandbox eval before start reports shutdown" {
