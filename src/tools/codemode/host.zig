@@ -19,7 +19,12 @@ const js_exception: c.JSValue = .{ .u = .{ .uint64 = 0 }, .tag = c.JS_TAG_EXCEPT
 
 pub const default_memory_limit_bytes: usize = 64 * 1024 * 1024;
 pub const default_timeout_ms: u64 = 30_000;
-pub const default_output_buffer_bytes: usize = 64 * 1024;
+/// The capture cap for one eval's text and console buffers. This is a
+/// host memory budget, not a model-visible budget: the model-facing
+/// inline and preview limits live in the session result store. Above the
+/// cap the host drops the tail and counts the dropped bytes so the tool
+/// result can say so. 1MiB matches the codemode shell bridge budget.
+pub const default_capture_buffer_bytes: usize = 1024 * 1024;
 
 /// Lower bound for a script-declared @options timeout.
 pub const min_options_timeout_ms: u64 = 1_000;
@@ -33,7 +38,7 @@ pub const options_output_floor_bytes: usize = 1_024;
 pub const Options = struct {
     memory_limit_bytes: usize = default_memory_limit_bytes,
     timeout_ms: u64 = default_timeout_ms,
-    output_buffer_bytes: usize = default_output_buffer_bytes,
+    output_buffer_bytes: usize = default_capture_buffer_bytes,
 };
 
 pub const EvalError = error{
@@ -50,6 +55,12 @@ pub const Result = struct {
     value: []u8,
     text: []u8,
     console: []u8,
+    /// Bytes the capture cap dropped from the text and console streams,
+    /// and the cap that produced them. The buffers keep the head; these
+    /// counts name what even the stored copy is missing.
+    text_dropped_bytes: usize,
+    console_dropped_bytes: usize,
+    capture_limit_bytes: usize,
     allocator: Allocator,
 
     pub fn deinit(self: *Result) void {
@@ -65,6 +76,9 @@ pub const Result = struct {
 pub const PartialOutput = struct {
     text: []const u8 = "",
     console: []const u8 = "",
+    text_dropped_bytes: usize = 0,
+    console_dropped_bytes: usize = 0,
+    capture_limit_bytes: usize = 0,
 };
 
 /// A single-threaded QuickJS host. The runtime is created on the first eval so
@@ -108,6 +122,11 @@ pub const Host = struct {
     discovery_index: ?*discovery.Index = null,
     text_buf: std.ArrayList(u8) = .empty,
     console_buf: std.ArrayList(u8) = .empty,
+    /// Bytes the capture cap dropped from each stream during the current
+    /// eval. Reset with the buffers at eval start; reported on Result and
+    /// PartialOutput so neither the model nor a failure body loses them.
+    text_dropped_bytes: usize = 0,
+    console_dropped_bytes: usize = 0,
 
     pub fn init(allocator: Allocator, options: Options) Host {
         return .{ .allocator = allocator, .options = options };
@@ -136,7 +155,13 @@ pub const Host = struct {
     pub fn takePartialOutput(self: *Host) PartialOutput {
         const text = self.text_buf.toOwnedSlice(self.allocator) catch "";
         const console = self.console_buf.toOwnedSlice(self.allocator) catch "";
-        return .{ .text = text, .console = console };
+        return .{
+            .text = text,
+            .console = console,
+            .text_dropped_bytes = self.text_dropped_bytes,
+            .console_dropped_bytes = self.console_dropped_bytes,
+            .capture_limit_bytes = self.options.output_buffer_bytes,
+        };
     }
 
     /// The script-visible message of the last ScriptError, for the tool result.
@@ -188,6 +213,8 @@ pub const Host = struct {
 
         self.text_buf.clearRetainingCapacity();
         self.console_buf.clearRetainingCapacity();
+        self.text_dropped_bytes = 0;
+        self.console_dropped_bytes = 0;
         self.timed_out = false;
         self.cancelled_flag = false;
         if (self.last_script_error) |message| {
@@ -289,6 +316,9 @@ pub const Host = struct {
             .value = rendered,
             .text = text,
             .console = console,
+            .text_dropped_bytes = self.text_dropped_bytes,
+            .console_dropped_bytes = self.console_dropped_bytes,
+            .capture_limit_bytes = self.options.output_buffer_bytes,
             .allocator = self.allocator,
         };
     }
@@ -532,7 +562,7 @@ fn textCallback(ctx: ?*c.JSContext, _: c.JSValue, argc: c_int, argv: [*c]c.JSVal
         var len: usize = 0;
         const ptr = renderCValue(host, context, argv[0], &len) orelse return js_exception;
         defer c.JS_FreeCString(context, ptr);
-        switch (appendCapped(host, &host.text_buf, ptr[0..len])) {
+        switch (appendCapped(host, &host.text_buf, &host.text_dropped_bytes, ptr[0..len])) {
             .complete => {},
             .truncated => return js_false,
             .out_of_memory => return c.JS_ThrowOutOfMemory(context),
@@ -548,7 +578,7 @@ fn consoleLogCallback(ctx: ?*c.JSContext, _: c.JSValue, argc: c_int, argv: [*c]c
     var index: c_int = 0;
     while (index < argc) : (index += 1) {
         if (index > 0) {
-            switch (appendCapped(host, &host.console_buf, " ")) {
+            switch (appendCapped(host, &host.console_buf, &host.console_dropped_bytes, " ")) {
                 .complete => {},
                 .truncated => truncated = true,
                 .out_of_memory => return c.JS_ThrowOutOfMemory(context),
@@ -557,13 +587,13 @@ fn consoleLogCallback(ctx: ?*c.JSContext, _: c.JSValue, argc: c_int, argv: [*c]c
         var len: usize = 0;
         const ptr = renderCValue(host, context, argv[@intCast(index)], &len) orelse return js_exception;
         defer c.JS_FreeCString(context, ptr);
-        switch (appendCapped(host, &host.console_buf, ptr[0..len])) {
+        switch (appendCapped(host, &host.console_buf, &host.console_dropped_bytes, ptr[0..len])) {
             .complete => {},
             .truncated => truncated = true,
             .out_of_memory => return c.JS_ThrowOutOfMemory(context),
         }
     }
-    switch (appendCapped(host, &host.console_buf, "\n")) {
+    switch (appendCapped(host, &host.console_buf, &host.console_dropped_bytes, "\n")) {
         .complete => {},
         .truncated => truncated = true,
         .out_of_memory => return c.JS_ThrowOutOfMemory(context),
@@ -994,17 +1024,25 @@ fn toolsCallCallback(ctx: ?*c.JSContext, _: c.JSValue, argc: c_int, argv: [*c]c.
 
 const AppendOutcome = enum { complete, truncated, out_of_memory };
 
-/// Appends what fits under the output cap and reports dropped bytes.
+/// Appends what fits under the capture cap and counts the dropped bytes
+/// into the per-stream counter, so the two streams never cross.
 /// text and console.log return false in that case so a script can notice
 /// truncation without the eval failing. These buffers live on the host
 /// allocator, so JS_SetMemoryLimit does not bound them.
-fn appendCapped(host: *Host, out: *std.ArrayList(u8), bytes: []const u8) AppendOutcome {
+fn appendCapped(host: *Host, out: *std.ArrayList(u8), dropped: *usize, bytes: []const u8) AppendOutcome {
     if (bytes.len == 0) return .complete;
     const remaining = host.options.output_buffer_bytes -| out.items.len;
-    if (remaining == 0) return .truncated;
+    if (remaining == 0) {
+        dropped.* += bytes.len;
+        return .truncated;
+    }
     const take = @min(bytes.len, remaining);
     out.appendSlice(host.allocator, bytes[0..take]) catch return .out_of_memory;
-    return if (take < bytes.len) .truncated else .complete;
+    if (take < bytes.len) {
+        dropped.* += bytes.len - take;
+        return .truncated;
+    }
+    return .complete;
 }
 
 /// Renders one script value for text(), console.log, or the completion
@@ -1280,7 +1318,8 @@ test "codemode text returns true inside the capture cap and false only past it" 
     defer result.deinit();
     // Threshold moves, semantics do not: every append that fits under the
     // cap reports true, only the one that cannot fit reports false.
-    try std.testing.expectEqualStrings("true/true/false", result.value);
+    // text() answers undefined on success and false only on truncation.
+    try std.testing.expectEqualStrings("undefined/undefined/false", result.value);
     try std.testing.expectEqual(@as(usize, 32), result.text.len);
     try std.testing.expectEqual(@as(usize, 1), result.text_dropped_bytes);
 }
@@ -1374,7 +1413,7 @@ test "takePartialOutput moves captured buffers to the caller" {
     defer host.allocator.free(partial.text);
     defer host.allocator.free(partial.console);
     try std.testing.expectEqualStrings("partial text", partial.text);
-    try std.testing.expectEqualStrings("console line\n", partial.console);
+    try std.testing.expectEqualStrings("console line", partial.console);
     // The failure path sees the dropped counts and the cap that produced
     // them alongside the buffers.
     try std.testing.expectEqual(@as(usize, 0), partial.text_dropped_bytes);

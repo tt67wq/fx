@@ -19,7 +19,7 @@ const Allocator = std.mem.Allocator;
 pub const Input = struct {
     script: []u8,
     effective_timeout_ms: usize = host_mod.default_timeout_ms,
-    effective_output_buffer_bytes: usize = host_mod.default_output_buffer_bytes,
+    effective_output_buffer_bytes: usize = host_mod.default_capture_buffer_bytes,
 
     pub fn deinit(self: *Input, alloc: Allocator) void {
         alloc.free(self.script);
@@ -744,8 +744,8 @@ fn effectiveScriptOptions(options: ScriptOptions) EffectiveOptions {
     const output_buffer_bytes: usize = if (options.max_output_tokens) |declared| blk: {
         const capped_tokens: u64 = @min(declared, host_mod.max_options_output_tokens);
         const bytes: usize = @intCast(capped_tokens * 4);
-        break :blk @max(host_mod.options_output_floor_bytes, @min(bytes, host_mod.default_output_buffer_bytes));
-    } else host_mod.default_output_buffer_bytes;
+        break :blk @max(host_mod.options_output_floor_bytes, @min(bytes, host_mod.default_capture_buffer_bytes));
+    } else host_mod.default_capture_buffer_bytes;
 
     return .{ .timeout_ms = timeout_ms, .output_buffer_bytes = output_buffer_bytes };
 }
@@ -786,13 +786,14 @@ test "parseScriptOptions accepts the bounds" {
 test "effectiveScriptOptions clamps timeout and saturates tokens" {
     const defaults = effectiveScriptOptions(.{});
     try std.testing.expectEqual(@as(usize, 30_000), defaults.timeout_ms);
-    try std.testing.expectEqual(@as(usize, 64 * 1024), defaults.output_buffer_bytes);
+    try std.testing.expectEqual(@as(usize, 1024 * 1024), defaults.output_buffer_bytes);
 
     const declared = effectiveScriptOptions(.{ .timeout_ms = 60_000, .max_output_tokens = 4_096 });
     try std.testing.expectEqual(@as(usize, 60_000), declared.timeout_ms);
     try std.testing.expectEqual(@as(usize, 16_384), declared.output_buffer_bytes);
 
-    // A huge token value saturates at the host hard cap, never overflows.
+    // A huge token value saturates at the token cap, below the 1MiB
+    // capture cap, and never overflows.
     const huge = effectiveScriptOptions(.{ .max_output_tokens = std.math.maxInt(u64) });
     try std.testing.expectEqual(@as(usize, 64 * 1024), huge.output_buffer_bytes);
 
