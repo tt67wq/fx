@@ -21,6 +21,9 @@ pub const Input = struct {
     script: []u8,
     effective_timeout_ms: usize = host_mod.default_timeout_ms,
     effective_output_buffer_bytes: usize = host_mod.default_capture_buffer_bytes,
+    /// ISSUE-23a: whether the script declared timeout_ms in its @options
+    /// header, so the timeout failure headline can name the budget source.
+    timeout_from_options: bool = false,
 
     pub fn deinit(self: *Input, alloc: Allocator) void {
         alloc.free(self.script);
@@ -422,6 +425,58 @@ test "failure body without output or calls matches the plain one-liner" {
     const body = try formatFailureBody(std.testing.allocator, "codemode script failed: ScriptError: boom", null, &.{}, false);
     defer std.testing.allocator.free(body);
     try std.testing.expectEqualStrings("codemode script failed: ScriptError: boom", body);
+}
+/// RED scaffolding: preserves the current bare headline so the pinned
+/// tests fail against today's behavior. Replaced by the real composition
+/// in the green commit.
+fn timeoutHeadline(alloc: Allocator, elapsed_ms: i64, budget_ms: usize, from_options: bool) Allocator.Error![]u8 {
+    _ = elapsed_ms;
+    _ = budget_ms;
+    _ = from_options;
+    return alloc.dupe(u8, "codemode script failed: Timeout");
+}
+
+// ISSUE-23a: the Timeout headline names the elapsed wall, the effective
+// budget, where the budget came from, and the @options fix, so the model
+// can raise the budget instead of retrying blind. Exact golden.
+test "timeout headline names elapsed, budget, source, and the fix verbatim" {
+    const headline = try timeoutHeadline(std.testing.allocator, 30123, 30_000, false);
+    defer std.testing.allocator.free(headline);
+    try std.testing.expectEqualStrings(
+        "codemode script failed: Timeout after 30123ms (budget 30000ms, from default); " ++
+            "raise it with // @options: {\"timeout_ms\": N} on the first script line",
+        headline,
+    );
+}
+
+test "timeout headline pins the @options source verbatim" {
+    const headline = try timeoutHeadline(std.testing.allocator, 5012, 5000, true);
+    defer std.testing.allocator.free(headline);
+    try std.testing.expectEqualStrings(
+        "codemode script failed: Timeout after 5012ms (budget 5000ms, from @options); " ++
+            "raise it with // @options: {\"timeout_ms\": N} on the first script line",
+        headline,
+    );
+}
+
+test "decode records whether the script declared its timeout" {
+    const allocator = std.testing.allocator;
+    const plain = try decode(.{ .allocator = allocator }, "{\"script\":\"1+1\"}");
+    switch (plain) {
+        .input => |input| {
+            defer input.deinit(allocator);
+            try std.testing.expectEqual(false, input.as(Input).timeout_from_options);
+        },
+        .failure => return error.TestUnexpectedResult,
+    }
+    const declared = try decode(.{ .allocator = allocator }, "{\"script\":\"// @options: {\\\"timeout_ms\\\": 60000}\\n1+1\"}");
+    switch (declared) {
+        .input => |input| {
+            defer input.deinit(allocator);
+            try std.testing.expectEqual(true, input.as(Input).timeout_from_options);
+        },
+        .failure => return error.TestUnexpectedResult,
+    }
 }
 
 // Plan v2 group 2: the failure body records durations, an intentional
