@@ -67,6 +67,10 @@ const FakeBackend = struct {
     last_args: [256]u8 = undefined,
     last_args_len: usize = 0,
     fail: bool = false,
+    /// When set, the call returns error.InvalidToolArguments so tests can
+    /// pin the message the host throws, with and without the detail.
+    fail_invalid_args: bool = false,
+    arg_detail: []const u8 = "",
     request_cancel: ?*std.atomic.Value(bool) = null,
     shell_exit_code: i64 = 0,
     shell_output: []const u8 = "ok\n",
@@ -86,6 +90,7 @@ const FakeBackend = struct {
         @memcpy(self.last_args[0..self.last_args_len], args_json[0..self.last_args_len]);
         if (self.request_cancel) |flag| flag.store(true, .seq_cst);
         if (self.fail) return error.FakeToolFailure;
+        if (self.fail_invalid_args) return error.InvalidToolArguments;
 
         // The bridge carries JSON text; parsing proves the script sent JSON.
         var parsed = try std.json.parseFromSlice(std.json.Value, allocator, args_json, .{});
@@ -94,6 +99,12 @@ const FakeBackend = struct {
             return shell.encodeResultJson(allocator, self.shell_exit_code, self.shell_output, self.shell_budget, self.shell_upstream_truncated);
         }
         return allocator.dupe(u8, "{\"ok\":true}");
+    }
+
+    fn errorDetail(raw_ctx: ?*anyopaque) ?[]const u8 {
+        const self: *FakeBackend = @ptrCast(@alignCast(raw_ctx.?));
+        if (self.arg_detail.len == 0) return null;
+        return self.arg_detail;
     }
 };
 
@@ -721,4 +732,147 @@ test "a tool outside the budgeted catalog is still callable and searchable" {
     try std.testing.expectEqualStrings("glob_files|true|{\"ok\":true}|{\"ok\":true}|true", result.value);
     try std.testing.expectEqual(@as(usize, 2), fake.calls);
     try std.testing.expectEqualStrings("write_file", fake.last_tool);
+}
+
+// ISSUE-24 and ISSUE-25: failure feedback wording the model can act on.
+// These tests pin the exact strings; changing one means changing the pin.
+
+test "codemode top-level return explains the allowed shapes" {
+    var host = Host.init(std.testing.allocator, .{});
+    defer host.deinit();
+
+    try std.testing.expectError(error.ScriptError, host.eval("var a = 1;\nreturn a;"));
+    const message = host.lastExceptionMessage() orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings(
+        "SyntaxError: return not in a function (codemode.js:2:1). " ++
+            "top-level return is not allowed; use text() or make the last expression the result",
+        message,
+    );
+}
+
+test "codemode syntax errors name the failing line and column" {
+    var host = Host.init(std.testing.allocator, .{});
+    defer host.deinit();
+
+    try std.testing.expectError(error.ScriptError, host.eval("const o = {\n  a: ,\n};"));
+    const message = host.lastExceptionMessage() orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings(
+        "SyntaxError: unexpected token in expression: ',' (codemode.js:2:6)",
+        message,
+    );
+}
+
+test "codemode missing globals explain the QuickJS sandbox" {
+    var host = Host.init(std.testing.allocator, .{});
+    defer host.deinit();
+
+    try std.testing.expectError(error.ScriptError, host.eval("require('fs');"));
+    const message = host.lastExceptionMessage() orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings(
+        "ReferenceError: require is not defined. " ++
+            "QuickJS sandbox: no Node.js APIs (require, setTimeout, process); " ++
+            "tools go through tools.call(\"name\", args) or tools.<name>(args)",
+        message,
+    );
+}
+
+test "codemode calling a missing tools method shows the call shape" {
+    var host = Host.init(std.testing.allocator, .{});
+    defer host.deinit();
+
+    try std.testing.expectError(error.ScriptError, host.eval("tools.fetch({});"));
+    const message = host.lastExceptionMessage() orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings(
+        "TypeError: not a function. " ++
+            "if the callee was a tool, use tools.call(\"name\", args); " ++
+            "tools.list() names the callable tools",
+        message,
+    );
+}
+
+test "codemode tools.call unknown name suggests close tool names" {
+    var host = Host.init(std.testing.allocator, .{});
+    defer host.deinit();
+    var fake = FakeBackend{};
+    host.setToolBackend(.{ .ctx = &fake, .call = FakeBackend.call });
+    host.setToolSchemas(&sample_schemas);
+
+    var result = try host.eval(
+        \\try { tools.call("read_fil", "{}"); "did not throw"; }
+        \\catch (e) { e.message; }
+    );
+    defer result.deinit();
+    try std.testing.expectEqualStrings(
+        "unknown codemode tool: read_fil. did you mean: read_file, glob_files?. " ++
+            "use searchTools(\"read_fil\") to discover tools",
+        result.value,
+    );
+    try std.testing.expectEqual(@as(usize, 0), fake.calls);
+}
+
+test "codemode tools.call argument failure carries the field detail" {
+    var host = Host.init(std.testing.allocator, .{});
+    defer host.deinit();
+    var fake = FakeBackend{
+        .fail_invalid_args = true,
+        .arg_detail = "run_command requires field \"command\"; received fields: cmd",
+    };
+    host.setToolBackend(.{
+        .ctx = &fake,
+        .call = FakeBackend.call,
+        .argument_error = FakeBackend.errorDetail,
+    });
+
+    var result = try host.eval(
+        \\try { tools.call("run_command", "{}"); "did not throw"; }
+        \\catch (e) { e.message; }
+    );
+    defer result.deinit();
+    try std.testing.expectEqualStrings(
+        "codemode tool run_command failed: InvalidToolArguments: " ++
+            "run_command requires field \"command\"; received fields: cmd",
+        result.value,
+    );
+}
+
+test "codemode tools.call argument failure without detail stays plain" {
+    var host = Host.init(std.testing.allocator, .{});
+    defer host.deinit();
+    var fake = FakeBackend{ .fail_invalid_args = true };
+    host.setToolBackend(.{
+        .ctx = &fake,
+        .call = FakeBackend.call,
+        .argument_error = FakeBackend.errorDetail,
+    });
+
+    var result = try host.eval(
+        \\try { tools.call("run_command", "{}"); "did not throw"; }
+        \\catch (e) { e.message; }
+    );
+    defer result.deinit();
+    try std.testing.expectEqualStrings(
+        "codemode tool run_command failed: InvalidToolArguments",
+        result.value,
+    );
+}
+
+test "codemode eval reports the compile stage for unparsable scripts" {
+    var host = Host.init(std.testing.allocator, .{});
+    defer host.deinit();
+
+    try std.testing.expectError(error.ScriptError, host.eval("return 1;"));
+    try std.testing.expectEqual(host_mod.ErrorStage.compile, host.lastExceptionStage());
+    // The next eval resets the stage: a script that runs and throws is
+    // runtime, and every eval starts counted as one.
+    try std.testing.expectError(error.ScriptError, host.eval("throw new Error('boom');"));
+    try std.testing.expectEqual(host_mod.ErrorStage.runtime, host.lastExceptionStage());
+}
+
+test "codemode throwing an empty string keeps the runtime stage and no text" {
+    var host = Host.init(std.testing.allocator, .{});
+    defer host.deinit();
+
+    try std.testing.expectError(error.ScriptError, host.eval("throw '';"));
+    try std.testing.expectEqualStrings("", host.lastExceptionMessage() orelse "<nil>");
+    try std.testing.expectEqual(host_mod.ErrorStage.runtime, host.lastExceptionStage());
 }

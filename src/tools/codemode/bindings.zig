@@ -52,4 +52,11 @@ pub const Backend = struct {
         tool: Tool,
         args_json: []const u8,
     ) anyerror![]u8,
+    /// Optional model-visible detail of the last call that returned
+    /// error.InvalidToolArguments, set by the backend implementation
+    /// (the codemode bridge names the rejected fields). The text stays
+    /// valid until the next call; null or empty means the plain error
+    /// name is all the backend can report. This carries feedback only:
+    /// it never changes which calls are made or allowed.
+    argument_error: ?*const fn (ctx: ?*anyopaque) ?[]const u8 = null,
 };

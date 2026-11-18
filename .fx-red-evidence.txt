@@ -1,27 +1,141 @@
-# T-20-impl red run (zig build test, before implementation)
-+- run test 9975 pass, 2 skip, 9 fail (9986 total)
-error: 'tools.codemode.bridge.test.run_script python canonicalizes to a fixed python3 argv through a fx temp script' failed:
-error: 'tools.codemode.bridge.test.run_script shell forwards the code as the shell command' failed:
-error: 'tools.codemode.bridge.test.run_script rejects a language outside the v1 enum' failed:
-error: 'tools.codemode.bridge.test.run_script rejects interpreter option fields at normalization' failed:
-error: 'tools.codemode.bridge.test.run_script rejects a dash-prefixed file path' failed:
-error: 'tools.codemode.bridge.test.run_script requires a string code' failed:
-error: 'tools.codemode.bridge.test.run_script clamps timeout_ms into the host options range' failed:
-error: 'tools.codemode.bridge.test.schemas renders the run_script schema on the derived face' failed without output
-error: 'tools.codemode.bindings_tests.test.sandbox face locks the shipped four names and the ten-name derived face' failed:
-failed command: ./.zig-cache/o/9a8a275b86782b1581783c4e156ed1bf/test --cache-dir=./.zig-cache --seed=0x571a9d6b --listen=-
-Build Summary: 20/22 steps succeeded (1 failed); 9975/9986 tests passed (2 skipped, 9 failed)
-+- run test 9975 pass, 2 skip, 9 fail (9986 total)
+# T-24-impl red run (zig build test, before implementation)
++- run test 9996/10012 tests passed (2 skipped, 14 failed)
+error: 'tools.codemode.codemode_tool.test.scriptErrorHeadline keeps the message and falls back to the stage' failed:
+error: 'tools.codemode.codemode_tool.test.scriptFieldFailure echoes the top-level keys the model sent' failed:
+error: 'tools.codemode.codemode_tool.test.@options violations echo the value the script declared' failed:
+error: 'tools.codemode.bridge.test.run_command argument rejections name the fields' failed:
+error: 'tools.codemode.bridge.test.run_script argument rejections name the fields' failed:
+error: 'tools.codemode.bridge.test.run_script file rejections name the constraint' failed:
+error: 'tools.codemode.bindings_tests.test.codemode top-level return explains the allowed shapes' failed:
+error: 'tools.codemode.bindings_tests.test.codemode syntax errors name the failing line and column' failed:
+error: 'tools.codemode.bindings_tests.test.codemode missing globals explain the QuickJS sandbox' failed:
+error: 'tools.codemode.bindings_tests.test.codemode calling a missing tools method shows the call shape' failed:
+error: 'tools.codemode.bindings_tests.test.codemode tools.call unknown name suggests close tool names' failed:
+error: 'tools.codemode.bindings_tests.test.codemode tools.call argument failure carries the field detail' failed:
+error: 'tools.codemode.bindings_tests.test.codemode eval reports the compile stage for unparsable scripts' failed:
++- note: one extra failure, 'core.execution.command_runner.test.runtime cancellation observed at the timeout deadline stays graceful' failed without output; it is the known command_runner flake (not touched by this change; it passes on rerun, see the green evidence).
 
-# T-20-impl red run (bun test codemode-admission.test.ts -t run_script, before implementation)
+### samples
+---- codemode top-level return explains the allowed shapes
+error: 'tools.codemode.bindings_tests.test.codemode top-level return explains the allowed shapes' failed:
+       ====== expected this output: =========
+       SyntaxError: return not in a function (codemode.js:2:1). top-level return is not allowed; use text() or make the last expression the result␃
+       
+       ======== instead found this: =========
+       SyntaxError: return not in a function␃
+       
+---- codemode syntax errors name the failing line and column
+error: 'tools.codemode.bindings_tests.test.codemode syntax errors name the failing line and column' failed:
+       ====== expected this output: =========
+       SyntaxError: unexpected token in expression: ',' (codemode.js:2:6)␃
+       
+       ======== instead found this: =========
+       SyntaxError: unexpected token in expression: ','␃
+       
+---- codemode missing globals explain the QuickJS sandbox
+error: 'tools.codemode.bindings_tests.test.codemode missing globals explain the QuickJS sandbox' failed:
+       ====== expected this output: =========
+       ReferenceError: require is not defined. QuickJS sandbox: no Node.js APIs (require, setTimeout, process); tools go through tools.call("name", args) or tools.<name>(args)␃
+       
+       ======== instead found this: =========
+       ReferenceError: require is not defined␃
+       
+---- codemode calling a missing tools method shows the call shape
+error: 'tools.codemode.bindings_tests.test.codemode calling a missing tools method shows the call shape' failed:
+       ====== expected this output: =========
+       TypeError: not a function. if the callee was a tool, use tools.call("name", args); tools.list() names the callable tools␃
+       
+       ======== instead found this: =========
+       TypeError: not a function␃
+       
+---- codemode tools.call unknown name suggests close tool names
+error: 'tools.codemode.bindings_tests.test.codemode tools.call unknown name suggests close tool names' failed:
+       ====== expected this output: =========
+       unknown codemode tool: read_fil. did you mean: read_file, glob_files? use searchTools("read_fil") to discover tools␃
+       
+       ======== instead found this: =========
+       unknown codemode tool: read_fil␃
+       
+---- codemode tools.call argument failure carries the field detail
+error: 'tools.codemode.bindings_tests.test.codemode tools.call argument failure carries the field detail' failed:
+       ====== expected this output: =========
+       codemode tool run_command failed: InvalidToolArguments: run_command requires field "command"; received fields: cmd␃
+       
+       ======== instead found this: =========
+       codemode tool run_command failed: InvalidToolArguments␃
+       
+---- run_command argument rejections name the fields
+error: 'tools.codemode.bridge.test.run_command argument rejections name the fields' failed:
+       ====== expected this output: =========
+       run_command arguments must be a JSON object␃
+       
+       ======== instead found this: =========
+       ␃
+       
+---- run_script argument rejections name the fields
+error: 'tools.codemode.bridge.test.run_script argument rejections name the fields' failed:
+       ====== expected this output: =========
+       run_script unknown field "args"; expected fields: language, code, file, intent, timeout_ms␃
+       
+       ======== instead found this: =========
+       ␃
+       
+---- run_script file rejections name the constraint
+error: 'tools.codemode.bridge.test.run_script file rejections name the constraint' failed:
+       ====== expected this output: =========
+       run_script field "file" must stay inside the workspace␃
+       
+       ======== instead found this: =========
+       ␃
+       
+---- scriptErrorHeadline keeps the message and falls back to the stage
+error: 'tools.codemode.codemode_tool.test.scriptErrorHeadline keeps the message and falls back to the stage' failed:
+       ====== expected this output: =========
+       codemode script failed: ScriptError: no engine message (stage: runtime)␃
+       
+       ======== instead found this: =========
+       codemode script failed: ScriptError: ␃
+       
+---- scriptFieldFailure echoes the top-level keys the model sent
+error: 'tools.codemode.codemode_tool.test.scriptFieldFailure echoes the top-level keys the model sent' failed:
+       ====== expected this output: =========
+       codemode requires string field "script"; received top-level keys: code, language␃
+       
+       ======== instead found this: =========
+       codemode requires string field "script"␃
+       
+---- @options violations echo the value the script declared
+error: 'tools.codemode.codemode_tool.test.@options violations echo the value the script declared' failed:
+       ====== expected this output: =========
+       timeout_ms: 999␃
+       
+       ======== instead found this: =========
+       ␃
+       
+---- compile stage for unparsable scripts
+error: 'tools.codemode.bindings_tests.test.codemode eval reports the compile stage for unparsable scripts' failed:
+       expected .compile, found .runtime
+failed command: ./.zig-cache/o/8862f5cf3f39579b568ea7d9f2ffad1c/test --cache-dir=./.zig-cache --seed=0x48b23fe5 --listen=-
+
+Build Summary: 20/22 steps succeeded (1 failed); 9996/10012 tests passed (2 skipped, 14 failed)
+test transitive failure
++- run test 9990 pass, 2 skip, 14 fail (10006 total)
+
+# T-24-impl red run (bun test codemode-admission.test.ts -t 'codemode script mistake feedback')
+Expected: "text"
 Received: "error-text"
-(fail) run_script python captures stdout and reports non-zero exit [59.26ms]
-Received: "error-text"
-(fail) run_script forwards a workspace file through CTX_FILE [56.42ms]
-Expected to contain: "InvalidToolArguments"
-Received: "unknown codemode tool: run_script\n"
-(fail) run_script rejects interpreter option fields at normalization [54.96ms]
-(pass) run_script is hidden while the derived gate is closed [60.71ms]
-Expected to contain: "run_script"
-Received: "glob_files,grep_files,read_file,write_file,edit_file,web_fetch,ask_user_question,vision,run_command"
-(fail) run_script is listed with its schema on the derived surface [59.59ms]
+(fail) codemode script mistake feedback > top-level return explains the allowed shapes [79.54ms]
+Expected to contain: "InvalidToolArguments: run_command requires field \"command\"; received fields: cmd"
+Received: "codemode tool run_command failed: InvalidToolArguments\n"
+(fail) codemode script mistake feedback > run_command with the wrong key names the field it wanted [60.53ms]
+Expected to contain: "unknown codemode tool: read_fil. did you mean: read_file"
+Received: "unknown codemode tool: read_fil\n"
+(fail) codemode script mistake feedback > an unknown tool name in tools.call suggests the closest name [60.70ms]
+ 0 pass
+Ran 3 tests across 1 file. [255.00ms]
+# top-level return case (rerun after harness output-type fix):
+(kept below)
+  Expected to contain: "SyntaxError: return not in a function (codemode.js:2:1). top-level return is not allowed; use text() or make the last expression the result"
+  Received: "codemode script failed: ScriptError: SyntaxError: return not in a function"
+
+# Result: 13 new red tests fail (7 bindings_tests, 3 bridge, 3 codemode_tool); every pre-existing test passes. E2E: 3 new tests fail on the old wording; the live binary shows exactly the strings the green commits must replace.

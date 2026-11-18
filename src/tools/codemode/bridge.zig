@@ -1,6 +1,7 @@
 const std = @import("std");
 const bindings = @import("bindings.zig");
 const shell = @import("shell.zig");
+const sort_utils = @import("../../core/shared/sort_utils.zig");
 const tool_runtime = @import("../../core/tooling/tool_runtime.zig");
 const tool_admission = @import("../../core/tooling/tool_admission.zig");
 const auto_classifier_context = @import("../../core/permissions/auto_classifier_context.zig");
@@ -35,7 +36,17 @@ pub const deny_json_prefix = "{\"denied\":true,\"reason\":";
 
 /// The backend a CodemodeHostState hands to Host.setToolBackend.
 pub fn backend(state: *tool_runtime.CodemodeHostState) bindings.Backend {
-    return .{ .ctx = state, .call = call };
+    return .{ .ctx = state, .call = call, .argument_error = argumentError };
+}
+
+/// The detail of the rejection the last call returned, if that rejection
+/// named one. The host reads this only when the call returned
+/// error.InvalidToolArguments; the text lives in the state until the
+/// next call overwrites it.
+fn argumentError(raw_ctx: ?*anyopaque) ?[]const u8 {
+    const state: *tool_runtime.CodemodeHostState = @ptrCast(@alignCast(raw_ctx orelse return null));
+    if (state.nested_argument_error.text.len == 0) return null;
+    return state.nested_argument_error.text;
 }
 
 /// Caps nested shell runs at the script's wall-clock budget fields. A
@@ -91,9 +102,12 @@ fn call(
     defer if (script_temp_dir) |dir_path| {
         std.Io.Dir.cwd().deleteTree(io_mod.getIo(), dir_path) catch {};
     };
+    // The rejection detail describes exactly this call: a stale detail
+    // from an earlier one must never annotate a later failure.
+    state.nested_argument_error.clear();
     const canonical = try canonicalNestedCall(arena, tool, args_json, .{
         .workspace_root = ctx.workspace_root,
-    }, &script_temp_dir);
+    }, &script_temp_dir, &state.nested_argument_error);
     const nested_call: types.ToolCall = .{
         .id = nested_id,
         .name = canonical.name,
@@ -184,6 +198,60 @@ const CanonicalCall = struct {
     arguments_json: []const u8,
 };
 
+/// Writes the model-visible field detail for one argument rejection into
+/// the caller's buffer (when it wants one) and hands back the unchanged
+/// error.InvalidToolArguments. Feedback only: the error, the admission
+/// decision, and everything that runs afterwards stay exactly as they
+/// were.
+fn rejectArgument(
+    arena: std.mem.Allocator,
+    error_out: ?*tool_runtime.NestedArgumentError,
+    comptime fmt: []const u8,
+    args: anytype,
+) error{InvalidToolArguments} {
+    if (error_out) |buffer| {
+        if (arena.print(fmt, args)) |text| {
+            buffer.set(text);
+        } else |_| {}
+    }
+    return error.InvalidToolArguments;
+}
+
+/// Rejection for one absent required field: names the field wanted and
+/// lists the fields the script actually sent, so a cmd-instead-of-command
+/// mistake is self-explaining (ISSUE-24).
+fn rejectMissingField(
+    arena: std.mem.Allocator,
+    error_out: ?*tool_runtime.NestedArgumentError,
+    comptime tool_name: []const u8,
+    comptime field: []const u8,
+    object: std.json.ObjectMap,
+) error{InvalidToolArguments} {
+    if (object.count() == 0) {
+        return rejectArgument(arena, error_out, tool_name ++ " requires field \"" ++ field ++ "\"; received no fields", .{});
+    }
+    return rejectArgument(
+        arena,
+        error_out,
+        tool_name ++ " requires field \"" ++ field ++ "\"; received fields: {s}",
+        .{fieldList(arena, object) catch ""},
+    );
+}
+
+/// The object's field names, sorted so the message never depends on map
+/// iteration order.
+fn fieldList(arena: std.mem.Allocator, object: std.json.ObjectMap) ![]const u8 {
+    var names: std.ArrayList([]const u8) = .empty;
+    var it = object.iterator();
+    while (it.next()) |entry| try names.append(arena, entry.key_ptr.*);
+    sort_utils.sort([]const u8, names.items, {}, lessName);
+    return std.mem.join(arena, ", ", names.items);
+}
+
+fn lessName(_: void, lhs: []const u8, rhs: []const u8) bool {
+    return std.mem.order(u8, lhs, rhs) == .lt;
+}
+
 /// Maps the script-facing "run_command" and "run_script" names onto the
 /// registered "shell" tool's "action: run" form. run_script normalization
 /// lives in canonicalRunScript below; run_command and every other face name
@@ -194,12 +262,15 @@ fn canonicalNestedCall(
     args_json: []const u8,
     env: RunScriptEnv,
     temp_dir_out: ?*?[]const u8,
+    /// Where a rejection writes the model-visible field detail, described
+    /// on tool_runtime.NestedArgumentError. Null keeps the bare error.
+    error_out: ?*tool_runtime.NestedArgumentError,
 ) !CanonicalCall {
     if (std.mem.eql(u8, tool.name, "run_command")) {
-        return canonicalRunCommand(arena, args_json);
+        return canonicalRunCommand(arena, args_json, error_out);
     }
     if (std.mem.eql(u8, tool.name, "run_script")) {
-        return canonicalRunScript(arena, args_json, env, temp_dir_out);
+        return canonicalRunScript(arena, args_json, env, temp_dir_out, error_out);
     }
     return .{ .name = tool.name, .arguments_json = args_json };
 }
@@ -292,23 +363,39 @@ fn resolveRunScriptFile(
     arena: std.mem.Allocator,
     env: RunScriptEnv,
     file_param: []const u8,
+    error_out: ?*tool_runtime.NestedArgumentError,
 ) ![]const u8 {
-    if (env.workspace_root.len == 0) return error.InvalidToolArguments;
-    const root_real = io_mod.realpathAlloc(arena, env.workspace_root) catch return error.InvalidToolArguments;
-    const candidate = std.Io.Dir.path.resolveAlloc(arena, &.{ root_real, file_param }) catch return error.InvalidToolArguments;
-    const real = io_mod.realpathAlloc(arena, candidate) catch return error.InvalidToolArguments;
+    if (env.workspace_root.len == 0) {
+        return rejectArgument(arena, error_out, "run_script field \"file\" has no workspace to resolve against", .{});
+    }
+    const root_real = io_mod.realpathAlloc(arena, env.workspace_root) catch
+        return rejectArgument(arena, error_out, "run_script field \"file\" has no readable workspace root", .{});
+    const candidate = std.Io.Dir.path.resolveAlloc(arena, &.{ root_real, file_param }) catch
+        return rejectArgument(arena, error_out, "run_script field \"file\" does not name a readable workspace file", .{});
+    const real = io_mod.realpathAlloc(arena, candidate) catch
+        return rejectArgument(arena, error_out, "run_script field \"file\" does not name a readable workspace file", .{});
     const inside = std.mem.eql(u8, real, root_real) or
         (real.len > root_real.len and real[root_real.len] == '/' and std.mem.startsWith(u8, real, root_real));
-    if (!inside) return error.InvalidToolArguments;
+    if (!inside) return rejectArgument(arena, error_out, "run_script field \"file\" must stay inside the workspace", .{});
     return real;
 }
 
 /// Reads the resolved workspace file, bounded by run_script_max_ctx_file_bytes.
-fn readRunScriptFile(arena: std.mem.Allocator, real_path: []const u8) ![]const u8 {
-    var file = std.Io.Dir.cwd().openFile(io_mod.getIo(), real_path, .{}) catch return error.InvalidToolArguments;
+fn readRunScriptFile(
+    arena: std.mem.Allocator,
+    real_path: []const u8,
+    error_out: ?*tool_runtime.NestedArgumentError,
+) ![]const u8 {
+    var file = std.Io.Dir.cwd().openFile(io_mod.getIo(), real_path, .{}) catch
+        return rejectArgument(arena, error_out, "run_script field \"file\" does not name a readable workspace file", .{});
     defer file.close(io_mod.getIo());
     return io_mod.readFileToEnd(arena, &file, run_script_max_ctx_file_bytes) catch |err| switch (err) {
-        error.StreamTooLong => error.InvalidToolArguments,
+        error.StreamTooLong => rejectArgument(
+            arena,
+            error_out,
+            "run_script field \"file\" is larger than the {d}-byte CTX_FILE limit",
+            .{run_script_max_ctx_file_bytes},
+        ),
         else => err,
     };
 }
@@ -338,10 +425,11 @@ fn canonicalRunScript(
     args_json: []const u8,
     env: RunScriptEnv,
     temp_dir_out: ?*?[]const u8,
+    error_out: ?*tool_runtime.NestedArgumentError,
 ) !CanonicalCall {
     const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, args_json, .{}) catch
-        return error.InvalidToolArguments;
-    if (parsed != .object) return error.InvalidToolArguments;
+        return rejectArgument(arena, error_out, "run_script arguments must be a JSON object", .{});
+    if (parsed != .object) return rejectArgument(arena, error_out, "run_script arguments must be a JSON object", .{});
     const object = parsed.object;
 
     const allowed_fields = [_][]const u8{ "language", "code", "file", "intent", "timeout_ms" };
@@ -354,33 +442,48 @@ fn canonicalRunScript(
                 break;
             }
         }
-        if (!known) return error.InvalidToolArguments;
+        if (!known) {
+            return rejectArgument(
+                arena,
+                error_out,
+                "run_script unknown field \"{s}\"; expected fields: language, code, file, intent, timeout_ms",
+                .{entry.key_ptr.*},
+            );
+        }
     }
 
-    const language_value = object.get("language") orelse return error.InvalidToolArguments;
-    if (language_value != .string) return error.InvalidToolArguments;
-    const language = parseRunScriptLanguage(language_value.string) orelse return error.InvalidToolArguments;
+    const language_value = object.get("language") orelse
+        return rejectMissingField(arena, error_out, "run_script", "language", object);
+    if (language_value != .string) return rejectArgument(arena, error_out, "run_script field \"language\" must be a string", .{});
+    const language = parseRunScriptLanguage(language_value.string) orelse
+        return rejectArgument(
+            arena,
+            error_out,
+            "run_script field \"language\" must be \"shell\" or \"python\"; received \"{s}\"",
+            .{language_value.string},
+        );
 
-    const code_value = object.get("code") orelse return error.InvalidToolArguments;
-    if (code_value != .string) return error.InvalidToolArguments;
+    const code_value = object.get("code") orelse
+        return rejectMissingField(arena, error_out, "run_script", "code", object);
+    if (code_value != .string) return rejectArgument(arena, error_out, "run_script field \"code\" must be a string", .{});
 
     // A dash-prefixed file path is a path-like token that would be misread
     // as an option; it is rejected outright.
     var ctx_file_source: ?[]const u8 = null;
     if (object.get("file")) |value| {
-        if (value != .string) return error.InvalidToolArguments;
-        if (value.string.len == 0 or value.string[0] == '-') return error.InvalidToolArguments;
-        ctx_file_source = try resolveRunScriptFile(arena, env, value.string);
+        if (value != .string) return rejectArgument(arena, error_out, "run_script field \"file\" must be a string", .{});
+        if (value.string.len == 0 or value.string[0] == '-') return rejectArgument(arena, error_out, "run_script field \"file\" must be a plain path", .{});
+        ctx_file_source = try resolveRunScriptFile(arena, env, value.string, error_out);
     }
 
     // intent is accepted for the transcript context and never executed.
     if (object.get("intent")) |value| {
-        if (value != .string) return error.InvalidToolArguments;
+        if (value != .string) return rejectArgument(arena, error_out, "run_script field \"intent\" must be a string", .{});
     }
 
     var timeout_ms: ?u64 = null;
     if (object.get("timeout_ms")) |value| {
-        if (value != .integer) return error.InvalidToolArguments;
+        if (value != .integer) return rejectArgument(arena, error_out, "run_script field \"timeout_ms\" must be an integer", .{});
         timeout_ms = clampRunScriptTimeout(value.integer);
     }
 
@@ -392,7 +495,7 @@ fn canonicalRunScript(
         // unreadable) must still reach the caller's cleanup defer, or the
         // dir leaks in TMPDIR.
         if (temp_dir_out) |out| out.* = temp_dir.?;
-        try writeRunScriptFile(arena, temp_dir.?, "ctx_file", try readRunScriptFile(arena, source));
+        try writeRunScriptFile(arena, temp_dir.?, "ctx_file", try readRunScriptFile(arena, source, error_out));
         ctx_path = try std.Io.Dir.path.join(arena, &.{ temp_dir.?, "ctx_file" });
     }
 
@@ -479,19 +582,27 @@ pub const run_script_model_schema = model_tool_schema.FunctionSchema{
 /// Maps the script's `run_command` call onto the registered `shell` tool's
 /// `action: "run"` form, keeping the pre-T-20 behavior byte for byte: the
 /// action goes first, every other script field keeps its original order.
-fn canonicalRunCommand(arena: std.mem.Allocator, args_json: []const u8) !CanonicalCall {
+fn canonicalRunCommand(
+    arena: std.mem.Allocator,
+    args_json: []const u8,
+    error_out: ?*tool_runtime.NestedArgumentError,
+) !CanonicalCall {
     const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, args_json, .{}) catch
-        return error.InvalidToolArguments;
-    if (parsed != .object) return error.InvalidToolArguments;
+        return rejectArgument(arena, error_out, "run_command arguments must be a JSON object", .{});
+    if (parsed != .object) return rejectArgument(arena, error_out, "run_command arguments must be a JSON object", .{});
     const object = parsed.object;
 
     if (object.get("action")) |action| {
         if (action != .string or !std.mem.eql(u8, action.string, "run")) {
-            return error.InvalidToolArguments;
+            if (action == .string) {
+                return rejectArgument(arena, error_out, "run_command field \"action\" must be \"run\"; received \"{s}\"", .{action.string});
+            }
+            return rejectArgument(arena, error_out, "run_command field \"action\" must be the string \"run\"", .{});
         }
     }
-    const command = object.get("command") orelse return error.InvalidToolArguments;
-    if (command != .string) return error.InvalidToolArguments;
+    const command = object.get("command") orelse
+        return rejectMissingField(arena, error_out, "run_command", "command", object);
+    if (command != .string) return rejectArgument(arena, error_out, "run_command field \"command\" must be a string", .{});
 
     var out: std.Io.Writer.Allocating = .init(arena);
     try out.writer.writeAll("{\"action\":\"run\"");
@@ -587,6 +698,7 @@ test "run_command canonicalizes to the registered shell run call" {
         "{\"command\":\"./parity-probe.sh\"}",
         .{},
         null,
+        null,
     );
     try std.testing.expectEqualStrings("shell", canonical.name);
     try std.testing.expectEqualStrings(
@@ -603,6 +715,7 @@ test "run_command canonicalization keeps field order and an explicit run action"
         .{ .name = "run_command" },
         "{\"action\":\"run\",\"command\":\"make\",\"cwd\":\"src\",\"timeout_ms\":600000}",
         .{},
+        null,
         null,
     );
     try std.testing.expectEqualStrings(
@@ -622,6 +735,7 @@ test "run_command canonicalization refuses another shell action" {
             "{\"action\":\"interact\",\"command\":\"true\"}",
             .{},
             null,
+            null,
         ),
     );
 }
@@ -632,16 +746,109 @@ test "run_command canonicalization requires an object with a string command" {
     const arena = arena_state.allocator();
     try std.testing.expectError(
         error.InvalidToolArguments,
-        canonicalNestedCall(arena, .{ .name = "run_command" }, "[]", .{}, null),
+        canonicalNestedCall(arena, .{ .name = "run_command" }, "[]", .{}, null, null),
     );
     try std.testing.expectError(
         error.InvalidToolArguments,
-        canonicalNestedCall(arena, .{ .name = "run_command" }, "{}", .{}, null),
+        canonicalNestedCall(arena, .{ .name = "run_command" }, "{}", .{}, null, null),
     );
     try std.testing.expectError(
         error.InvalidToolArguments,
-        canonicalNestedCall(arena, .{ .name = "run_command" }, "{\"command\":5}", .{}, null),
+        canonicalNestedCall(arena, .{ .name = "run_command" }, "{\"command\":5}", .{}, null, null),
     );
+}
+
+// ISSUE-24: a rejected nested tools.call must name the field that is
+// wrong and the fields that were expected, not just the Zig error name.
+// These tests pin the detail text the model reads inside
+// "codemode tool <name> failed: InvalidToolArguments: <detail>".
+test "run_command argument rejections name the fields" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const Case = struct { args: []const u8, detail: []const u8 };
+    const cases = [_]Case{
+        .{ .args = "[]", .detail = "run_command arguments must be a JSON object" },
+        .{ .args = "{\"action\":\"interact\",\"command\":\"true\"}", .detail = "run_command field \"action\" must be \"run\"; received \"interact\"" },
+        .{ .args = "{\"cmd\":\"ls\"}", .detail = "run_command requires field \"command\"; received fields: cmd" },
+        .{ .args = "{}", .detail = "run_command requires field \"command\"; received no fields" },
+        .{ .args = "{\"command\":5}", .detail = "run_command field \"command\" must be a string" },
+    };
+    for (cases) |case| {
+        var detail: tool_runtime.NestedArgumentError = .{};
+        try std.testing.expectError(
+            error.InvalidToolArguments,
+            canonicalNestedCall(arena, .{ .name = "run_command" }, case.args, .{}, null, &detail),
+        );
+        try std.testing.expectEqualStrings(case.detail, detail.text);
+    }
+}
+
+test "run_script argument rejections name the fields" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const Case = struct { args: []const u8, detail: []const u8 };
+    const cases = [_]Case{
+        .{ .args = "{\"language\":\"python\",\"code\":\"1\",\"args\":[\"-c\"]}", .detail = "run_script unknown field \"args\"; expected fields: language, code, file, intent, timeout_ms" },
+        .{ .args = "{\"code\":\"1\"}", .detail = "run_script requires field \"language\"; received fields: code" },
+        .{ .args = "{\"language\":\"python\"}", .detail = "run_script requires field \"code\"; received fields: language" },
+        .{ .args = "{\"language\":5,\"code\":\"1\"}", .detail = "run_script field \"language\" must be a string" },
+        .{ .args = "{\"language\":\"js\",\"code\":\"1\"}", .detail = "run_script field \"language\" must be \"shell\" or \"python\"; received \"js\"" },
+        .{ .args = "{\"language\":\"python\",\"code\":1}", .detail = "run_script field \"code\" must be a string" },
+        .{ .args = "{\"language\":\"python\",\"code\":\"1\",\"file\":5}", .detail = "run_script field \"file\" must be a string" },
+        .{ .args = "{\"language\":\"python\",\"code\":\"1\",\"file\":\"-x\"}", .detail = "run_script field \"file\" must be a plain path" },
+        .{ .args = "{\"language\":\"python\",\"code\":\"1\",\"intent\":5}", .detail = "run_script field \"intent\" must be a string" },
+        .{ .args = "{\"language\":\"python\",\"code\":\"1\",\"timeout_ms\":\"x\"}", .detail = "run_script field \"timeout_ms\" must be an integer" },
+    };
+    for (cases) |case| {
+        var detail: tool_runtime.NestedArgumentError = .{};
+        try std.testing.expectError(
+            error.InvalidToolArguments,
+            canonicalNestedCall(arena, .{ .name = "run_script" }, case.args, .{}, null, &detail),
+        );
+        try std.testing.expectEqualStrings(case.detail, detail.text);
+    }
+}
+
+test "run_script file rejections name the constraint" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const ws_root = try arena.print("/tmp/fx-run-script-detail-ws-{d}", .{io_mod.nanoTimestamp()});
+    try std.Io.Dir.cwd().createDirPath(io_mod.getIo(), ws_root);
+    defer std.Io.Dir.cwd().deleteTree(io_mod.getIo(), ws_root) catch {};
+    const env = RunScriptEnv{ .workspace_root = ws_root, .temp_base = ws_root };
+
+    var outside: tool_runtime.NestedArgumentError = .{};
+    try std.testing.expectError(
+        error.InvalidToolArguments,
+        canonicalNestedCall(
+            arena,
+            .{ .name = "run_script" },
+            "{\"language\":\"python\",\"code\":\"1\",\"file\":\"../../../../etc/hosts\"}",
+            env,
+            null,
+            &outside,
+        ),
+    );
+    try std.testing.expectEqualStrings("run_script field \"file\" must stay inside the workspace", outside.text);
+
+    var missing: tool_runtime.NestedArgumentError = .{};
+    try std.testing.expectError(
+        error.InvalidToolArguments,
+        canonicalNestedCall(
+            arena,
+            .{ .name = "run_script" },
+            "{\"language\":\"python\",\"code\":\"1\",\"file\":\"missing.txt\"}",
+            env,
+            null,
+            &missing,
+        ),
+    );
+    try std.testing.expectEqualStrings("run_script field \"file\" does not name a readable workspace file", missing.text);
 }
 
 test "other whitelisted tools keep their exact arguments" {
@@ -652,6 +859,7 @@ test "other whitelisted tools keep their exact arguments" {
         .{ .name = "read_file" },
         "{\"path\":\"notes.txt\"}",
         .{},
+        null,
         null,
     );
     try std.testing.expectEqualStrings("read_file", canonical.name);
@@ -674,6 +882,7 @@ test "run_script python canonicalizes to a fixed python3 argv through a fx temp 
         "{\"language\":\"python\",\"code\":\"print('hi')\"}",
         .{ .workspace_root = temp_base, .temp_base = temp_base },
         &temp_dir,
+        null,
     );
     try std.testing.expectEqualStrings("shell", canonical.name);
     // argv is always exactly python3 plus the fx-written temp script path;
@@ -713,6 +922,7 @@ test "run_script file param copies a workspace file and prefixes CTX_FILE" {
         "{\"language\":\"python\",\"code\":\"1\",\"file\":\"data.txt\"}",
         .{ .workspace_root = ws_root, .temp_base = temp_base },
         &temp_dir,
+        null,
     );
     try std.testing.expectEqualStrings("shell", canonical.name);
     try std.testing.expect(std.mem.startsWith(u8, canonical.arguments_json, "{\"action\":\"run\",\"command\":\"CTX_FILE="));
@@ -743,6 +953,7 @@ test "run_script file param refuses traversal outside the workspace" {
             "{\"language\":\"python\",\"code\":\"1\",\"file\":\"../../../../etc/hosts\"}",
             .{ .workspace_root = ws_root, .temp_base = ws_root },
             null,
+            null,
         ),
     );
 }
@@ -761,6 +972,7 @@ test "run_script file param refuses a missing file" {
             .{ .name = "run_script" },
             "{\"language\":\"python\",\"code\":\"1\",\"file\":\"missing.txt\"}",
             .{ .workspace_root = ws_root, .temp_base = ws_root },
+            null,
             null,
         ),
     );
@@ -794,6 +1006,7 @@ test "run_script oversized ctx file registers the temp dir for caller cleanup" {
             "{\"language\":\"python\",\"code\":\"1\",\"file\":\"big.txt\"}",
             .{ .workspace_root = ws_root, .temp_base = temp_base },
             &temp_dir,
+            null,
         ),
     );
     // The dir must be registered the moment it exists: an unregistered dir
@@ -893,6 +1106,7 @@ test "run_script shell forwards the code as the shell command" {
         "{\"language\":\"shell\",\"code\":\"echo hi\"}",
         .{},
         null,
+        null,
     );
     try std.testing.expectEqualStrings("shell", canonical.name);
     try std.testing.expectEqualStrings(
@@ -909,15 +1123,15 @@ test "run_script rejects a language outside the v1 enum" {
     // through the language field; the interpreter token comes from the enum.
     try std.testing.expectError(
         error.InvalidToolArguments,
-        canonicalNestedCall(arena, .{ .name = "run_script" }, "{\"language\":\"node\",\"code\":\"1\"}", .{}, null),
+        canonicalNestedCall(arena, .{ .name = "run_script" }, "{\"language\":\"node\",\"code\":\"1\"}", .{}, null, null),
     );
     try std.testing.expectError(
         error.InvalidToolArguments,
-        canonicalNestedCall(arena, .{ .name = "run_script" }, "{\"language\":\"python3\",\"code\":\"1\"}", .{}, null),
+        canonicalNestedCall(arena, .{ .name = "run_script" }, "{\"language\":\"python3\",\"code\":\"1\"}", .{}, null, null),
     );
     try std.testing.expectError(
         error.InvalidToolArguments,
-        canonicalNestedCall(arena, .{ .name = "run_script" }, "{\"language\":\"-python\",\"code\":\"1\"}", .{}, null),
+        canonicalNestedCall(arena, .{ .name = "run_script" }, "{\"language\":\"-python\",\"code\":\"1\"}", .{}, null, null),
     );
 }
 
@@ -930,11 +1144,11 @@ test "run_script rejects interpreter option fields at normalization" {
     // before admission or the shell decode layer ever sees it.
     try std.testing.expectError(
         error.InvalidToolArguments,
-        canonicalNestedCall(arena, .{ .name = "run_script" }, "{\"language\":\"python\",\"code\":\"1\",\"args\":[\"-c\",\"evil\"]}", .{}, null),
+        canonicalNestedCall(arena, .{ .name = "run_script" }, "{\"language\":\"python\",\"code\":\"1\",\"args\":[\"-c\",\"evil\"]}", .{}, null, null),
     );
     try std.testing.expectError(
         error.InvalidToolArguments,
-        canonicalNestedCall(arena, .{ .name = "run_script" }, "{\"language\":\"python\",\"code\":\"1\",\"interpreter\":\"-c\"}", .{}, null),
+        canonicalNestedCall(arena, .{ .name = "run_script" }, "{\"language\":\"python\",\"code\":\"1\",\"interpreter\":\"-c\"}", .{}, null, null),
     );
 }
 
@@ -949,6 +1163,7 @@ test "run_script rejects a dash-prefixed file path" {
             "{\"language\":\"python\",\"code\":\"1\",\"file\":\"-rf\"}",
             .{},
             null,
+            null,
         ),
     );
 }
@@ -959,15 +1174,15 @@ test "run_script requires a string code" {
     const arena = arena_state.allocator();
     try std.testing.expectError(
         error.InvalidToolArguments,
-        canonicalNestedCall(arena, .{ .name = "run_script" }, "{\"language\":\"python\"}", .{}, null),
+        canonicalNestedCall(arena, .{ .name = "run_script" }, "{\"language\":\"python\"}", .{}, null, null),
     );
     try std.testing.expectError(
         error.InvalidToolArguments,
-        canonicalNestedCall(arena, .{ .name = "run_script" }, "{\"language\":\"python\",\"code\":5}", .{}, null),
+        canonicalNestedCall(arena, .{ .name = "run_script" }, "{\"language\":\"python\",\"code\":5}", .{}, null, null),
     );
     try std.testing.expectError(
         error.InvalidToolArguments,
-        canonicalNestedCall(arena, .{ .name = "run_script" }, "[]", .{}, null),
+        canonicalNestedCall(arena, .{ .name = "run_script" }, "[]", .{}, null, null),
     );
 }
 
@@ -981,6 +1196,7 @@ test "run_script clamps timeout_ms into the host options range" {
         "{\"language\":\"shell\",\"code\":\"true\",\"timeout_ms\":5}",
         .{},
         null,
+        null,
     );
     try std.testing.expectEqualStrings(
         "{\"action\":\"run\",\"command\":\"true\",\"timeout_ms\":1000}",
@@ -992,6 +1208,7 @@ test "run_script clamps timeout_ms into the host options range" {
         "{\"language\":\"shell\",\"code\":\"true\",\"timeout_ms\":500000}",
         .{},
         null,
+        null,
     );
     try std.testing.expectEqualStrings(
         "{\"action\":\"run\",\"command\":\"true\",\"timeout_ms\":120000}",
@@ -1000,7 +1217,7 @@ test "run_script clamps timeout_ms into the host options range" {
     // A non-integer timeout is a malformed argument, not a default.
     try std.testing.expectError(
         error.InvalidToolArguments,
-        canonicalNestedCall(arena, .{ .name = "run_script" }, "{\"language\":\"shell\",\"code\":\"true\",\"timeout_ms\":\"soon\"}", .{}, null),
+        canonicalNestedCall(arena, .{ .name = "run_script" }, "{\"language\":\"shell\",\"code\":\"true\",\"timeout_ms\":\"soon\"}", .{}, null, null),
     );
 }
 

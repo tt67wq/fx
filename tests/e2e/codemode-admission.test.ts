@@ -135,7 +135,9 @@ function installScript(workspace: string, name: string, body: string): string {
 function toolResultText(
   body: string,
   toolCallId: string,
-  outputType: "text" | "execution-denied" = "text",
+  // "error-text" is how a failed tool result reaches the model; a script
+  // that never catches its own error lands there (ISSUE-24/25 probes).
+  outputType: "text" | "execution-denied" | "error-text" = "text",
 ): string {
   const request = JSON.parse(body) as {
     prompt?: Array<{ content?: Array<Record<string, unknown>> }>;
@@ -1120,4 +1122,87 @@ describe.skipIf(!tmuxAvailable())("tui: codemode nested permission slots", () =>
     TIMEOUT * 2,
   );
 
+});
+
+// ISSUE-24 and ISSUE-25 (T-24-impl): model-visible failure feedback for
+// common codemode script mistakes. The strings below are the pinned
+// wording; a test that stops matching means the feedback changed.
+describe("codemode script mistake feedback", () => {
+  test("top-level return explains the allowed shapes", async () => {
+    const root = createIsolatedRoot();
+    const script = "var a = 1;\nreturn a;";
+    const gateway = startGateway([
+      fakeGatewayToolCall("return-hint-1", "codemode", { script }),
+      fakeGatewayFinalText("RETURN_HINT_DONE"),
+    ]);
+    try {
+      const result = await runFx(
+        ["ask", "--quiet", "--json", "--yolo", "--no-save", "Trigger a top-level return."],
+        { cwd: root.workspace, env: gatewayEnv(root, gateway), timeoutMs: TIMEOUT },
+      );
+      expect(result.code, "stderr: " + result.stderr.slice(0, 400)).toBe(0);
+      const body = toolResultText(
+        gateway.requests[1]!.body,
+        "return-hint-1",
+        "error-text",
+      );
+      expect(body).toContain(
+        "SyntaxError: return not in a function (codemode.js:2:1). " +
+          "top-level return is not allowed; use text() or make the last expression the result",
+      );
+    } finally {
+      rmSync(root.workspace, { recursive: true, force: true });
+    }
+  }, TIMEOUT);
+
+  test("run_command with the wrong key names the field it wanted", async () => {
+    const root = createIsolatedRoot();
+    const script =
+      "var caught = \"\";" +
+      "try { await tools.call(\"run_command\", JSON.stringify({ cmd: \"echo nope\" })); }" +
+      "catch (e) { caught = String(e.message || e); }" +
+      "text(caught);";
+    const gateway = startGateway([
+      fakeGatewayToolCall("field-detail-1", "codemode", { script }),
+      fakeGatewayFinalText("FIELD_DETAIL_DONE"),
+    ]);
+    try {
+      const result = await runFx(
+        ["ask", "--quiet", "--json", "--yolo", "--no-save", "Probe the field mistake."],
+        { cwd: root.workspace, env: gatewayEnv(root, gateway), timeoutMs: TIMEOUT },
+      );
+      expect(result.code, "stderr: " + result.stderr.slice(0, 400)).toBe(0);
+      const body = toolResultText(gateway.requests[1]!.body, "field-detail-1");
+      expect(body).toContain(
+        "InvalidToolArguments: run_command requires field \"command\"; received fields: cmd",
+      );
+    } finally {
+      rmSync(root.workspace, { recursive: true, force: true });
+    }
+  }, TIMEOUT);
+
+  test("an unknown tool name in tools.call suggests the closest name", async () => {
+    const root = createIsolatedRoot();
+    const script =
+      "var caught = \"\";" +
+      "try { await tools.call(\"read_fil\", \"{}\"); }" +
+      "catch (e) { caught = String(e.message || e); }" +
+      "text(caught);";
+    const gateway = startGateway([
+      fakeGatewayToolCall("suggest-1", "codemode", { script }),
+      fakeGatewayFinalText("SUGGEST_DONE"),
+    ]);
+    try {
+      const result = await runFx(
+        ["ask", "--quiet", "--json", "--yolo", "--no-save", "Probe an unknown name."],
+        { cwd: root.workspace, env: gatewayEnv(root, gateway), timeoutMs: TIMEOUT },
+      );
+      expect(result.code, "stderr: " + result.stderr.slice(0, 400)).toBe(0);
+      const body = toolResultText(gateway.requests[1]!.body, "suggest-1");
+      expect(body).toContain("unknown codemode tool: read_fil. did you mean: read_file");
+      expect(body).toContain("use searchTools(\"read_fil\") to discover tools");
+    } finally {
+      rmSync(root.workspace, { recursive: true, force: true });
+    }
+  }, TIMEOUT);
 });
