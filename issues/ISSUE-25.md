@@ -1,6 +1,6 @@
 # ISSUE-25 — codemode 常见误用失败应有针对性提示：顶层 return、沙箱全局缺失、未知工具名
 
-- **状态**: open
+- **状态**: closed（2026-11-18）
 - **发现时间**: 2026-11-18
 - **来源**: 近 30 天 session 记录分析（~/.fx/sessions/v2/，278 次 codemode 失败中约 80 次属此类）
 - **工作量**: 小
@@ -34,3 +34,7 @@ QuickJS 沙箱与模型书写习惯之间的错配产生一批可预测、可提
 - [ ] 各类提示文案定稿（fx-cli-shape 复核）
 - [ ] TDD：红测试（每类误用一条断言）
 - [ ] 观测：修复后同型失败率下降
+
+## Resolution（2026-11-18）
+
+与 ISSUE-25 同轮落地（合并 commit 189856713）。七类误用提示全部落地并钉测：顶层 return（引擎异常信息识别位置 + 允许形态提示）、ReferenceError 附 QuickJS 沙箱说明、unknown tool 复用 discovery did-you-mean、tools.xxx 直调附正确形态、缺 script 字段回显实际键名、@options 越界回显传入值、SyntaxError 附行号。不做 setTimeout（轮询场景建议拆短命令，待 ISSUE-23），不做自动 wrapper。

@@ -1,6 +1,6 @@
 # ISSUE-24 — codemode 嵌套工具参数错误不指明字段，部分失败丢失错误正文
 
-- **状态**: open
+- **状态**: closed（2026-11-18）
 - **发现时间**: 2026-11-18
 - **来源**: 近 30 天 session 记录分析（~/.fx/sessions/v2/）
 - **工作量**: 小
@@ -24,3 +24,7 @@
 - [ ] 错误信息形态定稿（含 fx-cli-shape 复核：这是模型可见反馈，非新控制面）
 - [ ] TDD：红测试（误用键名报错内容、空 message 兜底）
 - [ ] 验证：同类误用在一轮内自愈，不再跨轮重复
+
+## Resolution（2026-11-18）
+
+与 ISSUE-25 同轮落地（合并 commit 189856713）。嵌套工具参数拒绝现在报出未知字段名与期望字段名（新增 NestedArgumentError 固定缓冲通道，与 NestedCallRecord 同构，零分配）；空 message ScriptError 兼底回传错误类型与发生阶段（compile/runtime/nested call）。被拒绝调用集合与之前逐字节一致，只多了文案（验证员逐路径核实）。
