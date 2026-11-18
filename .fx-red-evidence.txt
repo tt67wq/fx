@@ -1,0 +1,27 @@
+# T-20-impl red run (zig build test, before implementation)
++- run test 9975 pass, 2 skip, 9 fail (9986 total)
+error: 'tools.codemode.bridge.test.run_script python canonicalizes to a fixed python3 argv through a fx temp script' failed:
+error: 'tools.codemode.bridge.test.run_script shell forwards the code as the shell command' failed:
+error: 'tools.codemode.bridge.test.run_script rejects a language outside the v1 enum' failed:
+error: 'tools.codemode.bridge.test.run_script rejects interpreter option fields at normalization' failed:
+error: 'tools.codemode.bridge.test.run_script rejects a dash-prefixed file path' failed:
+error: 'tools.codemode.bridge.test.run_script requires a string code' failed:
+error: 'tools.codemode.bridge.test.run_script clamps timeout_ms into the host options range' failed:
+error: 'tools.codemode.bridge.test.schemas renders the run_script schema on the derived face' failed without output
+error: 'tools.codemode.bindings_tests.test.sandbox face locks the shipped four names and the ten-name derived face' failed:
+failed command: ./.zig-cache/o/9a8a275b86782b1581783c4e156ed1bf/test --cache-dir=./.zig-cache --seed=0x571a9d6b --listen=-
+Build Summary: 20/22 steps succeeded (1 failed); 9975/9986 tests passed (2 skipped, 9 failed)
++- run test 9975 pass, 2 skip, 9 fail (9986 total)
+
+# T-20-impl red run (bun test codemode-admission.test.ts -t run_script, before implementation)
+Received: "error-text"
+(fail) run_script python captures stdout and reports non-zero exit [59.26ms]
+Received: "error-text"
+(fail) run_script forwards a workspace file through CTX_FILE [56.42ms]
+Expected to contain: "InvalidToolArguments"
+Received: "unknown codemode tool: run_script\n"
+(fail) run_script rejects interpreter option fields at normalization [54.96ms]
+(pass) run_script is hidden while the derived gate is closed [60.71ms]
+Expected to contain: "run_script"
+Received: "glob_files,grep_files,read_file,write_file,edit_file,web_fetch,ask_user_question,vision,run_command"
+(fail) run_script is listed with its schema on the derived surface [59.59ms]

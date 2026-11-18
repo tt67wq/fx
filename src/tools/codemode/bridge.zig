@@ -11,6 +11,7 @@ const tool_dispatch = @import("../../core/tooling/tool_dispatch.zig");
 const model_tool_schema = @import("../../core/tooling/model_tool_schema.zig");
 const debug_trace = @import("../../core/shared/debug_trace.zig");
 const io_mod = @import("../../core/shared/io.zig");
+const host_mod = @import("host.zig");
 
 // Test-only fixture imports (plan v2 groups 5-8): the minimal runtime
 // context the canonicalization-failure no-record test drives call() with.
@@ -81,7 +82,18 @@ fn call(
     // both paths build the same admission payload and execute the same tool.
     // Without it the nested call reaches admission and dispatch under a name
     // no registered tool carries.
-    const canonical = try canonicalNestedCall(arena, tool, args_json);
+    // A run_script call writes fx-owned temp files (the python script
+    // body, the CTX_FILE copy) before admission, so the reviewed command
+    // references existing files. The per-call directory dies with the
+    // call: deletion runs on every return path below and nothing
+    // survives the eval.
+    var script_temp_dir: ?[]const u8 = null;
+    defer if (script_temp_dir) |dir_path| {
+        std.Io.Dir.cwd().deleteTree(io_mod.getIo(), dir_path) catch {};
+    };
+    const canonical = try canonicalNestedCall(arena, tool, args_json, .{
+        .workspace_root = ctx.workspace_root,
+    }, &script_temp_dir);
     const nested_call: types.ToolCall = .{
         .id = nested_id,
         .name = canonical.name,
@@ -161,7 +173,7 @@ fn call(
     // F2: a normal return can carry status .failure (missing file, non-zero
     // exit) or observe cancellation; record the real outcome, not .ok.
     state.recordNestedCall(tool.name, mapNestedOutcome(result, null), nestedDurationMs(started_ms, io_mod.milliTimestamp()));
-    if (std.mem.eql(u8, tool.name, "run_command")) {
+    if (isShellBackedFaceName(tool.name)) {
         return shellResult(allocator, arena, result);
     }
     return allocator.dupe(u8, result.model_output);
@@ -172,19 +184,302 @@ const CanonicalCall = struct {
     arguments_json: []const u8,
 };
 
-/// Maps the script's `run_command` call onto the registered `shell` tool's
-/// `action: "run"` form. The action goes first so the bytes match a direct
-/// model call that names the same action and command; every other script
-/// field keeps its original order. Other whitelisted tools pass through.
+/// Maps the script-facing "run_command" and "run_script" names onto the
+/// registered "shell" tool's "action: run" form. run_script normalization
+/// lives in canonicalRunScript below; run_command and every other face name
+/// keep the behavior they had before T-20.
 fn canonicalNestedCall(
     arena: std.mem.Allocator,
     tool: bindings.Tool,
     args_json: []const u8,
+    env: RunScriptEnv,
+    temp_dir_out: ?*?[]const u8,
 ) !CanonicalCall {
-    if (!std.mem.eql(u8, tool.name, "run_command")) {
-        return .{ .name = tool.name, .arguments_json = args_json };
+    if (std.mem.eql(u8, tool.name, "run_command")) {
+        return canonicalRunCommand(arena, args_json);
+    }
+    if (std.mem.eql(u8, tool.name, "run_script")) {
+        return canonicalRunScript(arena, args_json, env, temp_dir_out);
+    }
+    return .{ .name = tool.name, .arguments_json = args_json };
+}
+
+/// Inputs canonicalNestedCall needs only for run_script: the workspace
+/// root the `file` argument resolves against, and the base directory for
+/// the fx-written temp files. Tests inject temp_base; production leaves it
+/// empty and the TMPDIR environment decides.
+pub const RunScriptEnv = struct {
+    workspace_root: []const u8 = "",
+    temp_base: []const u8 = "",
+};
+
+/// The v1 language enum. The interpreter token below is the only source of
+/// that argv token: model text never names it, and a language outside this
+/// enum is rejected before anything executes.
+const RunScriptLanguage = enum { shell, python };
+
+fn parseRunScriptLanguage(value: []const u8) ?RunScriptLanguage {
+    if (std.mem.eql(u8, value, "shell")) return .shell;
+    if (std.mem.eql(u8, value, "python")) return .python;
+    return null;
+}
+
+/// Cap for the CTX_FILE source read. The copy never enters the model
+/// context, but the bridge still bounds its own memory: 1MiB matches the
+/// script shell budget in shell.zig.
+pub const run_script_max_ctx_file_bytes: usize = 1024 * 1024;
+
+const run_script_temp_prefix = "fx-run-script-";
+
+/// Quotes one fx-generated path for the shell command line. Fx-controlled
+/// bytes stay bare; anything else is single-quoted with the standard
+/// escape, so an odd TMPDIR value cannot break the argv shape.
+fn quoteShellPath(alloc: std.mem.Allocator, path: []const u8) ![]const u8 {
+    const safe = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_./-";
+    for (path) |byte| {
+        if (std.mem.findScalar(u8, safe, byte) == null) {
+            var out: std.Io.Writer.Allocating = .init(alloc);
+            try out.writer.writeByte('\'');
+            for (path) |c| {
+                if (c == '\'') {
+                    try out.writer.writeAll("'\\''");
+                } else {
+                    try out.writer.writeByte(c);
+                }
+            }
+            try out.writer.writeByte('\'');
+            return out.toOwnedSlice();
+        }
+    }
+    return alloc.dupe(u8, path);
+}
+
+/// Creates the per-call temp directory that holds the fx-written script
+/// file and the CTX_FILE copy. The caller owns cleanup: call() records the
+/// path through temp_dir_out and deleteTree's it on every return path.
+fn makeRunScriptTempDir(arena: std.mem.Allocator, temp_base: []const u8) ![]const u8 {
+    var suffix: [8]u8 = undefined;
+    io_mod.getIo().random(&suffix);
+    const hex = std.fmt.bytesToHex(suffix, .lower);
+    const base = if (temp_base.len > 0) temp_base else io_mod.getenv("TMPDIR") orelse "/tmp";
+    const dir_path = try std.Io.Dir.path.join(arena, &.{ base, try arena.print("{s}{s}", .{ run_script_temp_prefix, &hex }) });
+    std.Io.Dir.cwd().createDir(io_mod.getIo(), dir_path, .fromMode(0o700)) catch |err| switch (err) {
+        error.PathAlreadyExists => return error.RunScriptTempUnavailable,
+        else => return err,
+    };
+    return dir_path;
+}
+
+/// Writes one fx-owned file into the per-call temp directory. The host
+/// writes files directly; no process is started here.
+fn writeRunScriptFile(
+    arena: std.mem.Allocator,
+    dir_path: []const u8,
+    name: []const u8,
+    content: []const u8,
+) !void {
+    const path = try std.Io.Dir.path.join(arena, &.{ dir_path, name });
+    var file = try std.Io.Dir.cwd().createFile(io_mod.getIo(), path, .{ .truncate = true });
+    defer file.close(io_mod.getIo());
+    try file.writeStreamingAll(io_mod.getIo(), content);
+}
+
+/// Resolves the run_script `file` argument against the workspace root and
+/// refuses anything that resolves outside it, so a script cannot be pointed
+/// at an arbitrary host path through a traversal escape. The script reads
+/// the fx-written copy through CTX_FILE, never the model context.
+fn resolveRunScriptFile(
+    arena: std.mem.Allocator,
+    env: RunScriptEnv,
+    file_param: []const u8,
+) ![]const u8 {
+    if (env.workspace_root.len == 0) return error.InvalidToolArguments;
+    const root_real = io_mod.realpathAlloc(arena, env.workspace_root) catch return error.InvalidToolArguments;
+    const candidate = std.Io.Dir.path.resolveAlloc(arena, &.{ root_real, file_param }) catch return error.InvalidToolArguments;
+    const real = io_mod.realpathAlloc(arena, candidate) catch return error.InvalidToolArguments;
+    const inside = std.mem.eql(u8, real, root_real) or
+        (real.len > root_real.len and real[root_real.len] == '/' and std.mem.startsWith(u8, real, root_real));
+    if (!inside) return error.InvalidToolArguments;
+    return real;
+}
+
+/// Reads the resolved workspace file, bounded by run_script_max_ctx_file_bytes.
+fn readRunScriptFile(arena: std.mem.Allocator, real_path: []const u8) ![]const u8 {
+    var file = std.Io.Dir.cwd().openFile(io_mod.getIo(), real_path, .{}) catch return error.InvalidToolArguments;
+    defer file.close(io_mod.getIo());
+    return io_mod.readFileToEnd(arena, &file, run_script_max_ctx_file_bytes) catch |err| switch (err) {
+        error.StreamTooLong => error.InvalidToolArguments,
+        else => err,
+    };
+}
+
+/// Clamps a run_script timeout_ms into the host options range
+/// (host.min_options_timeout_ms .. host.max_options_timeout_ms). A nested
+/// run is additionally capped by the script's own ambient budget.
+fn clampRunScriptTimeout(requested: i64) u64 {
+    const min: i64 = @intCast(host_mod.min_options_timeout_ms);
+    const max: i64 = @intCast(host_mod.max_options_timeout_ms);
+    return @intCast(std.math.clamp(requested, min, max));
+}
+
+/// Normalizes one run_script call onto the registered shell tool's
+/// `action:"run"` form. The interpreter token comes from the language enum
+/// above, the python script body and any CTX_FILE copy are written by fx
+/// into a per-call temp directory, and the command is the fixed argv shape
+/// `python3 <fx temp path>` (shell forwards the command line itself, which
+/// keeps the command_effect word-form guard in charge). Model text never
+/// becomes an interpreter option token: fields beyond the five below would
+/// be the only carriers for one, and unknown fields are rejected here at
+/// the normalization layer, before admission and before the shell decode.
+/// The action goes first so the bytes match a direct model call that names
+/// the same action and command.
+fn canonicalRunScript(
+    arena: std.mem.Allocator,
+    args_json: []const u8,
+    env: RunScriptEnv,
+    temp_dir_out: ?*?[]const u8,
+) !CanonicalCall {
+    const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, args_json, .{}) catch
+        return error.InvalidToolArguments;
+    if (parsed != .object) return error.InvalidToolArguments;
+    const object = parsed.object;
+
+    const allowed_fields = [_][]const u8{ "language", "code", "file", "intent", "timeout_ms" };
+    var fields = object.iterator();
+    while (fields.next()) |entry| {
+        var known = false;
+        for (allowed_fields) |name| {
+            if (std.mem.eql(u8, entry.key_ptr.*, name)) {
+                known = true;
+                break;
+            }
+        }
+        if (!known) return error.InvalidToolArguments;
     }
 
+    const language_value = object.get("language") orelse return error.InvalidToolArguments;
+    if (language_value != .string) return error.InvalidToolArguments;
+    const language = parseRunScriptLanguage(language_value.string) orelse return error.InvalidToolArguments;
+
+    const code_value = object.get("code") orelse return error.InvalidToolArguments;
+    if (code_value != .string) return error.InvalidToolArguments;
+
+    // A dash-prefixed file path is a path-like token that would be misread
+    // as an option; it is rejected outright.
+    var ctx_file_source: ?[]const u8 = null;
+    if (object.get("file")) |value| {
+        if (value != .string) return error.InvalidToolArguments;
+        if (value.string.len == 0 or value.string[0] == '-') return error.InvalidToolArguments;
+        ctx_file_source = try resolveRunScriptFile(arena, env, value.string);
+    }
+
+    // intent is accepted for the transcript context and never executed.
+    if (object.get("intent")) |value| {
+        if (value != .string) return error.InvalidToolArguments;
+    }
+
+    var timeout_ms: ?u64 = null;
+    if (object.get("timeout_ms")) |value| {
+        if (value != .integer) return error.InvalidToolArguments;
+        timeout_ms = clampRunScriptTimeout(value.integer);
+    }
+
+    var temp_dir: ?[]const u8 = null;
+    var ctx_path: ?[]const u8 = null;
+    if (ctx_file_source) |source| {
+        temp_dir = try makeRunScriptTempDir(arena, env.temp_base);
+        // Registered before the copy: a rejected source (oversized,
+        // unreadable) must still reach the caller's cleanup defer, or the
+        // dir leaks in TMPDIR.
+        if (temp_dir_out) |out| out.* = temp_dir.?;
+        try writeRunScriptFile(arena, temp_dir.?, "ctx_file", try readRunScriptFile(arena, source));
+        ctx_path = try std.Io.Dir.path.join(arena, &.{ temp_dir.?, "ctx_file" });
+    }
+
+    var command: []const u8 = undefined;
+    switch (language) {
+        .shell => command = if (ctx_path) |path|
+            try arena.print("CTX_FILE={s} {s}", .{ try quoteShellPath(arena, path), code_value.string })
+        else
+            code_value.string,
+        .python => {
+            // One per-call directory serves both the script body and the
+            // CTX_FILE copy.
+            if (temp_dir == null) {
+                temp_dir = try makeRunScriptTempDir(arena, env.temp_base);
+                if (temp_dir_out) |out| out.* = temp_dir.?;
+            }
+            try writeRunScriptFile(arena, temp_dir.?, "script.py", code_value.string);
+            const script_path = try std.Io.Dir.path.join(arena, &.{ temp_dir.?, "script.py" });
+            command = if (ctx_path) |path|
+                try arena.print("CTX_FILE={s} python3 {s}", .{ try quoteShellPath(arena, path), try quoteShellPath(arena, script_path) })
+            else
+                try arena.print("python3 {s}", .{try quoteShellPath(arena, script_path)});
+        },
+    }
+
+    var out: std.Io.Writer.Allocating = .init(arena);
+    try out.writer.writeAll("{\"action\":\"run\",\"command\":");
+    try std.json.Stringify.value(command, .{}, &out.writer);
+    if (timeout_ms) |value| {
+        try out.writer.print(",\"timeout_ms\":{d}", .{value});
+    }
+    try out.writer.writeByte('}');
+    return .{ .name = "shell", .arguments_json = try out.toOwnedSlice() };
+}
+
+/// The script-facing schema behind tools.list's run_script entry. The tool
+/// has no registry entry (it is script-facing only and canonicalizes onto
+/// the shell tool), so its schema is defined here and rendered directly by
+/// schemas(). The field set matches canonicalRunScript exactly.
+const run_script_language_enum = [_][]const u8{ "shell", "python" };
+const run_script_language_shape: model_tool_schema.PropertyShape = .{ .enum_values = &run_script_language_enum };
+const run_script_timeout_bounds: model_tool_schema.PropertyBounds = .{
+    .minimum = host_mod.min_options_timeout_ms,
+    .maximum = host_mod.max_options_timeout_ms,
+};
+const run_script_properties = [_]model_tool_schema.Property{
+    .{
+        .name = "language",
+        .json_type = .string,
+        .description = "shell or python.",
+        .shape = &run_script_language_shape,
+    },
+    .{
+        .name = "code",
+        .json_type = .string,
+        .description = "python: script body. shell: command line.",
+    },
+    .{
+        .name = "file",
+        .json_type = .string,
+        .description = "Exposed as CTX_FILE.",
+    },
+    .{
+        .name = "intent",
+        .json_type = .string,
+    },
+    .{
+        .name = "timeout_ms",
+        .json_type = .integer,
+        .description = "Clamped to 1000-120000.",
+        .bounds = &run_script_timeout_bounds,
+    },
+};
+pub const run_script_model_schema = model_tool_schema.FunctionSchema{
+    .name = "run_script",
+    .description = "Run code with an fx-picked interpreter. python: fx temp file run via python3. shell: the command line.",
+    .input_schema = .{
+        .properties = &run_script_properties,
+        .required = &.{ "language", "code" },
+        .additional_properties = false,
+    },
+};
+
+/// Maps the script's `run_command` call onto the registered `shell` tool's
+/// `action: "run"` form, keeping the pre-T-20 behavior byte for byte: the
+/// action goes first, every other script field keeps its original order.
+fn canonicalRunCommand(arena: std.mem.Allocator, args_json: []const u8) !CanonicalCall {
     const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, args_json, .{}) catch
         return error.InvalidToolArguments;
     if (parsed != .object) return error.InvalidToolArguments;
@@ -290,6 +585,8 @@ test "run_command canonicalizes to the registered shell run call" {
         arena_state.allocator(),
         .{ .name = "run_command" },
         "{\"command\":\"./parity-probe.sh\"}",
+        .{},
+        null,
     );
     try std.testing.expectEqualStrings("shell", canonical.name);
     try std.testing.expectEqualStrings(
@@ -305,6 +602,8 @@ test "run_command canonicalization keeps field order and an explicit run action"
         arena_state.allocator(),
         .{ .name = "run_command" },
         "{\"action\":\"run\",\"command\":\"make\",\"cwd\":\"src\",\"timeout_ms\":600000}",
+        .{},
+        null,
     );
     try std.testing.expectEqualStrings(
         "{\"action\":\"run\",\"command\":\"make\",\"cwd\":\"src\",\"timeout_ms\":600000}",
@@ -321,6 +620,8 @@ test "run_command canonicalization refuses another shell action" {
             arena_state.allocator(),
             .{ .name = "run_command" },
             "{\"action\":\"interact\",\"command\":\"true\"}",
+            .{},
+            null,
         ),
     );
 }
@@ -331,15 +632,15 @@ test "run_command canonicalization requires an object with a string command" {
     const arena = arena_state.allocator();
     try std.testing.expectError(
         error.InvalidToolArguments,
-        canonicalNestedCall(arena, .{ .name = "run_command" }, "[]"),
+        canonicalNestedCall(arena, .{ .name = "run_command" }, "[]", .{}, null),
     );
     try std.testing.expectError(
         error.InvalidToolArguments,
-        canonicalNestedCall(arena, .{ .name = "run_command" }, "{}"),
+        canonicalNestedCall(arena, .{ .name = "run_command" }, "{}", .{}, null),
     );
     try std.testing.expectError(
         error.InvalidToolArguments,
-        canonicalNestedCall(arena, .{ .name = "run_command" }, "{\"command\":5}"),
+        canonicalNestedCall(arena, .{ .name = "run_command" }, "{\"command\":5}", .{}, null),
     );
 }
 
@@ -350,16 +651,404 @@ test "other whitelisted tools keep their exact arguments" {
         arena_state.allocator(),
         .{ .name = "read_file" },
         "{\"path\":\"notes.txt\"}",
+        .{},
+        null,
     );
     try std.testing.expectEqualStrings("read_file", canonical.name);
     try std.testing.expectEqualStrings("{\"path\":\"notes.txt\"}", canonical.arguments_json);
 }
 
+// --- run_script tests (T-20) ---
+
+test "run_script python canonicalizes to a fixed python3 argv through a fx temp script" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const temp_base = try arena.print("/tmp/fx-run-script-test-{d}", .{io_mod.nanoTimestamp()});
+    try std.Io.Dir.cwd().createDirPath(io_mod.getIo(), temp_base);
+    defer std.Io.Dir.cwd().deleteTree(io_mod.getIo(), temp_base) catch {};
+    var temp_dir: ?[]const u8 = null;
+    const canonical = try canonicalNestedCall(
+        arena,
+        .{ .name = "run_script" },
+        "{\"language\":\"python\",\"code\":\"print('hi')\"}",
+        .{ .workspace_root = temp_base, .temp_base = temp_base },
+        &temp_dir,
+    );
+    try std.testing.expectEqualStrings("shell", canonical.name);
+    // argv is always exactly python3 plus the fx-written temp script path;
+    // model text never becomes an argv token.
+    try std.testing.expect(std.mem.startsWith(u8, canonical.arguments_json, "{\"action\":\"run\",\"command\":\"python3 "));
+    try std.testing.expect(std.mem.endsWith(u8, canonical.arguments_json, "/script.py\"}"));
+    // The temp dir is recorded for the caller's cleanup, and the fx-written
+    // script file carries the code verbatim.
+    const dir = temp_dir.?;
+    try std.testing.expect(std.mem.startsWith(u8, dir, temp_base));
+    const script_path = try std.Io.Dir.path.join(arena, &.{ dir, "script.py" });
+    var file = try std.Io.Dir.cwd().openFile(io_mod.getIo(), script_path, .{});
+    defer file.close(io_mod.getIo());
+    const content = try io_mod.readFileToEnd(arena, &file, 4096);
+    try std.testing.expectEqualStrings("print('hi')", content);
+}
+
+test "run_script file param copies a workspace file and prefixes CTX_FILE" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const ws_root = try arena.print("/tmp/fx-run-script-ws-{d}", .{io_mod.nanoTimestamp()});
+    try std.Io.Dir.cwd().createDirPath(io_mod.getIo(), ws_root);
+    defer std.Io.Dir.cwd().deleteTree(io_mod.getIo(), ws_root) catch {};
+    const temp_base = try std.Io.Dir.path.join(arena, &.{ ws_root, "tmp" });
+    try std.Io.Dir.cwd().createDirPath(io_mod.getIo(), temp_base);
+    const data_path = try std.Io.Dir.path.join(arena, &.{ ws_root, "data.txt" });
+    {
+        var data = try std.Io.Dir.cwd().createFile(io_mod.getIo(), data_path, .{ .truncate = true });
+        defer data.close(io_mod.getIo());
+        try data.writeStreamingAll(io_mod.getIo(), "hello-ctx-5521");
+    }
+    var temp_dir: ?[]const u8 = null;
+    const canonical = try canonicalNestedCall(
+        arena,
+        .{ .name = "run_script" },
+        "{\"language\":\"python\",\"code\":\"1\",\"file\":\"data.txt\"}",
+        .{ .workspace_root = ws_root, .temp_base = temp_base },
+        &temp_dir,
+    );
+    try std.testing.expectEqualStrings("shell", canonical.name);
+    try std.testing.expect(std.mem.startsWith(u8, canonical.arguments_json, "{\"action\":\"run\",\"command\":\"CTX_FILE="));
+    try std.testing.expect(std.mem.indexOf(u8, canonical.arguments_json, " python3 ") != null);
+    try std.testing.expect(std.mem.endsWith(u8, canonical.arguments_json, "/script.py\"}"));
+    // The copy carries the workspace file's content; the source path never
+    // appears in the command.
+    const ctx_path = try std.Io.Dir.path.join(arena, &.{ temp_dir.?, "ctx_file" });
+    var file = try std.Io.Dir.cwd().openFile(io_mod.getIo(), ctx_path, .{});
+    defer file.close(io_mod.getIo());
+    const content = try io_mod.readFileToEnd(arena, &file, 4096);
+    try std.testing.expectEqualStrings("hello-ctx-5521", content);
+    try std.testing.expect(std.mem.indexOf(u8, canonical.arguments_json, data_path) == null);
+}
+
+test "run_script file param refuses traversal outside the workspace" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const ws_root = try arena.print("/tmp/fx-run-script-trav-{d}", .{io_mod.nanoTimestamp()});
+    try std.Io.Dir.cwd().createDirPath(io_mod.getIo(), ws_root);
+    defer std.Io.Dir.cwd().deleteTree(io_mod.getIo(), ws_root) catch {};
+    try std.testing.expectError(
+        error.InvalidToolArguments,
+        canonicalNestedCall(
+            arena,
+            .{ .name = "run_script" },
+            "{\"language\":\"python\",\"code\":\"1\",\"file\":\"../../../../etc/hosts\"}",
+            .{ .workspace_root = ws_root, .temp_base = ws_root },
+            null,
+        ),
+    );
+}
+
+test "run_script file param refuses a missing file" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const ws_root = try arena.print("/tmp/fx-run-script-missing-{d}", .{io_mod.nanoTimestamp()});
+    try std.Io.Dir.cwd().createDirPath(io_mod.getIo(), ws_root);
+    defer std.Io.Dir.cwd().deleteTree(io_mod.getIo(), ws_root) catch {};
+    try std.testing.expectError(
+        error.InvalidToolArguments,
+        canonicalNestedCall(
+            arena,
+            .{ .name = "run_script" },
+            "{\"language\":\"python\",\"code\":\"1\",\"file\":\"missing.txt\"}",
+            .{ .workspace_root = ws_root, .temp_base = ws_root },
+            null,
+        ),
+    );
+}
+
+test "run_script oversized ctx file registers the temp dir for caller cleanup" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const ws_root = try io_mod.dirRealpathAlloc(arena, tmp.dir, ".");
+    const temp_base = try std.Io.Dir.path.join(arena, &.{ ws_root, "tmp" });
+    try std.Io.Dir.cwd().createDirPath(io_mod.getIo(), temp_base);
+    const big_path = try std.Io.Dir.path.join(arena, &.{ ws_root, "big.txt" });
+    {
+        var big = try std.Io.Dir.cwd().createFile(io_mod.getIo(), big_path, .{ .truncate = true });
+        defer big.close(io_mod.getIo());
+        const chunk: [4096]u8 = @splat('x');
+        var written: usize = 0;
+        while (written <= run_script_max_ctx_file_bytes) : (written += chunk.len) {
+            try big.writeStreamingAll(io_mod.getIo(), &chunk);
+        }
+    }
+    var temp_dir: ?[]const u8 = null;
+    try std.testing.expectError(
+        error.InvalidToolArguments,
+        canonicalNestedCall(
+            arena,
+            .{ .name = "run_script" },
+            "{\"language\":\"python\",\"code\":\"1\",\"file\":\"big.txt\"}",
+            .{ .workspace_root = ws_root, .temp_base = temp_base },
+            &temp_dir,
+        ),
+    );
+    // The dir must be registered the moment it exists: an unregistered dir
+    // here is the ISSUE-20 orphan the caller's cleanup defer cannot reach.
+    try std.testing.expect(temp_dir != null);
+    if (temp_dir) |dir_path| {
+        std.Io.Dir.cwd().deleteTree(io_mod.getIo(), dir_path) catch {};
+    }
+    var scan = try std.Io.Dir.openDirAbsolute(io_mod.getIo(), temp_base, .{ .iterate = true });
+    defer scan.close(io_mod.getIo());
+    var iter = scan.iterate();
+    while (try iter.next(io_mod.getIo())) |entry| {
+        try std.testing.expect(std.mem.startsWith(u8, entry.name, run_script_temp_prefix) == false);
+    }
+}
+
+test "a failed run_script call leaves no temp dir behind" {
+    const allocator = std.testing.allocator;
+    var fixture = TestCodemodeRuntime{};
+    defer fixture.deinit(allocator);
+    var arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const ws_root = try io_mod.dirRealpathAlloc(arena, tmp.dir, ".");
+    const big_path = try std.Io.Dir.path.join(arena, &.{ ws_root, "big.txt" });
+    {
+        var big = try std.Io.Dir.cwd().createFile(io_mod.getIo(), big_path, .{ .truncate = true });
+        defer big.close(io_mod.getIo());
+        const chunk: [4096]u8 = @splat('x');
+        var written: usize = 0;
+        while (written <= run_script_max_ctx_file_bytes) : (written += chunk.len) {
+            try big.writeStreamingAll(io_mod.getIo(), &chunk);
+        }
+    }
+    // call() leaves temp_base empty in production, so the base is the same
+    // one makeRunScriptTempDir resolves: TMPDIR or /tmp.
+    const temp_base = if (io_mod.getenv("TMPDIR")) |t| (if (t.len > 0) t else "/tmp") else "/tmp";
+    var before: std.StringHashMap(void) = .init(allocator);
+    defer {
+        var key_it = before.keyIterator();
+        while (key_it.next()) |key| allocator.free(key.*);
+        before.deinit();
+    }
+    try collectRunScriptTempNames(temp_base, &before);
+    var ctx = fixture.context();
+    ctx.workspace_root = ws_root;
+    var state = tool_runtime.CodemodeHostState{
+        .runtime = ctx,
+        .script_call = .{ .id = "codemode-call", .name = "codemode", .arguments_json = "{}" },
+    };
+    try std.testing.expectError(
+        error.InvalidToolArguments,
+        call(
+            &state,
+            allocator,
+            .{ .name = "run_script" },
+            "{\"language\":\"python\",\"code\":\"1\",\"file\":\"big.txt\"}",
+        ),
+    );
+    var after: std.StringHashMap(void) = .init(allocator);
+    defer {
+        var key_it = after.keyIterator();
+        while (key_it.next()) |key| allocator.free(key.*);
+        after.deinit();
+    }
+    try collectRunScriptTempNames(temp_base, &after);
+    var it = after.keyIterator();
+    while (it.next()) |key| {
+        try std.testing.expect(before.contains(key.*));
+    }
+}
+
+/// Collects the fx-run-script-* directory names under one base dir. The
+/// map owns its keys; the caller frees them with the map.
+fn collectRunScriptTempNames(
+    temp_base: []const u8,
+    names: *std.StringHashMap(void),
+) !void {
+    var scan = std.Io.Dir.openDirAbsolute(io_mod.getIo(), temp_base, .{ .iterate = true }) catch return;
+    defer scan.close(io_mod.getIo());
+    var iter = scan.iterate();
+    while (try iter.next(io_mod.getIo())) |entry| {
+        if (entry.kind != .directory) continue;
+        if (!std.mem.startsWith(u8, entry.name, run_script_temp_prefix)) continue;
+        const owned = try names.allocator.dupe(u8, entry.name);
+        try names.put(owned, {});
+    }
+}
+test "run_script shell forwards the code as the shell command" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const canonical = try canonicalNestedCall(
+        arena_state.allocator(),
+        .{ .name = "run_script" },
+        "{\"language\":\"shell\",\"code\":\"echo hi\"}",
+        .{},
+        null,
+    );
+    try std.testing.expectEqualStrings("shell", canonical.name);
+    try std.testing.expectEqualStrings(
+        "{\"action\":\"run\",\"command\":\"echo hi\"}",
+        canonical.arguments_json,
+    );
+}
+
+test "run_script rejects a language outside the v1 enum" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    // v1 whitelist: shell + python. Neither python3 nor node may smuggle in
+    // through the language field; the interpreter token comes from the enum.
+    try std.testing.expectError(
+        error.InvalidToolArguments,
+        canonicalNestedCall(arena, .{ .name = "run_script" }, "{\"language\":\"node\",\"code\":\"1\"}", .{}, null),
+    );
+    try std.testing.expectError(
+        error.InvalidToolArguments,
+        canonicalNestedCall(arena, .{ .name = "run_script" }, "{\"language\":\"python3\",\"code\":\"1\"}", .{}, null),
+    );
+    try std.testing.expectError(
+        error.InvalidToolArguments,
+        canonicalNestedCall(arena, .{ .name = "run_script" }, "{\"language\":\"-python\",\"code\":\"1\"}", .{}, null),
+    );
+}
+
+test "run_script rejects interpreter option fields at normalization" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    // Any field that would carry interpreter tokens (args, interpreter, ...)
+    // is an unknown field and is rejected here, in canonicalNestedCall,
+    // before admission or the shell decode layer ever sees it.
+    try std.testing.expectError(
+        error.InvalidToolArguments,
+        canonicalNestedCall(arena, .{ .name = "run_script" }, "{\"language\":\"python\",\"code\":\"1\",\"args\":[\"-c\",\"evil\"]}", .{}, null),
+    );
+    try std.testing.expectError(
+        error.InvalidToolArguments,
+        canonicalNestedCall(arena, .{ .name = "run_script" }, "{\"language\":\"python\",\"code\":\"1\",\"interpreter\":\"-c\"}", .{}, null),
+    );
+}
+
+test "run_script rejects a dash-prefixed file path" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    try std.testing.expectError(
+        error.InvalidToolArguments,
+        canonicalNestedCall(
+            arena_state.allocator(),
+            .{ .name = "run_script" },
+            "{\"language\":\"python\",\"code\":\"1\",\"file\":\"-rf\"}",
+            .{},
+            null,
+        ),
+    );
+}
+
+test "run_script requires a string code" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    try std.testing.expectError(
+        error.InvalidToolArguments,
+        canonicalNestedCall(arena, .{ .name = "run_script" }, "{\"language\":\"python\"}", .{}, null),
+    );
+    try std.testing.expectError(
+        error.InvalidToolArguments,
+        canonicalNestedCall(arena, .{ .name = "run_script" }, "{\"language\":\"python\",\"code\":5}", .{}, null),
+    );
+    try std.testing.expectError(
+        error.InvalidToolArguments,
+        canonicalNestedCall(arena, .{ .name = "run_script" }, "[]", .{}, null),
+    );
+}
+
+test "run_script clamps timeout_ms into the host options range" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const low = try canonicalNestedCall(
+        arena,
+        .{ .name = "run_script" },
+        "{\"language\":\"shell\",\"code\":\"true\",\"timeout_ms\":5}",
+        .{},
+        null,
+    );
+    try std.testing.expectEqualStrings(
+        "{\"action\":\"run\",\"command\":\"true\",\"timeout_ms\":1000}",
+        low.arguments_json,
+    );
+    const high = try canonicalNestedCall(
+        arena,
+        .{ .name = "run_script" },
+        "{\"language\":\"shell\",\"code\":\"true\",\"timeout_ms\":500000}",
+        .{},
+        null,
+    );
+    try std.testing.expectEqualStrings(
+        "{\"action\":\"run\",\"command\":\"true\",\"timeout_ms\":120000}",
+        high.arguments_json,
+    );
+    // A non-integer timeout is a malformed argument, not a default.
+    try std.testing.expectError(
+        error.InvalidToolArguments,
+        canonicalNestedCall(arena, .{ .name = "run_script" }, "{\"language\":\"shell\",\"code\":\"true\",\"timeout_ms\":\"soon\"}", .{}, null),
+    );
+}
+
+test "schemas renders the run_script schema on the derived face" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const face = sandboxFace(builtin_tools.registry, true);
+    const injected = try schemas(arena, builtin_tools.registry, face);
+    var found = false;
+    for (injected) |schema| {
+        if (!std.mem.eql(u8, schema.name, "run_script")) continue;
+        found = true;
+        var parsed = try std.json.parseFromSlice(std.json.Value, arena, schema.schema_json, .{});
+        defer parsed.deinit();
+        const props = parsed.value.object.get("inputSchema").?.object.get("properties").?.object;
+        try std.testing.expect(props.get("language") != null);
+        try std.testing.expect(props.get("code") != null);
+        const language = props.get("language").?.object.get("enum").?.array;
+        try std.testing.expectEqual(@as(usize, 2), language.items.len);
+        try std.testing.expectEqualStrings("shell", language.items[0].string);
+        try std.testing.expectEqualStrings("python", language.items[1].string);
+        const required = parsed.value.object.get("inputSchema").?.object.get("required").?.array;
+        try std.testing.expectEqual(@as(usize, 2), required.items.len);
+        // Plan question 4: the run_script schema stays negligible against
+        // the 16KiB catalog budget. Measured 629 bytes (the plan's 300-500
+        // estimate ran slightly under the five descriptions); the bounds
+        // pin that band so a fatter description is a deliberate change.
+        try std.testing.expectEqual(true, schema.schema_json.len >= 300);
+        try std.testing.expectEqual(true, schema.schema_json.len <= 768);
+    }
+    try std.testing.expect(found);
+}
+
 /// Maps a script-facing whitelist name to the registered tool that backs
 /// it. run_command is the shell tool's captured-command compatibility name
 /// (see canonicalNestedCall); every other name is its own registry entry.
-/// A whitelist name with no registered backer is a wiring bug, so it is an
-/// error rather than a silent skip.
+/// run_script is the one further exception: it has no registry backer and
+/// schemas() renders its static schema before this lookup runs. A
+/// whitelist name with no registered backer and no static schema is a
+/// wiring bug, so it is an error rather than a silent skip.
+/// The script-facing names whose nested result encodes through
+/// shell.encodeResultJson. Both canonicalize onto the registered shell
+/// tool's run action, so both get the same exit_code/output shape.
+fn isShellBackedFaceName(name: []const u8) bool {
+    return std.mem.eql(u8, name, "run_command") or std.mem.eql(u8, name, "run_script");
+}
+
 fn registeredName(script_name: []const u8) []const u8 {
     if (std.mem.eql(u8, script_name, "run_command")) return "shell";
     return script_name;
@@ -386,7 +1075,11 @@ fn derivedFace(comptime registry: tool_dispatch.Registry) []const bindings.Tool 
             if (!tool.sandbox_reachable) continue;
             face = face ++ &[_]bindings.Tool{.{ .name = tool.name }};
         }
-        break :blk face ++ &[_]bindings.Tool{.{ .name = "run_command" }};
+        // run_command and run_script are both script-facing names backed
+        // by the registered shell tool; neither is a registry entry.
+        face = face ++ &[_]bindings.Tool{.{ .name = "run_command" }};
+        face = face ++ &[_]bindings.Tool{.{ .name = "run_script" }};
+        break :blk face;
     };
 }
 
@@ -402,8 +1095,14 @@ pub fn schemas(
 ) ![]bindings.ToolSchema {
     const out = try alloc.alloc(bindings.ToolSchema, face.len);
     for (face, 0..) |tool, index| {
-        const registered = registry.lookup(registeredName(tool.name)) orelse return error.SchemaMissing;
-        const json = try model_tool_schema.builtinFunctionSchemaJsonAlloc(alloc, registered.model_schema);
+        // run_script is script-facing only: it has no registry entry, so
+        // its static schema (see run_script_model_schema) renders here.
+        const json = if (std.mem.eql(u8, tool.name, "run_script"))
+            try model_tool_schema.builtinFunctionSchemaJsonAlloc(alloc, run_script_model_schema)
+        else blk: {
+            const registered = registry.lookup(registeredName(tool.name)) orelse return error.SchemaMissing;
+            break :blk try model_tool_schema.builtinFunctionSchemaJsonAlloc(alloc, registered.model_schema);
+        };
         // JS_ParseJSON requires a NUL-terminated buffer (quickjs.c: 'buf'
         // must be zero terminated); the writer API does not add one.
         const terminated = try alloc.alloc(u8, json.len + 1);

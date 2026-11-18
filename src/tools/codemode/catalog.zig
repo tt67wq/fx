@@ -22,6 +22,14 @@ pub const catalog_notice_floor_bytes: usize = 1024;
 /// tool until MCP groups arrive).
 pub const Tier = enum { t0, t1, t2 };
 
+test "run_script sits in tier two" {
+    // Plan question 4: run_script is not an exemption. Tier zero means
+    // "today's existing behavior must always be listed"; a new primitive
+    // lands in tier two and takes part in budget selection like any other
+    // non-exempt face entry.
+    try std.testing.expectEqual(Tier.t2, tierOf("run_script"));
+}
+
 pub fn tierOf(name: []const u8) Tier {
     const t0_names = [_][]const u8{ "glob_files", "grep_files", "read_file", "run_command" };
     const t1_names = [_][]const u8{ "write_file", "edit_file" };
@@ -212,7 +220,7 @@ test "notice floor covers the rendered hint and six omitted entries" {
     try std.testing.expect(catalog_notice_floor_bytes >= 10 + rendered_hint_len + 13 + 6 * 70);
 }
 
-test "catalog keeps the real nine-item derived face whole under the default budget" {
+test "catalog keeps the real ten-item derived face whole under the default budget" {
     // F4: the sentinel reads the shipped default from context_limits, so a
     // future default change moves the guard with it instead of pinning the
     // old number here.
@@ -224,7 +232,9 @@ test "catalog keeps the real nine-item derived face whole under the default budg
     const registry = builtin_tools.registry;
     const face = bridge.sandboxFace(registry, true);
     const schemas = try bridge.schemas(arena, registry, face);
-    try std.testing.expectEqual(@as(usize, 9), schemas.len);
+    try std.testing.expectEqual(@as(usize, 10), schemas.len);
+    // run_script rides the derived face with its own static schema; the
+    // ten-schema face must still weigh under the default catalog budget.
 
     // Size sentinel: the whole face must weigh under the default budget.
     // When a fatter description pushes this over, raising the budget is a
@@ -235,7 +245,7 @@ test "catalog keeps the real nine-item derived face whole under the default budg
 
     const selection = try select(arena, schemas, default_budget);
     try std.testing.expectEqual(false, selection.triggered);
-    try std.testing.expectEqual(@as(usize, 9), selection.indexes.len);
+    try std.testing.expectEqual(@as(usize, 10), selection.indexes.len);
     try std.testing.expectEqual(@as(usize, 0), selection.omitted.len);
 }
 
