@@ -118,10 +118,11 @@ fn formatFailureBody(
     partial: ?host_mod.PartialOutput,
     nested_calls: []const tool_runtime.NestedCallRecord,
     nested_overflow: bool,
+    last_output: tool_runtime.NestedOutputExcerpt,
 ) Allocator.Error![]u8 {
     const has_text = partial != null and partial.?.text.len > 0;
     const has_console = partial != null and partial.?.console.len > 0;
-    if (!has_text and !has_console and nested_calls.len == 0 and !nested_overflow) {
+    if (!has_text and !has_console and nested_calls.len == 0 and !nested_overflow and last_output.text.len == 0) {
         return allocator.dupe(u8, headline);
     }
     var out: std.ArrayList(u8) = .empty;
@@ -157,8 +158,9 @@ fn failureBody(
     partial: host_mod.PartialOutput,
     nested_calls: []const tool_runtime.NestedCallRecord,
     nested_overflow: bool,
+    last_output: tool_runtime.NestedOutputExcerpt,
 ) []u8 {
-    const body = formatFailureBody(allocator, headline, partial, nested_calls, nested_overflow) catch headline;
+    const body = formatFailureBody(allocator, headline, partial, nested_calls, nested_overflow, last_output) catch headline;
     if (body.ptr != headline.ptr) allocator.free(headline);
     return body;
 }
@@ -351,7 +353,7 @@ pub fn call(ctx: tool_dispatch.DispatchContext, erased: tool_dispatch.ToolInput)
                 sandbox.host.lastExceptionMessage(),
                 sandbox.host.lastExceptionStage(),
             );
-            return .{ .failure = failureBody(ctx.allocator, headline, partial, state.nested_calls[0..state.nested_call_count], state.nested_call_overflow) };
+            return .{ .failure = failureBody(ctx.allocator, headline, partial, state.nested_calls[0..state.nested_call_count], state.nested_call_overflow, state.nested_output_excerpt) };
         },
         error.Timeout => {
             // ISSUE-23a: name the elapsed wall, the effective budget, its
@@ -363,14 +365,14 @@ pub fn call(ctx: tool_dispatch.DispatchContext, erased: tool_dispatch.ToolInput)
             const now_ms = io_mod.milliTimestamp();
             const started = state.ambient_started_ms orelse now_ms;
             const headline = try timeoutHeadline(ctx.allocator, now_ms - started, input.effective_timeout_ms, input.timeout_from_options);
-            return .{ .failure = failureBody(ctx.allocator, headline, partial, state.nested_calls[0..state.nested_call_count], state.nested_call_overflow) };
+            return .{ .failure = failureBody(ctx.allocator, headline, partial, state.nested_calls[0..state.nested_call_count], state.nested_call_overflow, state.nested_output_excerpt) };
         },
         else => {
             const partial = sandbox.host.takePartialOutput();
             defer ctx.allocator.free(partial.text);
             defer ctx.allocator.free(partial.console);
             const headline = try ctx.allocator.print("codemode script failed: {s}", .{@errorName(err)});
-            return .{ .failure = failureBody(ctx.allocator, headline, partial, state.nested_calls[0..state.nested_call_count], state.nested_call_overflow) };
+            return .{ .failure = failureBody(ctx.allocator, headline, partial, state.nested_calls[0..state.nested_call_count], state.nested_call_overflow, state.nested_output_excerpt) };
         },
     };
     var result = outcome;
@@ -435,7 +437,7 @@ test "decode reports a missing script as a failure body" {
 }
 
 test "failure body without output or calls matches the plain one-liner" {
-    const body = try formatFailureBody(std.testing.allocator, "codemode script failed: ScriptError: boom", null, &.{}, false);
+    const body = try formatFailureBody(std.testing.allocator, "codemode script failed: ScriptError: boom", null, &.{}, false, .{});
     defer std.testing.allocator.free(body);
     try std.testing.expectEqualStrings("codemode script failed: ScriptError: boom", body);
 }
@@ -505,7 +507,7 @@ test "failure body records duration and partial output" {
         .{ .name = "read_file", .outcome = .ok, .duration_ms = 123 },
         .{ .name = "run_command", .outcome = .denied, .duration_ms = 0 },
     };
-    const body = try formatFailureBody(std.testing.allocator, "codemode script failed: ScriptError: boom", .{ .text = text, .console = console }, &records, false);
+    const body = try formatFailureBody(std.testing.allocator, "codemode script failed: ScriptError: boom", .{ .text = text, .console = console }, &records, false, .{});
     defer std.testing.allocator.free(text);
     defer std.testing.allocator.free(console);
     defer std.testing.allocator.free(body);
@@ -525,6 +527,57 @@ test "failure body records duration and partial output" {
     );
 }
 
+// ISSUE-23b: the excerpt section sits right after the headline, before
+// the partial output sections, so a 4KiB result-store preview keeps it
+// model-visible. Golden, hand-computed from the assembly order.
+test "failure body shows the last nested output right after the headline" {
+    var excerpt: tool_runtime.NestedOutputExcerpt = .{};
+    excerpt.text = "{\"state\":\"running\",\"session_id\":\"shell-abc\",\"output_delta\":\"probe one\\n\"}";
+    excerpt.name = "run_command";
+    excerpt.outcome = .ok;
+    excerpt.duration_ms = 31496;
+    const text = try std.testing.allocator.dupe(u8, "found 3 files");
+    defer std.testing.allocator.free(text);
+    const body = try formatFailureBody(std.testing.allocator, "codemode script failed: Timeout after 31496ms (budget 30000ms, from default); raise it with // @options: {\"timeout_ms\": N} on the first script line", .{ .text = text, .console = "" }, &.{}, false, excerpt);
+    defer std.testing.allocator.free(body);
+    try std.testing.expectEqualStrings(
+        "codemode script failed: Timeout after 31496ms (budget 30000ms, from default); " ++
+            "raise it with // @options: {\"timeout_ms\": N} on the first script line\n" ++
+            "\n" ++
+            "Last nested output before failure (run_command, ok, 31496ms):\n" ++
+            "{\"state\":\"running\",\"session_id\":\"shell-abc\",\"output_delta\":\"probe one\\n\"}\n" ++
+            "\n" ++
+            "Partial output before failure:\n" ++
+            "found 3 files\n",
+        body,
+    );
+}
+
+test "failure body without an excerpt stays byte-identical to today" {
+    const text = try std.testing.allocator.dupe(u8, "found 3 files");
+    defer std.testing.allocator.free(text);
+    const console = try std.testing.allocator.dupe(u8, "logged line");
+    defer std.testing.allocator.free(console);
+    const records = [_]tool_runtime.NestedCallRecord{
+        .{ .name = "read_file", .outcome = .ok, .duration_ms = 123 },
+    };
+    const body = try formatFailureBody(std.testing.allocator, "codemode script failed: ScriptError: boom", .{ .text = text, .console = console }, &records, false, .{});
+    defer std.testing.allocator.free(body);
+    try std.testing.expectEqualStrings(
+        "codemode script failed: ScriptError: boom\n" ++
+            "\n" ++
+            "Partial output before failure:\n" ++
+            "found 3 files\n" ++
+            "\n" ++
+            "Console output before failure:\n" ++
+            "logged line\n" ++
+            "\n" ++
+            "Nested tool calls before failure (not undone):\n" ++
+            "- read_file: ok (123ms)\n",
+        body,
+    );
+}
+
 test "failure body keeps head and tail of oversized output" {
     const big = try std.testing.allocator.alloc(u8, 10_000);
     @memset(big, 'x');
@@ -533,7 +586,7 @@ test "failure body keeps head and tail of oversized output" {
     defer std.testing.allocator.free(big);
     const empty = try std.testing.allocator.dupe(u8, "");
     defer std.testing.allocator.free(empty);
-    const body = try formatFailureBody(std.testing.allocator, "codemode script failed: Timeout", .{ .text = big, .console = empty }, &.{}, true);
+    const body = try formatFailureBody(std.testing.allocator, "codemode script failed: Timeout", .{ .text = big, .console = empty }, &.{}, true, .{});
     defer std.testing.allocator.free(body);
     // A timed-out script's last lines are the ones the model needs, so the
     // body keeps head and tail joined by the shared omission marker; the
@@ -552,7 +605,7 @@ test "failure body appends capture cap markers only when bytes dropped" {
     defer std.testing.allocator.free(console);
 
     // No drops: body is unchanged from the plain shape.
-    const plain = try formatFailureBody(std.testing.allocator, "codemode script failed: Timeout", .{ .text = text, .console = console }, &.{}, false);
+    const plain = try formatFailureBody(std.testing.allocator, "codemode script failed: Timeout", .{ .text = text, .console = console }, &.{}, false, .{});
     defer std.testing.allocator.free(plain);
     try std.testing.expectEqual(@as(usize, 0), std.mem.count(u8, plain, "bytes omitted]..."));
 
@@ -564,7 +617,7 @@ test "failure body appends capture cap markers only when bytes dropped" {
         .text_dropped_bytes = 500_000,
         .console_dropped_bytes = 700,
         .capture_limit_bytes = 1024 * 1024,
-    }, &.{}, false);
+    }, &.{}, false, .{});
     defer std.testing.allocator.free(body);
     try std.testing.expect(std.mem.find(u8, body, "...[500000 bytes omitted]...") != null);
     try std.testing.expect(std.mem.find(u8, body, "...[700 bytes omitted]...") != null);
@@ -659,7 +712,7 @@ test "failure body renders 32 records plus the overflow note" {
         @splat(.{ .name = "glob_files", .outcome = .ok, .duration_ms = 5 });
     const overflow_line: []const u8 = "- ... additional calls not recorded\n";
     const repeated: []const u8 = text_utils.repeat("- glob_files: ok (5ms)\n", 32);
-    const body = try formatFailureBody(std.testing.allocator, "codemode script failed: Timeout", null, &records, true);
+    const body = try formatFailureBody(std.testing.allocator, "codemode script failed: Timeout", null, &records, true, .{});
     defer std.testing.allocator.free(body);
     try std.testing.expectEqualStrings(
         "codemode script failed: Timeout\n" ++
@@ -703,7 +756,7 @@ test "failure body degrades to the headline under allocation failures" {
     var fail_index: usize = 0;
     while (fail_index < 32) : (fail_index += 1) {
         var failing = std.testing.FailingAllocator.init(backing, .{ .fail_index = fail_index });
-        const body = formatFailureBody(failing.allocator(), "codemode script failed: ScriptError: boom", .{ .text = text, .console = "" }, &records, false) catch |err| switch (err) {
+        const body = formatFailureBody(failing.allocator(), "codemode script failed: ScriptError: boom", .{ .text = text, .console = "" }, &records, false, .{}) catch |err| switch (err) {
             error.OutOfMemory => continue,
         };
         defer backing.free(body);

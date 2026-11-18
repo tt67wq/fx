@@ -150,7 +150,7 @@ fn call(
         check.session_grants,
     );
     if (outcome.decision.isDenied() or outcome.tool_failure != null) {
-        state.recordNestedCall(tool.name, if (outcome.tool_failure != null) .failure else .denied, nestedDurationMs(started_ms, io_mod.milliTimestamp()));
+        state.recordNestedCall(tool.name, if (outcome.tool_failure != null) .failure else .denied, nestedDurationMs(started_ms, io_mod.milliTimestamp()), null);
         return deniedResult(allocator, try deniedReason(arena, tool.name, outcome));
     }
 
@@ -165,7 +165,7 @@ fn call(
         .max_tool_result_bytes = ctx.max_tool_result_bytes,
         .classification_complete = true,
     }) catch |err| {
-        state.recordNestedCall(tool.name, mapNestedOutcome(null, err), nestedDurationMs(started_ms, io_mod.milliTimestamp()));
+        state.recordNestedCall(tool.name, mapNestedOutcome(null, err), nestedDurationMs(started_ms, io_mod.milliTimestamp()), null);
         return err;
     };
     // The bridge consumes the output itself and never hands the delivery
@@ -180,13 +180,13 @@ fn call(
     // Wait-for-completion, then discard: a cancel that arrived during the
     // nested call must not hand the script a usable value.
     if (state.cancelled()) {
-        state.recordNestedCall(tool.name, .cancelled, nestedDurationMs(started_ms, io_mod.milliTimestamp()));
+        state.recordNestedCall(tool.name, .cancelled, nestedDurationMs(started_ms, io_mod.milliTimestamp()), null);
         return error.Cancelled;
     }
 
     // F2: a normal return can carry status .failure (missing file, non-zero
     // exit) or observe cancellation; record the real outcome, not .ok.
-    state.recordNestedCall(tool.name, mapNestedOutcome(result, null), nestedDurationMs(started_ms, io_mod.milliTimestamp()));
+    state.recordNestedCall(tool.name, mapNestedOutcome(result, null), nestedDurationMs(started_ms, io_mod.milliTimestamp()), null);
     if (isShellBackedFaceName(tool.name)) {
         return shellResult(allocator, arena, result);
     }
@@ -1518,6 +1518,9 @@ test "a nested call that fails canonicalization records nothing" {
     );
     try std.testing.expectError(error.InvalidToolArguments, result);
     try std.testing.expectEqual(@as(usize, 0), state.nestedCallCount());
+    // No record means no excerpt either: the failure body must not show
+    // an output for a call that never ran.
+    try std.testing.expectEqualStrings("", state.nested_output_excerpt.text);
     // The sequence still advances: the call id was minted before the
     // canonicalization error, but no record exists.
     try std.testing.expectEqual(@as(usize, 1), state.call_sequence);
