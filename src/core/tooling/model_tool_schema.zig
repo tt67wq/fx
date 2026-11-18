@@ -15,7 +15,7 @@ pub const JsonType = enum {
 const no_u32_bound = std.math.maxInt(u32);
 const no_u64_bound = std.math.maxInt(u64);
 
-const PropertyShape = union(enum) {
+pub const PropertyShape = union(enum) {
     enum_values: []const []const u8,
     object: *const ObjectSchema,
     array_values: struct {
@@ -25,7 +25,7 @@ const PropertyShape = union(enum) {
     array_objects: *const ObjectSchema,
 };
 
-const PropertyBounds = struct {
+pub const PropertyBounds = struct {
     min_length: u32 = no_u32_bound,
     max_length: u32 = no_u32_bound,
     minimum: u64 = no_u64_bound,
