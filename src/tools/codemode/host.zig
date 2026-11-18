@@ -251,7 +251,12 @@ pub const Host = struct {
         // advertises works; eval returns a promise the drain below settles.
         const value = c.JS_Eval(ctx, source.ptr, script.len, "codemode.js", c.JS_EVAL_TYPE_GLOBAL | c.JS_EVAL_FLAG_ASYNC);
         defer c.JS_FreeValue(ctx, value);
-        if (c.JS_IsException(value)) return self.takeExceptionError(ctx);
+        if (c.JS_IsException(value)) {
+            // A synchronous eval exception before the promise exists is a
+            // parse failure: the script never ran.
+            self.last_error_stage = .compile;
+            return self.takeExceptionError(ctx);
+        }
         // Drain the microtask queue while the eval promise is pending, up
         // to the deadline or a cancel. A top-level throw rejects the
         // promise; quickjs-ng's JS_PromiseResult returns the reason as a
@@ -546,16 +551,82 @@ pub const Host = struct {
     }
 
     /// Keeps the script-visible exception text for the tool result; a bare
-    /// ScriptError name gives the model nothing to correct.
+    /// ScriptError name gives the model nothing to correct. Common engine
+    /// mistakes get one appended line naming the fix (ISSUE-25), and
+    /// parse errors carry the failing line and column when the engine
+    /// reports them.
     fn captureExceptionMessage(self: *Host, ctx: *c.JSContext, exception: c.JSValue) void {
         if (self.last_script_error) |old_message| self.allocator.free(old_message);
         self.last_script_error = null;
         var len: usize = 0;
         const ptr = c.JS_ToCStringLen(ctx, &len, exception) orelse return;
         defer c.JS_FreeCString(ctx, ptr);
-        self.last_script_error = self.allocator.dupe(u8, ptr[0..len]) catch null;
+        const stack = exceptionStack(self, ctx, exception);
+        defer if (stack) |bytes| self.allocator.free(bytes);
+        self.last_script_error = annotatedExceptionMessage(self.allocator, ptr[0..len], stack orelse "") catch null;
     }
 };
+
+/// The exception's own stack text, copied onto the host allocator, or
+/// null when the exception is a primitive or the copy cannot allocate.
+fn exceptionStack(self: *Host, ctx: *c.JSContext, exception: c.JSValue) ?[]u8 {
+    const stack_value = c.JS_GetPropertyStr(ctx, exception, "stack");
+    defer c.JS_FreeValue(ctx, stack_value);
+    var len: usize = 0;
+    const ptr = c.JS_ToCStringLen(ctx, &len, stack_value) orelse return null;
+    defer c.JS_FreeCString(ctx, ptr);
+    return self.allocator.dupe(u8, ptr[0..len]) catch null;
+}
+
+/// The "line:column" the engine blamed, read from the first codemode.js
+/// frame of the stack. Empty when the stack carries no position.
+fn enginePosition(stack: []const u8) []const u8 {
+    const marker = "codemode.js:";
+    const at = std.mem.indexOf(u8, stack, marker) orelse return "";
+    var rest = stack[at + marker.len ..];
+    var len: usize = 0;
+    while (len < rest.len and (std.ascii.isDigit(rest[len]) or rest[len] == ':')) len += 1;
+    rest = rest[0..len];
+    // Drop a trailing colon when the engine gave only a line.
+    if (rest.len > 0 and rest[rest.len - 1] == ':') rest = rest[0 .. rest.len - 1];
+    return rest;
+}
+
+/// Composes the model-visible exception text: the engine's own message
+/// plus, for the mistake classes ISSUE-25 catalogued, one line naming the
+/// correction. Everything else keeps its text untouched.
+fn annotatedExceptionMessage(alloc: Allocator, base: []const u8, stack: []const u8) ![]u8 {
+    if (std.mem.startsWith(u8, base, "SyntaxError:")) {
+        const position = enginePosition(stack);
+        if (std.mem.indexOf(u8, base, "return not in a function") != null) {
+            if (position.len > 0) return alloc.print(
+                "{s} (codemode.js:{s}). top-level return is not allowed; use text() or make the last expression the result",
+                .{ base, position },
+            );
+            return alloc.print(
+                "{s}. top-level return is not allowed; use text() or make the last expression the result",
+                .{base},
+            );
+        }
+        if (position.len > 0) return alloc.print("{s} (codemode.js:{s})", .{ base, position });
+        return alloc.dupe(u8, base);
+    }
+    if (std.mem.startsWith(u8, base, "ReferenceError:") and
+        std.mem.endsWith(u8, base, " is not defined"))
+    {
+        return alloc.print(
+            "{s}. QuickJS sandbox: no Node.js APIs (require, setTimeout, process); tools go through tools.call(\"name\", args) or tools.<name>(args)",
+            .{base},
+        );
+    }
+    if (std.mem.eql(u8, base, "TypeError: not a function")) {
+        return alloc.print(
+            "{s}. if the callee was a tool, use tools.call(\"name\", args); tools.list() names the callable tools",
+            .{base},
+        );
+    }
+    return alloc.dupe(u8, base);
+}
 
 fn interruptHandler(_: ?*c.JSContext, opaque_ptr: ?*anyopaque) callconv(.c) c_int {
     const host: *Host = @ptrCast(@alignCast(opaque_ptr orelse return 0));
@@ -995,12 +1066,10 @@ fn toolsCallCallback(ctx: ?*c.JSContext, _: c.JSValue, argc: c_int, argv: [*c]c.
     const name_ptr = c.JS_ToCStringLen(context, &name_len, argv[0]) orelse return js_exception;
     defer c.JS_FreeCString(context, name_ptr);
     const name = name_ptr[0..name_len];
-    const tool = bindings.findIn(host.tool_face, name) orelse {
-        var message_buf: [256]u8 = undefined;
-        const message: [:0]const u8 = std.mem.printSentinel(&message_buf, "unknown codemode tool: {s}", .{name}, 0) catch
-            "unknown codemode tool";
-        return c.JS_ThrowTypeError(context, "%s", message.ptr);
-    };
+    // The same suggestion path describeTool takes: an unknown name lists
+    // the closest callable names and points at searchTools (ISSUE-25).
+    const tool = bindings.findIn(host.tool_face, name) orelse
+        return throwUnknownTool(context, host, name);
 
     // The schema shows an object argument; stringify objects here so the
     // model does not need to remember JSON.stringify for every call.
@@ -1030,13 +1099,33 @@ fn toolsCallCallback(ctx: ?*c.JSContext, _: c.JSValue, argc: c_int, argv: [*c]c.
         return c.JS_ThrowPlainError(context, "%s", message.ptr);
     };
     const result = backend.call(backend.ctx, host.allocator, tool, args_ptr[0..args_len]) catch |err| {
-        var message_buf: [256]u8 = undefined;
-        const message: [:0]const u8 = std.mem.printSentinel(
-            &message_buf,
-            "codemode tool {s} failed: {s}",
-            .{ tool.name, @errorName(err) },
-            0,
-        ) catch "codemode tool call failed";
+        // An argument rejection carries the field detail the bridge wrote
+        // for exactly this call (ISSUE-24); other errors keep the plain
+        // error-name form.
+        var message_buf: [768]u8 = undefined;
+        const detail: ?[]const u8 = if (err == error.InvalidToolArguments and backend.argument_error != null)
+            backend.argument_error.?(backend.ctx)
+        else
+            null;
+        const message: [:0]const u8 = if (detail) |text|
+            std.mem.printSentinel(
+                &message_buf,
+                "codemode tool {s} failed: {s}: {s}",
+                .{ tool.name, @errorName(err), text },
+                0,
+            ) catch std.mem.printSentinel(
+                &message_buf,
+                "codemode tool {s} failed: {s}",
+                .{ tool.name, @errorName(err) },
+                0,
+            ) catch "codemode tool call failed"
+        else
+            std.mem.printSentinel(
+                &message_buf,
+                "codemode tool {s} failed: {s}",
+                .{ tool.name, @errorName(err) },
+                0,
+            ) catch "codemode tool call failed";
         return c.JS_ThrowPlainError(context, "%s", message.ptr);
     };
     defer host.allocator.free(result);

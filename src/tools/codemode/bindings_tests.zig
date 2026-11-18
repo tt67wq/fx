@@ -803,7 +803,7 @@ test "codemode tools.call unknown name suggests close tool names" {
     );
     defer result.deinit();
     try std.testing.expectEqualStrings(
-        "unknown codemode tool: read_fil. did you mean: read_file, glob_files? " ++
+        "unknown codemode tool: read_fil. did you mean: read_file, glob_files?. " ++
             "use searchTools(\"read_fil\") to discover tools",
         result.value,
     );

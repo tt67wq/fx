@@ -1310,7 +1310,7 @@ pub const max_nested_call_records: usize = 32;
 /// the unknown or missing field names and the expected field names, set
 /// by the codemode bridge before it returns error.InvalidToolArguments.
 /// Fixed-buffer like NestedCallRecord: the sandbox thread records
-/// without allocation the host allocator cannot bound, and the host
+/// without touching the host allocator the engine caps, and the host
 /// reads it right after the call returns. Truncation is the only
 /// degradation; nothing here changes which calls are accepted.
 pub const NestedArgumentError = struct {

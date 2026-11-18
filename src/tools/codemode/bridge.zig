@@ -1,6 +1,7 @@
 const std = @import("std");
 const bindings = @import("bindings.zig");
 const shell = @import("shell.zig");
+const sort_utils = @import("../../core/shared/sort_utils.zig");
 const tool_runtime = @import("../../core/tooling/tool_runtime.zig");
 const tool_admission = @import("../../core/tooling/tool_admission.zig");
 const auto_classifier_context = @import("../../core/permissions/auto_classifier_context.zig");
@@ -35,7 +36,17 @@ pub const deny_json_prefix = "{\"denied\":true,\"reason\":";
 
 /// The backend a CodemodeHostState hands to Host.setToolBackend.
 pub fn backend(state: *tool_runtime.CodemodeHostState) bindings.Backend {
-    return .{ .ctx = state, .call = call };
+    return .{ .ctx = state, .call = call, .argument_error = argumentError };
+}
+
+/// The detail of the rejection the last call returned, if that rejection
+/// named one. The host reads this only when the call returned
+/// error.InvalidToolArguments; the text lives in the state until the
+/// next call overwrites it.
+fn argumentError(raw_ctx: ?*anyopaque) ?[]const u8 {
+    const state: *tool_runtime.CodemodeHostState = @ptrCast(@alignCast(raw_ctx orelse return null));
+    if (state.nested_argument_error.text.len == 0) return null;
+    return state.nested_argument_error.text;
 }
 
 /// Caps nested shell runs at the script's wall-clock budget fields. A
@@ -187,6 +198,60 @@ const CanonicalCall = struct {
     arguments_json: []const u8,
 };
 
+/// Writes the model-visible field detail for one argument rejection into
+/// the caller's buffer (when it wants one) and hands back the unchanged
+/// error.InvalidToolArguments. Feedback only: the error, the admission
+/// decision, and everything that runs afterwards stay exactly as they
+/// were.
+fn rejectArgument(
+    arena: std.mem.Allocator,
+    error_out: ?*tool_runtime.NestedArgumentError,
+    comptime fmt: []const u8,
+    args: anytype,
+) error{InvalidToolArguments} {
+    if (error_out) |buffer| {
+        if (arena.print(fmt, args)) |text| {
+            buffer.set(text);
+        } else |_| {}
+    }
+    return error.InvalidToolArguments;
+}
+
+/// Rejection for one absent required field: names the field wanted and
+/// lists the fields the script actually sent, so a cmd-instead-of-command
+/// mistake is self-explaining (ISSUE-24).
+fn rejectMissingField(
+    arena: std.mem.Allocator,
+    error_out: ?*tool_runtime.NestedArgumentError,
+    comptime tool_name: []const u8,
+    comptime field: []const u8,
+    object: std.json.ObjectMap,
+) error{InvalidToolArguments} {
+    if (object.count() == 0) {
+        return rejectArgument(arena, error_out, tool_name ++ " requires field \"" ++ field ++ "\"; received no fields", .{});
+    }
+    return rejectArgument(
+        arena,
+        error_out,
+        tool_name ++ " requires field \"" ++ field ++ "\"; received fields: {s}",
+        .{fieldList(arena, object) catch ""},
+    );
+}
+
+/// The object's field names, sorted so the message never depends on map
+/// iteration order.
+fn fieldList(arena: std.mem.Allocator, object: std.json.ObjectMap) ![]const u8 {
+    var names: std.ArrayList([]const u8) = .empty;
+    var it = object.iterator();
+    while (it.next()) |entry| try names.append(arena, entry.key_ptr.*);
+    sort_utils.sort([]const u8, names.items, {}, lessName);
+    return std.mem.join(arena, ", ", names.items);
+}
+
+fn lessName(_: void, lhs: []const u8, rhs: []const u8) bool {
+    return std.mem.order(u8, lhs, rhs) == .lt;
+}
+
 /// Maps the script-facing "run_command" and "run_script" names onto the
 /// registered "shell" tool's "action: run" form. run_script normalization
 /// lives in canonicalRunScript below; run_command and every other face name
@@ -298,23 +363,39 @@ fn resolveRunScriptFile(
     arena: std.mem.Allocator,
     env: RunScriptEnv,
     file_param: []const u8,
+    error_out: ?*tool_runtime.NestedArgumentError,
 ) ![]const u8 {
-    if (env.workspace_root.len == 0) return error.InvalidToolArguments;
-    const root_real = io_mod.realpathAlloc(arena, env.workspace_root) catch return error.InvalidToolArguments;
-    const candidate = std.Io.Dir.path.resolveAlloc(arena, &.{ root_real, file_param }) catch return error.InvalidToolArguments;
-    const real = io_mod.realpathAlloc(arena, candidate) catch return error.InvalidToolArguments;
+    if (env.workspace_root.len == 0) {
+        return rejectArgument(arena, error_out, "run_script field \"file\" has no workspace to resolve against", .{});
+    }
+    const root_real = io_mod.realpathAlloc(arena, env.workspace_root) catch
+        return rejectArgument(arena, error_out, "run_script field \"file\" has no readable workspace root", .{});
+    const candidate = std.Io.Dir.path.resolveAlloc(arena, &.{ root_real, file_param }) catch
+        return rejectArgument(arena, error_out, "run_script field \"file\" does not name a readable workspace file", .{});
+    const real = io_mod.realpathAlloc(arena, candidate) catch
+        return rejectArgument(arena, error_out, "run_script field \"file\" does not name a readable workspace file", .{});
     const inside = std.mem.eql(u8, real, root_real) or
         (real.len > root_real.len and real[root_real.len] == '/' and std.mem.startsWith(u8, real, root_real));
-    if (!inside) return error.InvalidToolArguments;
+    if (!inside) return rejectArgument(arena, error_out, "run_script field \"file\" must stay inside the workspace", .{});
     return real;
 }
 
 /// Reads the resolved workspace file, bounded by run_script_max_ctx_file_bytes.
-fn readRunScriptFile(arena: std.mem.Allocator, real_path: []const u8) ![]const u8 {
-    var file = std.Io.Dir.cwd().openFile(io_mod.getIo(), real_path, .{}) catch return error.InvalidToolArguments;
+fn readRunScriptFile(
+    arena: std.mem.Allocator,
+    real_path: []const u8,
+    error_out: ?*tool_runtime.NestedArgumentError,
+) ![]const u8 {
+    var file = std.Io.Dir.cwd().openFile(io_mod.getIo(), real_path, .{}) catch
+        return rejectArgument(arena, error_out, "run_script field \"file\" does not name a readable workspace file", .{});
     defer file.close(io_mod.getIo());
     return io_mod.readFileToEnd(arena, &file, run_script_max_ctx_file_bytes) catch |err| switch (err) {
-        error.StreamTooLong => error.InvalidToolArguments,
+        error.StreamTooLong => rejectArgument(
+            arena,
+            error_out,
+            "run_script field \"file\" is larger than the {d}-byte CTX_FILE limit",
+            .{run_script_max_ctx_file_bytes},
+        ),
         else => err,
     };
 }
@@ -346,10 +427,9 @@ fn canonicalRunScript(
     temp_dir_out: ?*?[]const u8,
     error_out: ?*tool_runtime.NestedArgumentError,
 ) !CanonicalCall {
-    _ = error_out;
     const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, args_json, .{}) catch
-        return error.InvalidToolArguments;
-    if (parsed != .object) return error.InvalidToolArguments;
+        return rejectArgument(arena, error_out, "run_script arguments must be a JSON object", .{});
+    if (parsed != .object) return rejectArgument(arena, error_out, "run_script arguments must be a JSON object", .{});
     const object = parsed.object;
 
     const allowed_fields = [_][]const u8{ "language", "code", "file", "intent", "timeout_ms" };
@@ -362,33 +442,48 @@ fn canonicalRunScript(
                 break;
             }
         }
-        if (!known) return error.InvalidToolArguments;
+        if (!known) {
+            return rejectArgument(
+                arena,
+                error_out,
+                "run_script unknown field \"{s}\"; expected fields: language, code, file, intent, timeout_ms",
+                .{entry.key_ptr.*},
+            );
+        }
     }
 
-    const language_value = object.get("language") orelse return error.InvalidToolArguments;
-    if (language_value != .string) return error.InvalidToolArguments;
-    const language = parseRunScriptLanguage(language_value.string) orelse return error.InvalidToolArguments;
+    const language_value = object.get("language") orelse
+        return rejectMissingField(arena, error_out, "run_script", "language", object);
+    if (language_value != .string) return rejectArgument(arena, error_out, "run_script field \"language\" must be a string", .{});
+    const language = parseRunScriptLanguage(language_value.string) orelse
+        return rejectArgument(
+            arena,
+            error_out,
+            "run_script field \"language\" must be \"shell\" or \"python\"; received \"{s}\"",
+            .{language_value.string},
+        );
 
-    const code_value = object.get("code") orelse return error.InvalidToolArguments;
-    if (code_value != .string) return error.InvalidToolArguments;
+    const code_value = object.get("code") orelse
+        return rejectMissingField(arena, error_out, "run_script", "code", object);
+    if (code_value != .string) return rejectArgument(arena, error_out, "run_script field \"code\" must be a string", .{});
 
     // A dash-prefixed file path is a path-like token that would be misread
     // as an option; it is rejected outright.
     var ctx_file_source: ?[]const u8 = null;
     if (object.get("file")) |value| {
-        if (value != .string) return error.InvalidToolArguments;
-        if (value.string.len == 0 or value.string[0] == '-') return error.InvalidToolArguments;
-        ctx_file_source = try resolveRunScriptFile(arena, env, value.string);
+        if (value != .string) return rejectArgument(arena, error_out, "run_script field \"file\" must be a string", .{});
+        if (value.string.len == 0 or value.string[0] == '-') return rejectArgument(arena, error_out, "run_script field \"file\" must be a plain path", .{});
+        ctx_file_source = try resolveRunScriptFile(arena, env, value.string, error_out);
     }
 
     // intent is accepted for the transcript context and never executed.
     if (object.get("intent")) |value| {
-        if (value != .string) return error.InvalidToolArguments;
+        if (value != .string) return rejectArgument(arena, error_out, "run_script field \"intent\" must be a string", .{});
     }
 
     var timeout_ms: ?u64 = null;
     if (object.get("timeout_ms")) |value| {
-        if (value != .integer) return error.InvalidToolArguments;
+        if (value != .integer) return rejectArgument(arena, error_out, "run_script field \"timeout_ms\" must be an integer", .{});
         timeout_ms = clampRunScriptTimeout(value.integer);
     }
 
@@ -400,7 +495,7 @@ fn canonicalRunScript(
         // unreadable) must still reach the caller's cleanup defer, or the
         // dir leaks in TMPDIR.
         if (temp_dir_out) |out| out.* = temp_dir.?;
-        try writeRunScriptFile(arena, temp_dir.?, "ctx_file", try readRunScriptFile(arena, source));
+        try writeRunScriptFile(arena, temp_dir.?, "ctx_file", try readRunScriptFile(arena, source, error_out));
         ctx_path = try std.Io.Dir.path.join(arena, &.{ temp_dir.?, "ctx_file" });
     }
 
@@ -492,19 +587,22 @@ fn canonicalRunCommand(
     args_json: []const u8,
     error_out: ?*tool_runtime.NestedArgumentError,
 ) !CanonicalCall {
-    _ = error_out;
     const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, args_json, .{}) catch
-        return error.InvalidToolArguments;
-    if (parsed != .object) return error.InvalidToolArguments;
+        return rejectArgument(arena, error_out, "run_command arguments must be a JSON object", .{});
+    if (parsed != .object) return rejectArgument(arena, error_out, "run_command arguments must be a JSON object", .{});
     const object = parsed.object;
 
     if (object.get("action")) |action| {
         if (action != .string or !std.mem.eql(u8, action.string, "run")) {
-            return error.InvalidToolArguments;
+            if (action == .string) {
+                return rejectArgument(arena, error_out, "run_command field \"action\" must be \"run\"; received \"{s}\"", .{action.string});
+            }
+            return rejectArgument(arena, error_out, "run_command field \"action\" must be the string \"run\"", .{});
         }
     }
-    const command = object.get("command") orelse return error.InvalidToolArguments;
-    if (command != .string) return error.InvalidToolArguments;
+    const command = object.get("command") orelse
+        return rejectMissingField(arena, error_out, "run_command", "command", object);
+    if (command != .string) return rejectArgument(arena, error_out, "run_command field \"command\" must be a string", .{});
 
     var out: std.Io.Writer.Allocating = .init(arena);
     try out.writer.writeAll("{\"action\":\"run\"");

@@ -2,6 +2,7 @@ const std = @import("std");
 const sandbox_mod = @import("sandbox.zig");
 const bridge = @import("bridge.zig");
 const host_mod = @import("host.zig");
+const sort_utils = @import("../../core/shared/sort_utils.zig");
 const io_mod = @import("../../core/shared/io.zig");
 const builtin_tools = @import("../../builtins/tools.zig");
 const tool_dispatch = @import("../../core/tooling/tool_dispatch.zig");
@@ -786,7 +787,6 @@ fn parseOptionsHeader(
     json_text_in: []const u8,
     violation: ?*OptionsViolation,
 ) OptionsParseError!ScriptOptions {
-    _ = violation;
     const json_text = std.mem.trimStart(u8, json_text_in, " \t\r");
     if (json_text.len == 0) return error.Malformed;
 
@@ -801,26 +801,50 @@ fn parseOptionsHeader(
         const key = entry.key_ptr.*;
         const value = entry.value_ptr.*;
         if (std.mem.eql(u8, key, "timeout_ms")) {
-            options.timeout_ms = try optionsInteger(value);
+            options.timeout_ms = try optionsInteger(value, key, violation);
         } else if (std.mem.eql(u8, key, "max_output_tokens")) {
-            options.max_output_tokens = try optionsInteger(value);
+            options.max_output_tokens = try optionsInteger(value, key, violation);
         }
     }
     if (options.timeout_ms) |timeout_ms| {
-        if (timeout_ms < host_mod.min_options_timeout_ms or timeout_ms > host_mod.max_options_timeout_ms) return error.OutOfRange;
+        if (timeout_ms < host_mod.min_options_timeout_ms or timeout_ms > host_mod.max_options_timeout_ms) {
+            recordViolation(violation, "timeout_ms", timeout_ms);
+            return error.OutOfRange;
+        }
     }
     if (options.max_output_tokens) |tokens| {
-        if (tokens == 0) return error.OutOfRange;
+        if (tokens == 0) {
+            recordViolation(violation, "max_output_tokens", tokens);
+            return error.OutOfRange;
+        }
     }
     return options;
 }
 
-/// Accepts only JSON integers; any other value type is malformed.
-fn optionsInteger(value: std.json.Value) OptionsParseError!u64 {
+/// Accepts only JSON integers; any other value type is malformed. A
+/// negative integer is out of range and records the value it rejected.
+fn optionsInteger(
+    value: std.json.Value,
+    key: []const u8,
+    violation: ?*OptionsViolation,
+) OptionsParseError!u64 {
     return switch (value) {
-        .integer => |i| if (i < 0) error.OutOfRange else @intCast(i),
+        .integer => |i| if (i < 0) blk: {
+            recordViolation(violation, key, i);
+            break :blk error.OutOfRange;
+        } else @intCast(i),
         else => error.Malformed,
     };
+}
+
+/// Names the field and the value the script declared, so the rejection
+/// can echo what was actually sent (ISSUE-25).
+fn recordViolation(violation: ?*OptionsViolation, key: []const u8, value: i128) void {
+    const buffer = violation orelse return;
+    var text: [96]u8 = undefined;
+    if (std.mem.print(&text, "{s}: {d}", .{ key, value })) |rendered| {
+        buffer.set(rendered);
+    } else |_| {}
 }
 
 /// The model-visible text for an @options value outside its bound.
@@ -834,8 +858,19 @@ fn optionsOutOfRangeMessage(alloc: Allocator, violation: *const OptionsViolation
 /// The model-visible text for a missing or mistyped top-level "script"
 /// field: the decoder's contract sentence plus the keys actually sent.
 fn scriptFieldFailure(alloc: Allocator, base: []const u8, object: std.json.ObjectMap) Allocator.Error![]u8 {
-    _ = object;
-    return alloc.dupe(u8, base);
+    if (object.count() == 0) return alloc.print("{s}; received no top-level keys", .{base});
+    var tmp_state = std.heap.ArenaAllocator.init(alloc);
+    defer tmp_state.deinit();
+    const tmp = tmp_state.allocator();
+    var names: std.ArrayList([]const u8) = .empty;
+    var it = object.iterator();
+    while (it.next()) |entry| try names.append(tmp, entry.key_ptr.*);
+    sort_utils.sort([]const u8, names.items, {}, lessKeyName);
+    return alloc.print("{s}; received top-level keys: {s}", .{ base, try std.mem.join(tmp, ", ", names.items) });
+}
+
+fn lessKeyName(_: void, lhs: []const u8, rhs: []const u8) bool {
+    return std.mem.order(u8, lhs, rhs) == .lt;
 }
 
 /// The failure headline for a ScriptError, with the engine's exception
@@ -845,11 +880,13 @@ fn scriptErrorHeadline(
     message: ?[]const u8,
     stage: host_mod.ErrorStage,
 ) Allocator.Error![]u8 {
-    _ = stage;
     if (message) |text| {
-        return alloc.print("codemode script failed: ScriptError: {s}", .{text});
+        if (text.len > 0) return alloc.print("codemode script failed: ScriptError: {s}", .{text});
     }
-    return alloc.dupe(u8, "codemode script failed: ScriptError");
+    return alloc.print(
+        "codemode script failed: ScriptError: no engine message (stage: {s})",
+        .{@tagName(stage)},
+    );
 }
 
 /// Clamps declared options into the effective sandbox budget: the declared
