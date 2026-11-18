@@ -388,9 +388,12 @@ fn canonicalRunScript(
     var ctx_path: ?[]const u8 = null;
     if (ctx_file_source) |source| {
         temp_dir = try makeRunScriptTempDir(arena, env.temp_base);
+        // Registered before the copy: a rejected source (oversized,
+        // unreadable) must still reach the caller's cleanup defer, or the
+        // dir leaks in TMPDIR.
+        if (temp_dir_out) |out| out.* = temp_dir.?;
         try writeRunScriptFile(arena, temp_dir.?, "ctx_file", try readRunScriptFile(arena, source));
         ctx_path = try std.Io.Dir.path.join(arena, &.{ temp_dir.?, "ctx_file" });
-        if (temp_dir_out) |out| out.* = temp_dir.?;
     }
 
     var command: []const u8 = undefined;
