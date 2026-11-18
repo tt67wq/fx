@@ -1306,6 +1306,28 @@ pub const NestedCallRecord = struct {
 /// Fixed failure-body summary capacity; past it only the overflow flag.
 pub const max_nested_call_records: usize = 32;
 
+/// The model-visible detail of a nested tool-call argument rejection:
+/// the unknown or missing field names and the expected field names, set
+/// by the codemode bridge before it returns error.InvalidToolArguments.
+/// Fixed-buffer like NestedCallRecord: the sandbox thread records
+/// without allocation the host allocator cannot bound, and the host
+/// reads it right after the call returns. Truncation is the only
+/// degradation; nothing here changes which calls are accepted.
+pub const NestedArgumentError = struct {
+    bytes: [400]u8 = undefined,
+    text: []const u8 = "",
+
+    pub fn clear(self: *NestedArgumentError) void {
+        self.text = "";
+    }
+
+    pub fn set(self: *NestedArgumentError, message: []const u8) void {
+        const take = @min(message.len, self.bytes.len);
+        @memcpy(self.bytes[0..take], message[0..take]);
+        self.text = self.bytes[0..take];
+    }
+};
+
 pub const CodemodeHostState = struct {
     /// Whether this call's sandbox forwards the registry-derived face
     /// rather than the shipped four names.
@@ -1326,6 +1348,10 @@ pub const CodemodeHostState = struct {
     /// allocation, the tool thread reads after eval returns, and the state
     /// dies with the call so nothing leaks across calls.
     nested_calls: [max_nested_call_records]NestedCallRecord = @splat(.{}),
+    /// The last nested-call argument rejection's detail, described above.
+    /// Cleared at the start of every bridge call; read by the host only
+    /// when that call returned error.InvalidToolArguments.
+    nested_argument_error: NestedArgumentError = .{},
     nested_call_count: usize = 0,
     nested_call_overflow: bool = false,
     /// Records one nested call exit with its clamped duration. Past

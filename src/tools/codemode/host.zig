@@ -42,6 +42,15 @@ pub const Options = struct {
     output_buffer_bytes: usize = default_capture_buffer_bytes,
 };
 
+/// Which stage of one eval produced the last ScriptError, so a failure
+/// that loses its engine message can still tell the model where to look.
+pub const ErrorStage = enum {
+    /// The script did not parse.
+    compile,
+    /// The script ran and threw.
+    runtime,
+};
+
 pub const EvalError = error{
     RuntimeInitFailed,
     ContextInitFailed,
@@ -94,6 +103,9 @@ pub const Host = struct {
     timed_out: bool = false,
     cancelled_flag: bool = false,
     last_script_error: ?[]u8 = null,
+    /// The stage that produced last_script_error; meaningful only after a
+    /// ScriptError, and reset at the start of every eval.
+    last_error_stage: ErrorStage = .runtime,
     /// Cancel source shared with the caller, typically
     /// &worker.worker_cancel_requested. Read only from the interrupt handler
     /// and eval, both on the host's own thread; the writer is any thread.
@@ -172,6 +184,13 @@ pub const Host = struct {
         return self.last_script_error;
     }
 
+    /// The stage that produced the last ScriptError. Read after
+    /// lastExceptionMessage, especially when it is empty: the stage is
+    /// what the model gets when the engine message is lost.
+    pub fn lastExceptionStage(self: *const Host) ErrorStage {
+        return self.last_error_stage;
+    }
+
     pub fn runtimeCreated(self: Host) bool {
         return self.runtime != null;
     }
@@ -222,6 +241,7 @@ pub const Host = struct {
             self.allocator.free(message);
             self.last_script_error = null;
         }
+        self.last_error_stage = .runtime;
         const timeout_ms: i64 = std.math.cast(i64, self.options.timeout_ms) orelse std.math.maxInt(i64);
         self.deadline_ms = io_mod.milliTimestamp() +| timeout_ms;
         const source = try self.allocator.dupeSentinel(u8, script, 0);

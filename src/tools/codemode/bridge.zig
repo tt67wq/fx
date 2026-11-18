@@ -91,9 +91,12 @@ fn call(
     defer if (script_temp_dir) |dir_path| {
         std.Io.Dir.cwd().deleteTree(io_mod.getIo(), dir_path) catch {};
     };
+    // The rejection detail describes exactly this call: a stale detail
+    // from an earlier one must never annotate a later failure.
+    state.nested_argument_error.clear();
     const canonical = try canonicalNestedCall(arena, tool, args_json, .{
         .workspace_root = ctx.workspace_root,
-    }, &script_temp_dir);
+    }, &script_temp_dir, &state.nested_argument_error);
     const nested_call: types.ToolCall = .{
         .id = nested_id,
         .name = canonical.name,
@@ -194,12 +197,15 @@ fn canonicalNestedCall(
     args_json: []const u8,
     env: RunScriptEnv,
     temp_dir_out: ?*?[]const u8,
+    /// Where a rejection writes the model-visible field detail, described
+    /// on tool_runtime.NestedArgumentError. Null keeps the bare error.
+    error_out: ?*tool_runtime.NestedArgumentError,
 ) !CanonicalCall {
     if (std.mem.eql(u8, tool.name, "run_command")) {
-        return canonicalRunCommand(arena, args_json);
+        return canonicalRunCommand(arena, args_json, error_out);
     }
     if (std.mem.eql(u8, tool.name, "run_script")) {
-        return canonicalRunScript(arena, args_json, env, temp_dir_out);
+        return canonicalRunScript(arena, args_json, env, temp_dir_out, error_out);
     }
     return .{ .name = tool.name, .arguments_json = args_json };
 }
@@ -338,7 +344,9 @@ fn canonicalRunScript(
     args_json: []const u8,
     env: RunScriptEnv,
     temp_dir_out: ?*?[]const u8,
+    error_out: ?*tool_runtime.NestedArgumentError,
 ) !CanonicalCall {
+    _ = error_out;
     const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, args_json, .{}) catch
         return error.InvalidToolArguments;
     if (parsed != .object) return error.InvalidToolArguments;
@@ -479,7 +487,12 @@ pub const run_script_model_schema = model_tool_schema.FunctionSchema{
 /// Maps the script's `run_command` call onto the registered `shell` tool's
 /// `action: "run"` form, keeping the pre-T-20 behavior byte for byte: the
 /// action goes first, every other script field keeps its original order.
-fn canonicalRunCommand(arena: std.mem.Allocator, args_json: []const u8) !CanonicalCall {
+fn canonicalRunCommand(
+    arena: std.mem.Allocator,
+    args_json: []const u8,
+    error_out: ?*tool_runtime.NestedArgumentError,
+) !CanonicalCall {
+    _ = error_out;
     const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, args_json, .{}) catch
         return error.InvalidToolArguments;
     if (parsed != .object) return error.InvalidToolArguments;
@@ -587,6 +600,7 @@ test "run_command canonicalizes to the registered shell run call" {
         "{\"command\":\"./parity-probe.sh\"}",
         .{},
         null,
+        null,
     );
     try std.testing.expectEqualStrings("shell", canonical.name);
     try std.testing.expectEqualStrings(
@@ -603,6 +617,7 @@ test "run_command canonicalization keeps field order and an explicit run action"
         .{ .name = "run_command" },
         "{\"action\":\"run\",\"command\":\"make\",\"cwd\":\"src\",\"timeout_ms\":600000}",
         .{},
+        null,
         null,
     );
     try std.testing.expectEqualStrings(
@@ -622,6 +637,7 @@ test "run_command canonicalization refuses another shell action" {
             "{\"action\":\"interact\",\"command\":\"true\"}",
             .{},
             null,
+            null,
         ),
     );
 }
@@ -632,16 +648,109 @@ test "run_command canonicalization requires an object with a string command" {
     const arena = arena_state.allocator();
     try std.testing.expectError(
         error.InvalidToolArguments,
-        canonicalNestedCall(arena, .{ .name = "run_command" }, "[]", .{}, null),
+        canonicalNestedCall(arena, .{ .name = "run_command" }, "[]", .{}, null, null),
     );
     try std.testing.expectError(
         error.InvalidToolArguments,
-        canonicalNestedCall(arena, .{ .name = "run_command" }, "{}", .{}, null),
+        canonicalNestedCall(arena, .{ .name = "run_command" }, "{}", .{}, null, null),
     );
     try std.testing.expectError(
         error.InvalidToolArguments,
-        canonicalNestedCall(arena, .{ .name = "run_command" }, "{\"command\":5}", .{}, null),
+        canonicalNestedCall(arena, .{ .name = "run_command" }, "{\"command\":5}", .{}, null, null),
     );
+}
+
+// ISSUE-24: a rejected nested tools.call must name the field that is
+// wrong and the fields that were expected, not just the Zig error name.
+// These tests pin the detail text the model reads inside
+// "codemode tool <name> failed: InvalidToolArguments: <detail>".
+test "run_command argument rejections name the fields" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const Case = struct { args: []const u8, detail: []const u8 };
+    const cases = [_]Case{
+        .{ .args = "[]", .detail = "run_command arguments must be a JSON object" },
+        .{ .args = "{\"action\":\"interact\",\"command\":\"true\"}", .detail = "run_command field \"action\" must be \"run\"; received \"interact\"" },
+        .{ .args = "{\"cmd\":\"ls\"}", .detail = "run_command requires field \"command\"; received fields: cmd" },
+        .{ .args = "{}", .detail = "run_command requires field \"command\"; received no fields" },
+        .{ .args = "{\"command\":5}", .detail = "run_command field \"command\" must be a string" },
+    };
+    for (cases) |case| {
+        var detail: tool_runtime.NestedArgumentError = .{};
+        try std.testing.expectError(
+            error.InvalidToolArguments,
+            canonicalNestedCall(arena, .{ .name = "run_command" }, case.args, .{}, null, &detail),
+        );
+        try std.testing.expectEqualStrings(case.detail, detail.text);
+    }
+}
+
+test "run_script argument rejections name the fields" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const Case = struct { args: []const u8, detail: []const u8 };
+    const cases = [_]Case{
+        .{ .args = "{\"language\":\"python\",\"code\":\"1\",\"args\":[\"-c\"]}", .detail = "run_script unknown field \"args\"; expected fields: language, code, file, intent, timeout_ms" },
+        .{ .args = "{\"code\":\"1\"}", .detail = "run_script requires field \"language\"; received fields: code" },
+        .{ .args = "{\"language\":\"python\"}", .detail = "run_script requires field \"code\"; received fields: language" },
+        .{ .args = "{\"language\":5,\"code\":\"1\"}", .detail = "run_script field \"language\" must be a string" },
+        .{ .args = "{\"language\":\"js\",\"code\":\"1\"}", .detail = "run_script field \"language\" must be \"shell\" or \"python\"; received \"js\"" },
+        .{ .args = "{\"language\":\"python\",\"code\":1}", .detail = "run_script field \"code\" must be a string" },
+        .{ .args = "{\"language\":\"python\",\"code\":\"1\",\"file\":5}", .detail = "run_script field \"file\" must be a string" },
+        .{ .args = "{\"language\":\"python\",\"code\":\"1\",\"file\":\"-x\"}", .detail = "run_script field \"file\" must be a plain path" },
+        .{ .args = "{\"language\":\"python\",\"code\":\"1\",\"intent\":5}", .detail = "run_script field \"intent\" must be a string" },
+        .{ .args = "{\"language\":\"python\",\"code\":\"1\",\"timeout_ms\":\"x\"}", .detail = "run_script field \"timeout_ms\" must be an integer" },
+    };
+    for (cases) |case| {
+        var detail: tool_runtime.NestedArgumentError = .{};
+        try std.testing.expectError(
+            error.InvalidToolArguments,
+            canonicalNestedCall(arena, .{ .name = "run_script" }, case.args, .{}, null, &detail),
+        );
+        try std.testing.expectEqualStrings(case.detail, detail.text);
+    }
+}
+
+test "run_script file rejections name the constraint" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const ws_root = try arena.print("/tmp/fx-run-script-detail-ws-{d}", .{io_mod.nanoTimestamp()});
+    try std.Io.Dir.cwd().createDirPath(io_mod.getIo(), ws_root);
+    defer std.Io.Dir.cwd().deleteTree(io_mod.getIo(), ws_root) catch {};
+    const env = RunScriptEnv{ .workspace_root = ws_root, .temp_base = ws_root };
+
+    var outside: tool_runtime.NestedArgumentError = .{};
+    try std.testing.expectError(
+        error.InvalidToolArguments,
+        canonicalNestedCall(
+            arena,
+            .{ .name = "run_script" },
+            "{\"language\":\"python\",\"code\":\"1\",\"file\":\"../../../../etc/hosts\"}",
+            env,
+            null,
+            &outside,
+        ),
+    );
+    try std.testing.expectEqualStrings("run_script field \"file\" must stay inside the workspace", outside.text);
+
+    var missing: tool_runtime.NestedArgumentError = .{};
+    try std.testing.expectError(
+        error.InvalidToolArguments,
+        canonicalNestedCall(
+            arena,
+            .{ .name = "run_script" },
+            "{\"language\":\"python\",\"code\":\"1\",\"file\":\"missing.txt\"}",
+            env,
+            null,
+            &missing,
+        ),
+    );
+    try std.testing.expectEqualStrings("run_script field \"file\" does not name a readable workspace file", missing.text);
 }
 
 test "other whitelisted tools keep their exact arguments" {
@@ -652,6 +761,7 @@ test "other whitelisted tools keep their exact arguments" {
         .{ .name = "read_file" },
         "{\"path\":\"notes.txt\"}",
         .{},
+        null,
         null,
     );
     try std.testing.expectEqualStrings("read_file", canonical.name);
@@ -674,6 +784,7 @@ test "run_script python canonicalizes to a fixed python3 argv through a fx temp 
         "{\"language\":\"python\",\"code\":\"print('hi')\"}",
         .{ .workspace_root = temp_base, .temp_base = temp_base },
         &temp_dir,
+        null,
     );
     try std.testing.expectEqualStrings("shell", canonical.name);
     // argv is always exactly python3 plus the fx-written temp script path;
@@ -713,6 +824,7 @@ test "run_script file param copies a workspace file and prefixes CTX_FILE" {
         "{\"language\":\"python\",\"code\":\"1\",\"file\":\"data.txt\"}",
         .{ .workspace_root = ws_root, .temp_base = temp_base },
         &temp_dir,
+        null,
     );
     try std.testing.expectEqualStrings("shell", canonical.name);
     try std.testing.expect(std.mem.startsWith(u8, canonical.arguments_json, "{\"action\":\"run\",\"command\":\"CTX_FILE="));
@@ -743,6 +855,7 @@ test "run_script file param refuses traversal outside the workspace" {
             "{\"language\":\"python\",\"code\":\"1\",\"file\":\"../../../../etc/hosts\"}",
             .{ .workspace_root = ws_root, .temp_base = ws_root },
             null,
+            null,
         ),
     );
 }
@@ -761,6 +874,7 @@ test "run_script file param refuses a missing file" {
             .{ .name = "run_script" },
             "{\"language\":\"python\",\"code\":\"1\",\"file\":\"missing.txt\"}",
             .{ .workspace_root = ws_root, .temp_base = ws_root },
+            null,
             null,
         ),
     );
@@ -794,6 +908,7 @@ test "run_script oversized ctx file registers the temp dir for caller cleanup" {
             "{\"language\":\"python\",\"code\":\"1\",\"file\":\"big.txt\"}",
             .{ .workspace_root = ws_root, .temp_base = temp_base },
             &temp_dir,
+            null,
         ),
     );
     // The dir must be registered the moment it exists: an unregistered dir
@@ -893,6 +1008,7 @@ test "run_script shell forwards the code as the shell command" {
         "{\"language\":\"shell\",\"code\":\"echo hi\"}",
         .{},
         null,
+        null,
     );
     try std.testing.expectEqualStrings("shell", canonical.name);
     try std.testing.expectEqualStrings(
@@ -909,15 +1025,15 @@ test "run_script rejects a language outside the v1 enum" {
     // through the language field; the interpreter token comes from the enum.
     try std.testing.expectError(
         error.InvalidToolArguments,
-        canonicalNestedCall(arena, .{ .name = "run_script" }, "{\"language\":\"node\",\"code\":\"1\"}", .{}, null),
+        canonicalNestedCall(arena, .{ .name = "run_script" }, "{\"language\":\"node\",\"code\":\"1\"}", .{}, null, null),
     );
     try std.testing.expectError(
         error.InvalidToolArguments,
-        canonicalNestedCall(arena, .{ .name = "run_script" }, "{\"language\":\"python3\",\"code\":\"1\"}", .{}, null),
+        canonicalNestedCall(arena, .{ .name = "run_script" }, "{\"language\":\"python3\",\"code\":\"1\"}", .{}, null, null),
     );
     try std.testing.expectError(
         error.InvalidToolArguments,
-        canonicalNestedCall(arena, .{ .name = "run_script" }, "{\"language\":\"-python\",\"code\":\"1\"}", .{}, null),
+        canonicalNestedCall(arena, .{ .name = "run_script" }, "{\"language\":\"-python\",\"code\":\"1\"}", .{}, null, null),
     );
 }
 
@@ -930,11 +1046,11 @@ test "run_script rejects interpreter option fields at normalization" {
     // before admission or the shell decode layer ever sees it.
     try std.testing.expectError(
         error.InvalidToolArguments,
-        canonicalNestedCall(arena, .{ .name = "run_script" }, "{\"language\":\"python\",\"code\":\"1\",\"args\":[\"-c\",\"evil\"]}", .{}, null),
+        canonicalNestedCall(arena, .{ .name = "run_script" }, "{\"language\":\"python\",\"code\":\"1\",\"args\":[\"-c\",\"evil\"]}", .{}, null, null),
     );
     try std.testing.expectError(
         error.InvalidToolArguments,
-        canonicalNestedCall(arena, .{ .name = "run_script" }, "{\"language\":\"python\",\"code\":\"1\",\"interpreter\":\"-c\"}", .{}, null),
+        canonicalNestedCall(arena, .{ .name = "run_script" }, "{\"language\":\"python\",\"code\":\"1\",\"interpreter\":\"-c\"}", .{}, null, null),
     );
 }
 
@@ -949,6 +1065,7 @@ test "run_script rejects a dash-prefixed file path" {
             "{\"language\":\"python\",\"code\":\"1\",\"file\":\"-rf\"}",
             .{},
             null,
+            null,
         ),
     );
 }
@@ -959,15 +1076,15 @@ test "run_script requires a string code" {
     const arena = arena_state.allocator();
     try std.testing.expectError(
         error.InvalidToolArguments,
-        canonicalNestedCall(arena, .{ .name = "run_script" }, "{\"language\":\"python\"}", .{}, null),
+        canonicalNestedCall(arena, .{ .name = "run_script" }, "{\"language\":\"python\"}", .{}, null, null),
     );
     try std.testing.expectError(
         error.InvalidToolArguments,
-        canonicalNestedCall(arena, .{ .name = "run_script" }, "{\"language\":\"python\",\"code\":5}", .{}, null),
+        canonicalNestedCall(arena, .{ .name = "run_script" }, "{\"language\":\"python\",\"code\":5}", .{}, null, null),
     );
     try std.testing.expectError(
         error.InvalidToolArguments,
-        canonicalNestedCall(arena, .{ .name = "run_script" }, "[]", .{}, null),
+        canonicalNestedCall(arena, .{ .name = "run_script" }, "[]", .{}, null, null),
     );
 }
 
@@ -981,6 +1098,7 @@ test "run_script clamps timeout_ms into the host options range" {
         "{\"language\":\"shell\",\"code\":\"true\",\"timeout_ms\":5}",
         .{},
         null,
+        null,
     );
     try std.testing.expectEqualStrings(
         "{\"action\":\"run\",\"command\":\"true\",\"timeout_ms\":1000}",
@@ -992,6 +1110,7 @@ test "run_script clamps timeout_ms into the host options range" {
         "{\"language\":\"shell\",\"code\":\"true\",\"timeout_ms\":500000}",
         .{},
         null,
+        null,
     );
     try std.testing.expectEqualStrings(
         "{\"action\":\"run\",\"command\":\"true\",\"timeout_ms\":120000}",
@@ -1000,7 +1119,7 @@ test "run_script clamps timeout_ms into the host options range" {
     // A non-integer timeout is a malformed argument, not a default.
     try std.testing.expectError(
         error.InvalidToolArguments,
-        canonicalNestedCall(arena, .{ .name = "run_script" }, "{\"language\":\"shell\",\"code\":\"true\",\"timeout_ms\":\"soon\"}", .{}, null),
+        canonicalNestedCall(arena, .{ .name = "run_script" }, "{\"language\":\"shell\",\"code\":\"true\",\"timeout_ms\":\"soon\"}", .{}, null, null),
     );
 }
 

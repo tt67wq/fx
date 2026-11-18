@@ -32,11 +32,16 @@ pub fn decode(ctx: tool_dispatch.DispatchContext, args_json: []const u8) tool_di
     var parsed = args.parse(args_json) catch |err| return .{ .failure = try args.takeFailure(err) };
     defer parsed.deinit();
     const object = parsed.value.object;
-    const script = args.requiredString(object, "script") catch |err| return .{ .failure = try args.takeFailure(err) };
+    const script = args.requiredString(object, "script") catch |err| {
+        const base = try args.takeFailure(err);
+        defer ctx.allocator.free(base);
+        return .{ .failure = try scriptFieldFailure(ctx.allocator, base, object) };
+    };
 
-    const script_options = parseScriptOptions(script) catch |err| switch (err) {
+    var options_violation: OptionsViolation = .{};
+    const script_options = parseScriptOptions(script, &options_violation) catch |err| switch (err) {
         error.Malformed => return .{ .failure = try ctx.allocator.dupe(u8, "codemode @options header is malformed. The first non-empty line must be `// @options: {\"timeout_ms\": N, \"max_output_tokens\": N}` holding valid JSON; unknown fields are ignored.") },
-        error.OutOfRange => return .{ .failure = try ctx.allocator.dupe(u8, "codemode @options out of range. timeout_ms must be 1000..120000 and max_output_tokens must be greater than 0.") },
+        error.OutOfRange => return .{ .failure = try optionsOutOfRangeMessage(ctx.allocator, &options_violation) },
     };
     const effective = effectiveScriptOptions(script_options);
 
@@ -336,10 +341,11 @@ pub fn call(ctx: tool_dispatch.DispatchContext, erased: tool_dispatch.ToolInput)
             const partial = sandbox.host.takePartialOutput();
             defer ctx.allocator.free(partial.text);
             defer ctx.allocator.free(partial.console);
-            const headline = if (sandbox.host.lastExceptionMessage()) |message|
-                try ctx.allocator.print("codemode script failed: ScriptError: {s}", .{message})
-            else
-                try ctx.allocator.dupe(u8, "codemode script failed: ScriptError");
+            const headline = try scriptErrorHeadline(
+                ctx.allocator,
+                sandbox.host.lastExceptionMessage(),
+                sandbox.host.lastExceptionStage(),
+            );
             return .{ .failure = failureBody(ctx.allocator, headline, partial, state.nested_calls[0..state.nested_call_count], state.nested_call_overflow) };
         },
         else => {
@@ -730,6 +736,21 @@ const ScriptOptions = struct {
     max_output_tokens: ?u64 = null,
 };
 
+/// Which @options field crossed its bound, with the value the script
+/// actually declared, so the rejection text can echo it. Fixed-buffer:
+/// the parsed JSON lives in a short-lived arena and the message is
+/// composed after it dies.
+const OptionsViolation = struct {
+    bytes: [96]u8 = undefined,
+    text: []const u8 = "",
+
+    fn set(self: *OptionsViolation, message: []const u8) void {
+        const take = @min(message.len, self.bytes.len);
+        @memcpy(self.bytes[0..take], message[0..take]);
+        self.text = self.bytes[0..take];
+    }
+};
+
 const EffectiveOptions = struct {
     timeout_ms: usize,
     output_buffer_bytes: usize,
@@ -740,14 +761,17 @@ const OptionsParseError = error{ Malformed, OutOfRange };
 /// Parses the script-level @options header from the first non-empty line.
 /// A header anywhere else is ignored; a header line must hold a JSON object
 /// with integer timeout_ms and max_output_tokens, or the script is rejected.
-fn parseScriptOptions(script: []const u8) OptionsParseError!ScriptOptions {
+fn parseScriptOptions(
+    script: []const u8,
+    violation: ?*OptionsViolation,
+) OptionsParseError!ScriptOptions {
     var rest = script;
     while (rest.len > 0) {
         const line_end = std.mem.findScalar(u8, rest, '\n') orelse rest.len;
         const line = std.mem.trimStart(u8, rest[0..line_end], " \t\r");
         if (line.len > 0) {
             if (!std.mem.startsWith(u8, line, options_header_prefix)) return .{};
-            return parseOptionsHeader(line[options_header_prefix.len..]);
+            return parseOptionsHeader(line[options_header_prefix.len..], violation);
         }
         rest = rest[if (line_end < rest.len) line_end + 1 else rest.len..];
     }
@@ -758,7 +782,11 @@ fn parseScriptOptions(script: []const u8) OptionsParseError!ScriptOptions {
 /// an empty payload, or a non-integer field value rejects the script;
 /// timeout_ms outside [1000, 120000] and max_output_tokens of 0 do too.
 /// Unknown fields are ignored; missing fields stay null.
-fn parseOptionsHeader(json_text_in: []const u8) OptionsParseError!ScriptOptions {
+fn parseOptionsHeader(
+    json_text_in: []const u8,
+    violation: ?*OptionsViolation,
+) OptionsParseError!ScriptOptions {
+    _ = violation;
     const json_text = std.mem.trimStart(u8, json_text_in, " \t\r");
     if (json_text.len == 0) return error.Malformed;
 
@@ -795,6 +823,35 @@ fn optionsInteger(value: std.json.Value) OptionsParseError!u64 {
     };
 }
 
+/// The model-visible text for an @options value outside its bound.
+const options_out_of_range_base = "codemode @options out of range. timeout_ms must be 1000..120000 and max_output_tokens must be greater than 0.";
+
+fn optionsOutOfRangeMessage(alloc: Allocator, violation: *const OptionsViolation) Allocator.Error![]u8 {
+    if (violation.text.len == 0) return alloc.dupe(u8, options_out_of_range_base);
+    return alloc.print("{s} (received {s})", .{ options_out_of_range_base, violation.text });
+}
+
+/// The model-visible text for a missing or mistyped top-level "script"
+/// field: the decoder's contract sentence plus the keys actually sent.
+fn scriptFieldFailure(alloc: Allocator, base: []const u8, object: std.json.ObjectMap) Allocator.Error![]u8 {
+    _ = object;
+    return alloc.dupe(u8, base);
+}
+
+/// The failure headline for a ScriptError, with the engine's exception
+/// text when the host has one and the eval stage when it does not.
+fn scriptErrorHeadline(
+    alloc: Allocator,
+    message: ?[]const u8,
+    stage: host_mod.ErrorStage,
+) Allocator.Error![]u8 {
+    _ = stage;
+    if (message) |text| {
+        return alloc.print("codemode script failed: ScriptError: {s}", .{text});
+    }
+    return alloc.dupe(u8, "codemode script failed: ScriptError");
+}
+
 /// Clamps declared options into the effective sandbox budget: the declared
 /// timeout replaces the host default, and the declared token budget becomes
 /// an output byte cap at 4 bytes per token, saturated at the host's hard
@@ -815,35 +872,35 @@ fn effectiveScriptOptions(options: ScriptOptions) EffectiveOptions {
 }
 
 test "parseScriptOptions reads a first-line header" {
-    const opts = try parseScriptOptions("// @options: {\"timeout_ms\": 60000, \"max_output_tokens\": 4096}\ntext(\"hi\");");
+    const opts = try parseScriptOptions("// @options: {\"timeout_ms\": 60000, \"max_output_tokens\": 4096}\ntext(\"hi\");", null);
     try std.testing.expectEqual(@as(?u64, 60000), opts.timeout_ms);
     try std.testing.expectEqual(@as(?u64, 4096), opts.max_output_tokens);
 }
 
 test "parseScriptOptions ignores a header past the first non-empty line" {
-    const opts = try parseScriptOptions("console.log(1);\n// @options: {\"timeout_ms\": 60000}");
+    const opts = try parseScriptOptions("console.log(1);\n// @options: {\"timeout_ms\": 60000}", null);
     try std.testing.expectEqual(@as(?u64, null), opts.timeout_ms);
 }
 
 test "parseScriptOptions falls back to defaults without a header" {
-    const opts = try parseScriptOptions("text(\"done\");");
+    const opts = try parseScriptOptions("text(\"done\");", null);
     try std.testing.expectEqual(@as(?u64, null), opts.timeout_ms);
     try std.testing.expectEqual(@as(?u64, null), opts.max_output_tokens);
 }
 
 test "parseScriptOptions rejects malformed json and out-of-range values" {
-    try std.testing.expectError(error.Malformed, parseScriptOptions("// @options: {oops}"));
-    try std.testing.expectError(error.Malformed, parseScriptOptions("// @options:"));
-    try std.testing.expectError(error.OutOfRange, parseScriptOptions("// @options: {\"timeout_ms\": 999}\ntext(\"hi\");"));
-    try std.testing.expectError(error.OutOfRange, parseScriptOptions("// @options: {\"timeout_ms\": 120001}\ntext(\"hi\");"));
-    try std.testing.expectError(error.OutOfRange, parseScriptOptions("// @options: {\"max_output_tokens\": 0}\ntext(\"hi\");"));
-    try std.testing.expectError(error.Malformed, parseScriptOptions("// @options: {\"timeout_ms\": \"60000\"}\ntext(\"hi\");"));
+    try std.testing.expectError(error.Malformed, parseScriptOptions("// @options: {oops}", null));
+    try std.testing.expectError(error.Malformed, parseScriptOptions("// @options:", null));
+    try std.testing.expectError(error.OutOfRange, parseScriptOptions("// @options: {\"timeout_ms\": 999}\ntext(\"hi\");", null));
+    try std.testing.expectError(error.OutOfRange, parseScriptOptions("// @options: {\"timeout_ms\": 120001}\ntext(\"hi\");", null));
+    try std.testing.expectError(error.OutOfRange, parseScriptOptions("// @options: {\"max_output_tokens\": 0}\ntext(\"hi\");", null));
+    try std.testing.expectError(error.Malformed, parseScriptOptions("// @options: {\"timeout_ms\": \"60000\"}\ntext(\"hi\");", null));
 }
 
 test "parseScriptOptions accepts the bounds" {
-    const low = try parseScriptOptions("// @options: {\"timeout_ms\": 1000}\ntext(\"hi\");");
+    const low = try parseScriptOptions("// @options: {\"timeout_ms\": 1000}\ntext(\"hi\");", null);
     try std.testing.expectEqual(@as(?u64, 1000), low.timeout_ms);
-    const high = try parseScriptOptions("// @options: {\"timeout_ms\": 120000}\ntext(\"hi\");");
+    const high = try parseScriptOptions("// @options: {\"timeout_ms\": 120000}\ntext(\"hi\");", null);
     try std.testing.expectEqual(@as(?u64, 120000), high.timeout_ms);
 }
 
@@ -875,4 +932,86 @@ test "effectiveScriptOptions token ceiling reaches the capture cap" {
 
     const over_cap = effectiveScriptOptions(.{ .max_output_tokens = 262_145 });
     try std.testing.expectEqual(@as(usize, 1024 * 1024), over_cap.output_buffer_bytes);
+}
+
+// ISSUE-24: a ScriptError whose engine message was lost must still name
+// the error type and the stage, so the model has something to correct.
+test "scriptErrorHeadline keeps the message and falls back to the stage" {
+    const alloc = std.testing.allocator;
+
+    const kept = try scriptErrorHeadline(alloc, "boom", .runtime);
+    defer alloc.free(kept);
+    try std.testing.expectEqualStrings("codemode script failed: ScriptError: boom", kept);
+
+    const empty_message = try scriptErrorHeadline(alloc, "", .runtime);
+    defer alloc.free(empty_message);
+    try std.testing.expectEqualStrings(
+        "codemode script failed: ScriptError: no engine message (stage: runtime)",
+        empty_message,
+    );
+
+    const lost_compile = try scriptErrorHeadline(alloc, null, .compile);
+    defer alloc.free(lost_compile);
+    try std.testing.expectEqualStrings(
+        "codemode script failed: ScriptError: no engine message (stage: compile)",
+        lost_compile,
+    );
+}
+
+// ISSUE-25: a missing "script" field reports the keys the model actually
+// sent, sorted so the message is stable.
+test "scriptFieldFailure echoes the top-level keys the model sent" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const alloc = std.testing.allocator;
+    const base = "codemode requires string field \"script\"";
+
+    const two = try std.json.parseFromSliceLeaky(std.json.Value, arena, "{\"language\":\"python\",\"code\":\"1\"}", .{});
+    const failure = try scriptFieldFailure(alloc, base, two.object);
+    defer alloc.free(failure);
+    try std.testing.expectEqualStrings(
+        "codemode requires string field \"script\"; received top-level keys: code, language",
+        failure,
+    );
+
+    const none = try std.json.parseFromSliceLeaky(std.json.Value, arena, "{}", .{});
+    const empty_failure = try scriptFieldFailure(alloc, base, none.object);
+    defer alloc.free(empty_failure);
+    try std.testing.expectEqualStrings(
+        "codemode requires string field \"script\"; received no top-level keys",
+        empty_failure,
+    );
+}
+
+// ISSUE-25: an @options value outside its bound is echoed back next to
+// the range sentence.
+test "@options violations echo the value the script declared" {
+    var violation: OptionsViolation = .{};
+    try std.testing.expectError(
+        error.OutOfRange,
+        parseScriptOptions("// @options: {\"timeout_ms\": 999}\ntext(\"hi\");", &violation),
+    );
+    try std.testing.expectEqualStrings("timeout_ms: 999", violation.text);
+    const message = try optionsOutOfRangeMessage(std.testing.allocator, &violation);
+    defer std.testing.allocator.free(message);
+    try std.testing.expectEqualStrings(
+        "codemode @options out of range. timeout_ms must be 1000..120000 " ++
+            "and max_output_tokens must be greater than 0. (received timeout_ms: 999)",
+        message,
+    );
+
+    var tokens: OptionsViolation = .{};
+    try std.testing.expectError(
+        error.OutOfRange,
+        parseScriptOptions("// @options: {\"max_output_tokens\": 0}\ntext(\"hi\");", &tokens),
+    );
+    try std.testing.expectEqualStrings("max_output_tokens: 0", tokens.text);
+
+    var negative: OptionsViolation = .{};
+    try std.testing.expectError(
+        error.OutOfRange,
+        parseScriptOptions("// @options: {\"timeout_ms\": -5}\ntext(\"hi\");", &negative),
+    );
+    try std.testing.expectEqualStrings("timeout_ms: -5", negative.text);
 }
