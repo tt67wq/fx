@@ -17,7 +17,7 @@
 
 ## 差距清单
 
-- [ ] Timeout 错误信息补齐：实际耗时、生效的上限值与来源（默认值还是 @options）、@options 调整方法
+- [x] Timeout 错误信息补齐：实际耗时、生效的上限值与来源（默认值还是 @options）、@options 调整方法（23a 已落，merge 289303f4c）
 - [ ] 超时回传嵌套命令已产生的部分输出（有帽，标注截断），而不是只列调用状态
 - [ ] 复核默认 timeout_ms 对"一条长命令"场景是否偏短，或按嵌套命令预算单独收口
 - [ ] 评估轮询等待场景的引导：文档或错误提示建议拆短命令/分次轮询而非单条 sleep 循环
@@ -27,3 +27,9 @@
 - [ ] 设计定稿（超时错误形态 + 部分输出帽 + 与 recovery 模型边界确认）
 - [ ] TDD：红测试（超时信息字段、部分输出保留、@options 生效）
 - [ ] 文档：codemode 页补超时与 @options 用法
+
+## Resolution — 23a（2026-11-18）
+
+差距清单第 1 项落地（merge 289303f4c）：Timeout headline 为
+`codemode script failed: Timeout after {elapsed}ms (budget {budget}ms, from default|@options); raise it with // @options: {"timeout_ms": N} on the first script line`
+验证员真机探针两态实证（default 30002ms / @options 4000ms），ScriptError 控制组不变。非阻塞遗留：“first script line”实为首个非空行措辞、elapsed 比预算高 ~2ms（一次读数粒度）——均已记录不修。其余三项（部分输出保留、长命令预算收口、轮询引导）待 23b 方案轮。
