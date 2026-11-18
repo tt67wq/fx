@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
   chmodSync,
+  readdirSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -627,6 +628,41 @@ test("run_script forwards a workspace file through CTX_FILE", async () => {
       toolResultText(gateway.requests[1]!.body, "ctx-file-1"),
     );
     expect(body).toContain("ctx-file-payload-914");
+  } finally {
+    rmSync(root.workspace, { recursive: true, force: true });
+  }
+}, TIMEOUT);
+
+test("run_script leaves no fx-run-script temp dirs after the call ends", async () => {
+  const root = createIsolatedRoot({ codemode_derived_surface: true });
+  writeFileSync(join(root.workspace, "data.txt"), "cleanup-pin-3107");
+  const script =
+    `const r = await tools.call("run_script", JSON.stringify({` +
+    `language: 'python',` +
+    `code: "import os,sys; sys.stdout.write(open(os.environ['CTX_FILE']).read())",` +
+    `file: 'data.txt' }));` +
+    `text(String(JSON.parse(r).output));`;
+  const gateway = startGateway([
+    fakeGatewayToolCall("cleanup-pin-1", "codemode", { script }),
+    fakeGatewayFinalText("CLEANUP_PIN_DONE"),
+  ]);
+  const before = new Set(
+    readdirSync(tmpdir()).filter((name) => name.startsWith("fx-run-script-")),
+  );
+  try {
+    const result = await runFx(
+      ["ask", "--quiet", "--json", "--yolo", "--no-save", "Probe cleanup."],
+      { cwd: root.workspace, env: gatewayEnv(root, gateway), timeoutMs: TIMEOUT },
+    );
+    expect(result.code, "stderr: " + result.stderr.slice(0, 400)).toBe(0);
+    // The fx process has exited, so the per-call temp dir must be gone:
+    // cleanup runs on every return path and nothing survives the call.
+    const after = readdirSync(tmpdir()).filter((name) =>
+      name.startsWith("fx-run-script-"),
+    );
+    for (const name of after) {
+      expect(before.has(name), "orphan temp dir: " + name).toBe(true);
+    }
   } finally {
     rmSync(root.workspace, { recursive: true, force: true });
   }
