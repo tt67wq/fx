@@ -763,6 +763,124 @@ test "run_script file param refuses a missing file" {
     );
 }
 
+test "run_script oversized ctx file registers the temp dir for caller cleanup" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const ws_root = try io_mod.dirRealpathAlloc(arena, tmp.dir, ".");
+    const temp_base = try std.Io.Dir.path.join(arena, &.{ ws_root, "tmp" });
+    try std.Io.Dir.cwd().createDirPath(io_mod.getIo(), temp_base);
+    const big_path = try std.Io.Dir.path.join(arena, &.{ ws_root, "big.txt" });
+    {
+        var big = try std.Io.Dir.cwd().createFile(io_mod.getIo(), big_path, .{ .truncate = true });
+        defer big.close(io_mod.getIo());
+        const chunk: [4096]u8 = @splat('x');
+        var written: usize = 0;
+        while (written <= run_script_max_ctx_file_bytes) : (written += chunk.len) {
+            try big.writeStreamingAll(io_mod.getIo(), &chunk);
+        }
+    }
+    var temp_dir: ?[]const u8 = null;
+    try std.testing.expectError(
+        error.InvalidToolArguments,
+        canonicalNestedCall(
+            arena,
+            .{ .name = "run_script" },
+            "{\"language\":\"python\",\"code\":\"1\",\"file\":\"big.txt\"}",
+            .{ .workspace_root = ws_root, .temp_base = temp_base },
+            &temp_dir,
+        ),
+    );
+    // The dir must be registered the moment it exists: an unregistered dir
+    // here is the ISSUE-20 orphan the caller's cleanup defer cannot reach.
+    try std.testing.expect(temp_dir != null);
+    if (temp_dir) |dir_path| {
+        std.Io.Dir.cwd().deleteTree(io_mod.getIo(), dir_path) catch {};
+    }
+    var scan = try std.Io.Dir.openDirAbsolute(io_mod.getIo(), temp_base, .{ .iterate = true });
+    defer scan.close(io_mod.getIo());
+    var iter = scan.iterate();
+    while (try iter.next(io_mod.getIo())) |entry| {
+        try std.testing.expect(std.mem.startsWith(u8, entry.name, run_script_temp_prefix) == false);
+    }
+}
+
+test "a failed run_script call leaves no temp dir behind" {
+    const allocator = std.testing.allocator;
+    var fixture = TestCodemodeRuntime{};
+    defer fixture.deinit(allocator);
+    var arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const ws_root = try io_mod.dirRealpathAlloc(arena, tmp.dir, ".");
+    const big_path = try std.Io.Dir.path.join(arena, &.{ ws_root, "big.txt" });
+    {
+        var big = try std.Io.Dir.cwd().createFile(io_mod.getIo(), big_path, .{ .truncate = true });
+        defer big.close(io_mod.getIo());
+        const chunk: [4096]u8 = @splat('x');
+        var written: usize = 0;
+        while (written <= run_script_max_ctx_file_bytes) : (written += chunk.len) {
+            try big.writeStreamingAll(io_mod.getIo(), &chunk);
+        }
+    }
+    // call() leaves temp_base empty in production, so the base is the same
+    // one makeRunScriptTempDir resolves: TMPDIR or /tmp.
+    const temp_base = if (io_mod.getenv("TMPDIR")) |t| (if (t.len > 0) t else "/tmp") else "/tmp";
+    var before: std.StringHashMap(void) = .init(allocator);
+    defer {
+        var key_it = before.keyIterator();
+        while (key_it.next()) |key| allocator.free(key.*);
+        before.deinit();
+    }
+    try collectRunScriptTempNames(temp_base, &before);
+    var ctx = fixture.context();
+    ctx.workspace_root = ws_root;
+    var state = tool_runtime.CodemodeHostState{
+        .runtime = ctx,
+        .script_call = .{ .id = "codemode-call", .name = "codemode", .arguments_json = "{}" },
+    };
+    try std.testing.expectError(
+        error.InvalidToolArguments,
+        call(
+            &state,
+            allocator,
+            .{ .name = "run_script" },
+            "{\"language\":\"python\",\"code\":\"1\",\"file\":\"big.txt\"}",
+        ),
+    );
+    var after: std.StringHashMap(void) = .init(allocator);
+    defer {
+        var key_it = after.keyIterator();
+        while (key_it.next()) |key| allocator.free(key.*);
+        after.deinit();
+    }
+    try collectRunScriptTempNames(temp_base, &after);
+    var it = after.keyIterator();
+    while (it.next()) |key| {
+        try std.testing.expect(before.contains(key.*));
+    }
+}
+
+/// Collects the fx-run-script-* directory names under one base dir. The
+/// map owns its keys; the caller frees them with the map.
+fn collectRunScriptTempNames(
+    temp_base: []const u8,
+    names: *std.StringHashMap(void),
+) !void {
+    var scan = std.Io.Dir.openDirAbsolute(io_mod.getIo(), temp_base, .{ .iterate = true }) catch return;
+    defer scan.close(io_mod.getIo());
+    var iter = scan.iterate();
+    while (try iter.next(io_mod.getIo())) |entry| {
+        if (entry.kind != .directory) continue;
+        if (!std.mem.startsWith(u8, entry.name, run_script_temp_prefix)) continue;
+        const owned = try names.allocator.dupe(u8, entry.name);
+        try names.put(owned, {});
+    }
+}
 test "run_script shell forwards the code as the shell command" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
