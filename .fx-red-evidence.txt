@@ -1,141 +1,62 @@
-# T-24-impl red run (zig build test, before implementation)
-+- run test 9996/10012 tests passed (2 skipped, 14 failed)
-error: 'tools.codemode.codemode_tool.test.scriptErrorHeadline keeps the message and falls back to the stage' failed:
-error: 'tools.codemode.codemode_tool.test.scriptFieldFailure echoes the top-level keys the model sent' failed:
-error: 'tools.codemode.codemode_tool.test.@options violations echo the value the script declared' failed:
-error: 'tools.codemode.bridge.test.run_command argument rejections name the fields' failed:
-error: 'tools.codemode.bridge.test.run_script argument rejections name the fields' failed:
-error: 'tools.codemode.bridge.test.run_script file rejections name the constraint' failed:
-error: 'tools.codemode.bindings_tests.test.codemode top-level return explains the allowed shapes' failed:
-error: 'tools.codemode.bindings_tests.test.codemode syntax errors name the failing line and column' failed:
-error: 'tools.codemode.bindings_tests.test.codemode missing globals explain the QuickJS sandbox' failed:
-error: 'tools.codemode.bindings_tests.test.codemode calling a missing tools method shows the call shape' failed:
-error: 'tools.codemode.bindings_tests.test.codemode tools.call unknown name suggests close tool names' failed:
-error: 'tools.codemode.bindings_tests.test.codemode tools.call argument failure carries the field detail' failed:
-error: 'tools.codemode.bindings_tests.test.codemode eval reports the compile stage for unparsable scripts' failed:
-+- note: one extra failure, 'core.execution.command_runner.test.runtime cancellation observed at the timeout deadline stays graceful' failed without output; it is the known command_runner flake (not touched by this change; it passes on rerun, see the green evidence).
+T-23a red evidence: ISSUE-23a timeout headline tests, run against the
+unchanged (green-to-be) behavior on branch T-23a-impl.
 
-### samples
----- codemode top-level return explains the allowed shapes
-error: 'tools.codemode.bindings_tests.test.codemode top-level return explains the allowed shapes' failed:
-       ====== expected this output: =========
-       SyntaxError: return not in a function (codemode.js:2:1). top-level return is not allowed; use text() or make the last expression the result␃
-       
-       ======== instead found this: =========
-       SyntaxError: return not in a function␃
-       
----- codemode syntax errors name the failing line and column
-error: 'tools.codemode.bindings_tests.test.codemode syntax errors name the failing line and column' failed:
-       ====== expected this output: =========
-       SyntaxError: unexpected token in expression: ',' (codemode.js:2:6)␃
-       
-       ======== instead found this: =========
-       SyntaxError: unexpected token in expression: ','␃
-       
----- codemode missing globals explain the QuickJS sandbox
-error: 'tools.codemode.bindings_tests.test.codemode missing globals explain the QuickJS sandbox' failed:
-       ====== expected this output: =========
-       ReferenceError: require is not defined. QuickJS sandbox: no Node.js APIs (require, setTimeout, process); tools go through tools.call("name", args) or tools.<name>(args)␃
-       
-       ======== instead found this: =========
-       ReferenceError: require is not defined␃
-       
----- codemode calling a missing tools method shows the call shape
-error: 'tools.codemode.bindings_tests.test.codemode calling a missing tools method shows the call shape' failed:
-       ====== expected this output: =========
-       TypeError: not a function. if the callee was a tool, use tools.call("name", args); tools.list() names the callable tools␃
-       
-       ======== instead found this: =========
-       TypeError: not a function␃
-       
----- codemode tools.call unknown name suggests close tool names
-error: 'tools.codemode.bindings_tests.test.codemode tools.call unknown name suggests close tool names' failed:
-       ====== expected this output: =========
-       unknown codemode tool: read_fil. did you mean: read_file, glob_files? use searchTools("read_fil") to discover tools␃
-       
-       ======== instead found this: =========
-       unknown codemode tool: read_fil␃
-       
----- codemode tools.call argument failure carries the field detail
-error: 'tools.codemode.bindings_tests.test.codemode tools.call argument failure carries the field detail' failed:
-       ====== expected this output: =========
-       codemode tool run_command failed: InvalidToolArguments: run_command requires field "command"; received fields: cmd␃
-       
-       ======== instead found this: =========
-       codemode tool run_command failed: InvalidToolArguments␃
-       
----- run_command argument rejections name the fields
-error: 'tools.codemode.bridge.test.run_command argument rejections name the fields' failed:
-       ====== expected this output: =========
-       run_command arguments must be a JSON object␃
-       
-       ======== instead found this: =========
-       ␃
-       
----- run_script argument rejections name the fields
-error: 'tools.codemode.bridge.test.run_script argument rejections name the fields' failed:
-       ====== expected this output: =========
-       run_script unknown field "args"; expected fields: language, code, file, intent, timeout_ms␃
-       
-       ======== instead found this: =========
-       ␃
-       
----- run_script file rejections name the constraint
-error: 'tools.codemode.bridge.test.run_script file rejections name the constraint' failed:
-       ====== expected this output: =========
-       run_script field "file" must stay inside the workspace␃
-       
-       ======== instead found this: =========
-       ␃
-       
----- scriptErrorHeadline keeps the message and falls back to the stage
-error: 'tools.codemode.codemode_tool.test.scriptErrorHeadline keeps the message and falls back to the stage' failed:
-       ====== expected this output: =========
-       codemode script failed: ScriptError: no engine message (stage: runtime)␃
-       
-       ======== instead found this: =========
-       codemode script failed: ScriptError: ␃
-       
----- scriptFieldFailure echoes the top-level keys the model sent
-error: 'tools.codemode.codemode_tool.test.scriptFieldFailure echoes the top-level keys the model sent' failed:
-       ====== expected this output: =========
-       codemode requires string field "script"; received top-level keys: code, language␃
-       
-       ======== instead found this: =========
-       codemode requires string field "script"␃
-       
----- @options violations echo the value the script declared
-error: 'tools.codemode.codemode_tool.test.@options violations echo the value the script declared' failed:
-       ====== expected this output: =========
-       timeout_ms: 999␃
-       
-       ======== instead found this: =========
-       ␃
-       
----- compile stage for unparsable scripts
-error: 'tools.codemode.bindings_tests.test.codemode eval reports the compile stage for unparsable scripts' failed:
-       expected .compile, found .runtime
-failed command: ./.zig-cache/o/8862f5cf3f39579b568ea7d9f2ffad1c/test --cache-dir=./.zig-cache --seed=0x48b23fe5 --listen=-
+Command 1: zig build test --summary all  (exit 1)
+Command 2: cd tests/e2e && FX_SOUND=0 bun test codemode-admission.test.ts -t budget  (2 fail)
 
-Build Summary: 20/22 steps succeeded (1 failed); 9996/10012 tests passed (2 skipped, 14 failed)
-test transitive failure
-+- run test 9990 pass, 2 skip, 14 fail (10006 total)
+The red scaffolding stub in codemode_tool.zig returns the old bare headline
+and decode does not yet set timeout_from_options, so every new assertion
+fails against today's behavior.
 
-# T-24-impl red run (bun test codemode-admission.test.ts -t 'codemode script mistake feedback')
-Expected: "text"
-Received: "error-text"
-(fail) codemode script mistake feedback > top-level return explains the allowed shapes [79.54ms]
-Expected to contain: "InvalidToolArguments: run_command requires field \"command\"; received fields: cmd"
-Received: "codemode tool run_command failed: InvalidToolArguments\n"
-(fail) codemode script mistake feedback > run_command with the wrong key names the field it wanted [60.53ms]
-Expected to contain: "unknown codemode tool: read_fil. did you mean: read_file"
-Received: "unknown codemode tool: read_fil\n"
-(fail) codemode script mistake feedback > an unknown tool name in tools.call suggests the closest name [60.70ms]
+===== zig build test --summary all (failing tests) =====
+error: 'tools.codemode.codemode_tool.test.timeout headline names elapsed, budget, source, and the fix verbatim' failed:
+       ====== expected this output: =========
+       codemode script failed: Timeout after 30123ms (budget 30000ms, from default); raise it with // @options: {"timeout_ms": N} on the first script line␃
+       ======== instead found this: =========
+       codemode script failed: Timeout␃
+       expected:
+       codemode script failed: Timeout after 30123ms (budget 30000ms, from default); raise it with // @options: {"timeout_ms": N} on the first script line
+       codemode script failed: Timeout
+error: 'tools.codemode.codemode_tool.test.timeout headline pins the @options source verbatim' failed:
+       ====== expected this output: =========
+       codemode script failed: Timeout after 5012ms (budget 5000ms, from @options); raise it with // @options: {"timeout_ms": N} on the first script line␃
+       ======== instead found this: =========
+       codemode script failed: Timeout␃
+       expected:
+       codemode script failed: Timeout after 5012ms (budget 5000ms, from @options); raise it with // @options: {"timeout_ms": N} on the first script line
+       codemode script failed: Timeout
+error: 'tools.codemode.codemode_tool.test.decode records whether the script declared its timeout' failed:
+       expected true, found false
+Build Summary: 20/22 steps succeeded (1 failed); 10004/10009 tests passed (2 skipped, 3 failed)
+
+===== e2e bun test -t budget (failing tests) =====
+262 |     // and its source, and the @options fix, verbatim.
+263 |     expect(output.value).toContain("Timeout after ");
+                               ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "Timeout after "
+Received: "codemode script failed: Timeout\n\nPartial output before failure:\nslept\n\nNested tool calls before failure (not undone):\n- run_command: ok (30009ms)\n"
+
+      at <anonymous> (/Users/example/fx/tests/e2e/codemode-admission.test.ts:263:26)
+(fail) nested run_command is killed when the codemode script budget expires [30073.96ms]
+296 |       .flatMap((message) => message.content ?? [])
+297 |       .find((part) => part.type === "tool-result" && part.toolCallId === "budget-options-1");
+298 |     expect(toolResult).toBeDefined();
+299 |     const output = toolResult!.output as { type: string; value: string };
+300 |     expect(output.type).toBe("error-text");
+301 |     expect(output.value).toContain("Timeout after ");
+                               ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "Timeout after "
+Received: "codemode script failed: Timeout\n\nPartial output before failure:\nslept\n\nNested tool calls before failure (not undone):\n- run_command: failure (5048ms)\n"
+
+      at <anonymous> (/Users/example/fx/tests/e2e/codemode-admission.test.ts:301:26)
+(fail) a script timeout with a raised @options budget names the source [5117.50ms]
+
  0 pass
-Ran 3 tests across 1 file. [255.00ms]
-# top-level return case (rerun after harness output-type fix):
-(kept below)
-  Expected to contain: "SyntaxError: return not in a function (codemode.js:2:1). top-level return is not allowed; use text() or make the last expression the result"
-  Received: "codemode script failed: ScriptError: SyntaxError: return not in a function"
-
-# Result: 13 new red tests fail (7 bindings_tests, 3 bridge, 3 codemode_tool); every pre-existing test passes. E2E: 3 new tests fail on the old wording; the live binary shows exactly the strings the green commits must replace.
+ 22 filtered out
+ 2 fail
+ 14 expect() calls
+Ran 2 tests across 1 file. [35.21s]

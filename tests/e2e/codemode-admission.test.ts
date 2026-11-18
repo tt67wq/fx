@@ -258,11 +258,52 @@ test("nested run_command is killed when the codemode script budget expires", asy
     expect(toolResult).toBeDefined();
     const output = toolResult!.output as { type: string; value: string };
     expect(output.type).toBe("error-text");
-    expect(output.value).toContain("Timeout");
+    // ISSUE-23a: the headline names the elapsed wall, the effective budget
+    // and its source, and the @options fix, verbatim.
+    expect(output.value).toContain("Timeout after ");
+    expect(output.value).toContain("(budget 30000ms, from default)");
+    expect(output.value).toContain(
+      'raise it with // @options: {"timeout_ms": N} on the first script line',
+    );
   } finally {
     rmSync(root.workspace, { recursive: true, force: true });
   }
 }, 90000); // > BUDGET_TEST_TIMEOUT (R3: keep the wall under the case timeout)
+
+test("a script timeout with a raised @options budget names the source", async () => {
+  const root = createIsolatedRoot();
+  // The script declares its own 5s budget with @options; the headline must
+  // report that budget and its source instead of the profile default.
+  const script = '// @options: {"timeout_ms": 5000}\n' +
+  'await tools.call("run_command", { command: "sleep 60" });\n' +
+  'text("slept");';
+  const gateway = startGateway([
+    fakeGatewayToolCall("budget-options-1", "codemode", { script }),
+    fakeGatewayFinalText("BUDGET_OPTIONS_FINAL"),
+  ]);
+  try {
+    const result = await runFx(
+      ["ask", "--quiet", "--json", "--no-save", "run the options budget test"],
+      { cwd: root.workspace, env: gatewayEnv(root, gateway), timeoutMs: TIMEOUT },
+    );
+    expect(result.timedOut).toBe(false);
+    expect(result.code, "stderr: " + result.stderr.slice(0, 400)).toBe(0);
+    expect(gateway.requests.length).toBe(2);
+    const request = JSON.parse(gateway.requests[1]!.body) as {
+      prompt?: Array<{ content?: Array<Record<string, unknown>> }>;
+    };
+    const toolResult = (request.prompt ?? [])
+      .flatMap((message) => message.content ?? [])
+      .find((part) => part.type === "tool-result" && part.toolCallId === "budget-options-1");
+    expect(toolResult).toBeDefined();
+    const output = toolResult!.output as { type: string; value: string };
+    expect(output.type).toBe("error-text");
+    expect(output.value).toContain("Timeout after ");
+    expect(output.value).toContain("(budget 5000ms, from @options)");
+  } finally {
+    rmSync(root.workspace, { recursive: true, force: true });
+  }
+}, 60000);
 
 test("a failed script keeps partial output and nested call summary", async () => {
   const root = createIsolatedRoot();
