@@ -58,6 +58,7 @@ pub fn decode(ctx: tool_dispatch.DispatchContext, args_json: []const u8) tool_di
         .script = owned_script,
         .effective_timeout_ms = effective.timeout_ms,
         .effective_output_buffer_bytes = effective.output_buffer_bytes,
+        .timeout_from_options = script_options.timeout_ms != null,
     };
 
     return .{ .input = .{ .ptr = input, .deinit_fn = inputDeinit } };
@@ -352,6 +353,18 @@ pub fn call(ctx: tool_dispatch.DispatchContext, erased: tool_dispatch.ToolInput)
             );
             return .{ .failure = failureBody(ctx.allocator, headline, partial, state.nested_calls[0..state.nested_call_count], state.nested_call_overflow) };
         },
+        error.Timeout => {
+            // ISSUE-23a: name the elapsed wall, the effective budget, its
+            // source, and the @options fix. Non-Timeout errors keep the
+            // plain error-name headline below.
+            const partial = sandbox.host.takePartialOutput();
+            defer ctx.allocator.free(partial.text);
+            defer ctx.allocator.free(partial.console);
+            const now_ms = io_mod.milliTimestamp();
+            const started = state.ambient_started_ms orelse now_ms;
+            const headline = try timeoutHeadline(ctx.allocator, now_ms - started, input.effective_timeout_ms, input.timeout_from_options);
+            return .{ .failure = failureBody(ctx.allocator, headline, partial, state.nested_calls[0..state.nested_call_count], state.nested_call_overflow) };
+        },
         else => {
             const partial = sandbox.host.takePartialOutput();
             defer ctx.allocator.free(partial.text);
@@ -426,14 +439,16 @@ test "failure body without output or calls matches the plain one-liner" {
     defer std.testing.allocator.free(body);
     try std.testing.expectEqualStrings("codemode script failed: ScriptError: boom", body);
 }
-/// RED scaffolding: preserves the current bare headline so the pinned
-/// tests fail against today's behavior. Replaced by the real composition
-/// in the green commit.
+/// ISSUE-23a: composes the Timeout failure headline: the elapsed wall,
+/// the effective budget, whether it came from the profile default or the
+/// script's @options header, and the one-line fix. Pinned verbatim by the
+/// tests below; the elapsed value is a single clock read at the failure
+/// moment, so a Cancelled race only costs precision, never a crash.
 fn timeoutHeadline(alloc: Allocator, elapsed_ms: i64, budget_ms: usize, from_options: bool) Allocator.Error![]u8 {
-    _ = elapsed_ms;
-    _ = budget_ms;
-    _ = from_options;
-    return alloc.dupe(u8, "codemode script failed: Timeout");
+    return alloc.print(
+        "codemode script failed: Timeout after {d}ms (budget {d}ms, from {s}); raise it with // @options: {{\"timeout_ms\": N}} on the first script line",
+        .{ @max(elapsed_ms, 0), budget_ms, if (from_options) "@options" else "default" },
+    );
 }
 
 // ISSUE-23a: the Timeout headline names the elapsed wall, the effective

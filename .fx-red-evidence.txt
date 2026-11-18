@@ -38,7 +38,7 @@ error: expect(received).toContain(expected)
 Expected to contain: "Timeout after "
 Received: "codemode script failed: Timeout\n\nPartial output before failure:\nslept\n\nNested tool calls before failure (not undone):\n- run_command: ok (30009ms)\n"
 
-      at <anonymous> (/Users/admin/Project/Zig/fx-pi1/tests/e2e/codemode-admission.test.ts:263:26)
+      at <anonymous> (/Users/example/fx/tests/e2e/codemode-admission.test.ts:263:26)
 (fail) nested run_command is killed when the codemode script budget expires [30073.96ms]
 296 |       .flatMap((message) => message.content ?? [])
 297 |       .find((part) => part.type === "tool-result" && part.toolCallId === "budget-options-1");
@@ -52,7 +52,7 @@ error: expect(received).toContain(expected)
 Expected to contain: "Timeout after "
 Received: "codemode script failed: Timeout\n\nPartial output before failure:\nslept\n\nNested tool calls before failure (not undone):\n- run_command: failure (5048ms)\n"
 
-      at <anonymous> (/Users/admin/Project/Zig/fx-pi1/tests/e2e/codemode-admission.test.ts:301:26)
+      at <anonymous> (/Users/example/fx/tests/e2e/codemode-admission.test.ts:301:26)
 (fail) a script timeout with a raised @options budget names the source [5117.50ms]
 
  0 pass
