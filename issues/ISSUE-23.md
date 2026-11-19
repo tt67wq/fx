@@ -1,6 +1,6 @@
 # ISSUE-23 — codemode script 超时占失败一半：无耗时回显、无部分输出、提示缺失
 
-- **状态**: open
+- **状态**: closed（2026-11-19）
 - **发现时间**: 2026-11-18
 - **来源**: 近 30 天 session 记录分析（~/.fx/sessions/v2/，2380 次工具调用，278 次 codemode 失败）
 - **工作量**: 中
@@ -43,3 +43,8 @@ shell 快照 output_delta，标题逐字 Last nested output before failure）；
 默认 30s 与 @options 1000..120000 上下界、clampRunScriptTimeout 均不动（数据不支持改动，
 见 plan 问 2）。真机探针三态坐实（逐字摘录 + 头尾哨兵 / 被杀快照 + 尾哨兵 / 发现 A 8077ms），
 覆盖矩阵三行全有真机证据。发现 A/B 另开 ISSUE-28/ISSUE-29。
+
+
+## Resolution — 23b（2026-11-19）
+
+剩余三项全部落地（merge 见 git log）：① 失败体新增摘录节（最近一条已返回嵌套调用的 1KiB 头尾摘录 + 被预算杀掉的嵌套快照 output_delta，QuickJS deadline 只在指令间触发故在飞调用必记录）；② 预算裁决不改（数据在 plan.md）；③ 轮询引导并入 headline。验证员 approve-with-comments，真机探针全过。遗留发现开票：ISSUE-28（ambient 未减 remaining）、ISSUE-29（run_command 兼容后端超时结果无输出）。
