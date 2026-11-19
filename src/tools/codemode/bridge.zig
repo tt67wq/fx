@@ -1402,15 +1402,29 @@ test "schemas errors when a whitelisted name is missing from the registry" {
 }
 
 test "bridge caps nested commands with the script budget fields" {
+    // ISSUE-28: the nested command receives the script's REMAINING wall
+    // clock sampled when the nested call starts, not the whole budget.
+    // The script started 10s ago against a 30s budget, so ~20s remain;
+    // the window absorbs clock drift between the two readings.
     var state: tool_runtime.CodemodeHostState = undefined;
     state.ambient_budget_ms = 30_000;
-    state.ambient_started_ms = 1_000;
+    state.ambient_started_ms = io_mod.milliTimestamp() - 10_000;
     var check: tool_runtime.Context = undefined;
     check.command_timeout_ms = null;
     check.command_timeout_started_ms = null;
     applyAmbientBudget(&check, &state);
-    try std.testing.expectEqual(@as(?usize, 30_000), check.command_timeout_ms);
-    try std.testing.expectEqual(@as(?i64, 1_000), check.command_timeout_started_ms);
+    const remaining = check.command_timeout_ms orelse return error.TestExpectedRemaining;
+    try std.testing.expect(remaining >= 19_000 and remaining <= 20_500);
+    try std.testing.expectEqual(state.ambient_started_ms, check.command_timeout_started_ms);
+
+    // An exhausted budget leaves zero: the next nested command dies at once.
+    var exhausted: tool_runtime.CodemodeHostState = undefined;
+    exhausted.ambient_budget_ms = 1_000;
+    exhausted.ambient_started_ms = io_mod.milliTimestamp() - 5_000;
+    check.command_timeout_ms = null;
+    check.command_timeout_started_ms = null;
+    applyAmbientBudget(&check, &exhausted);
+    try std.testing.expectEqual(@as(?usize, 0), check.command_timeout_ms);
 
     // Without a recorded budget the fields stay untouched.
     var unbudgeted: tool_runtime.CodemodeHostState = undefined;

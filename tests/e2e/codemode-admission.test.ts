@@ -314,6 +314,45 @@ test("a script timeout with a raised @options budget names the source", async ()
   }
 }, 60000);
 
+// ISSUE-28: a nested run_command with an explicit timeout_ms must still die
+// at min(requested, remaining script budget). The script declares a 2000ms
+// budget and nests sleep 8 with timeout_ms 60000: the command must be killed
+// near the script deadline (~2s), not run its full requested 8s.
+test("a nested command with a large requested timeout dies at the remaining script budget", async () => {
+  const root = createIsolatedRoot();
+  const script = '// @options: {"timeout_ms": 2000}\n' +
+    'await tools.call("run_command", { command: "sleep 8", timeout_ms: 60000 });\n' +
+    'text("slept");';
+  const gateway = startGateway([
+    fakeGatewayToolCall("nested-min-1", "codemode", { script }),
+    fakeGatewayFinalText("NESTED_MIN_FINAL"),
+  ]);
+  const startedAt = Date.now();
+  try {
+    const result = await runFx(
+      ["ask", "--quiet", "--json", "--no-save", "run the nested budget test"],
+      { cwd: root.workspace, env: gatewayEnv(root, gateway), timeoutMs: TIMEOUT },
+    );
+    const elapsedS = (Date.now() - startedAt) / 1000;
+    expect(result.timedOut).toBe(false);
+    expect(result.code, "stderr: " + result.stderr.slice(0, 400)).toBe(0);
+    // min(requested, remaining): the 60000ms request cannot outlive the
+    // 2000ms script budget. The old whole-budget/requested-wins behavior
+    // ran the full sleep (~8s) and fails this window.
+    expect(elapsedS).toBeGreaterThan(1);
+    expect(elapsedS).toBeLessThan(6);
+    expect(gateway.requests.length).toBe(2);
+    const body = toolResultText(gateway.requests[1]!.body, "nested-min-1", "error-text");
+    expect(body).toContain("Timeout after ");
+    expect(body).toContain("(budget 2000ms, from @options)");
+    // Coverage matrix row 3: the killed nested command's TimeoutExpired
+    // snapshot still rides in the excerpt slot.
+    expect(body).toContain('"error":"TimeoutExpired"');
+  } finally {
+    rmSync(root.workspace, { recursive: true, force: true });
+  }
+}, 30000);
+
 // ISSUE-23b: the excerpt slot carries the last returned nested call's
 // model-visible output in the timeout failure body. The completed call is
 // the LAST nested call here: a trailing nested sleep would overwrite the
