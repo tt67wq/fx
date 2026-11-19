@@ -1259,16 +1259,25 @@ pub fn finalizeCommandReplay(
         prepared.memory.stored_output_bytes = prepared.model_output.len;
         return;
     }
+    // The timeout stub omits captured bytes, so when this command timed out
+    // the retained replay is the only model-visible home for them: make sure
+    // a store-less best-effort capture can still materialize one.
+    const timed_out = if (prepared.memory.command_process_presentation) |presentation|
+        presentation == .timed_out
+    else
+        false;
+    if (timed_out) candidate.ensureReplayBacking(arena);
+
     var captured = candidate.canonicalizeForComparison(arena) catch |err| {
         debug_trace.logf(
             "session",
             "command replay comparison unavailable call_id_bytes={d} err={s}",
             .{ tool_call.id.len, @errorName(err) },
         );
-        retainCommandReplay(arena, candidate, &prepared.memory);
+        retainBestEffortReplay(arena, candidate, prepared, timed_out);
         return;
     } orelse {
-        retainCommandReplay(arena, candidate, &prepared.memory);
+        retainBestEffortReplay(arena, candidate, prepared, timed_out);
         return;
     };
     defer captured.deinit(arena);
@@ -1284,10 +1293,10 @@ pub fn finalizeCommandReplay(
             "command replay source comparison failed call_id_bytes={d} err={s}",
             .{ tool_call.id.len, @errorName(err) },
         );
-        retainCommandReplay(arena, candidate, &prepared.memory);
+        retainBestEffortReplay(arena, candidate, prepared, timed_out);
         return;
     } orelse {
-        retainCommandReplay(arena, candidate, &prepared.memory);
+        retainBestEffortReplay(arena, candidate, prepared, timed_out);
         return;
     };
     defer arena.free(source);
@@ -1300,10 +1309,10 @@ pub fn finalizeCommandReplay(
             "command replay envelope comparison failed call_id_bytes={d} err={s}",
             .{ tool_call.id.len, @errorName(err) },
         );
-        retainCommandReplay(arena, candidate, &prepared.memory);
+        retainBestEffortReplay(arena, candidate, prepared, timed_out);
         return;
     }) orelse {
-        retainCommandReplay(arena, candidate, &prepared.memory);
+        retainBestEffortReplay(arena, candidate, prepared, timed_out);
         return;
     };
     defer ordinary.deinit(arena);
@@ -1312,7 +1321,31 @@ pub fn finalizeCommandReplay(
         candidate.discard(arena);
         return;
     }
+    retainBestEffortReplay(arena, candidate, prepared, timed_out);
+}
+
+/// Retains a best-effort replay; when the command timed out, the retained
+/// bytes replace what the timeout stub omitted, so surface the replay handle
+/// to the model the same way the required policy does.
+fn retainBestEffortReplay(
+    arena: Allocator,
+    candidate: *command_replay_store.Capture,
+    prepared: *result_store.PreparedResult,
+    timed_out: bool,
+) void {
     retainCommandReplay(arena, candidate, &prepared.memory);
+    if (!timed_out) return;
+    const replay = prepared.memory.command_output_replay orelse return;
+    const descriptor = switch (replay) {
+        .available => |value| value,
+        .unavailable => return,
+    };
+    prepared.model_output = command_replay_store.appendModelHandleNotice(
+        arena,
+        prepared.model_output,
+        descriptor.handle,
+    ) catch return;
+    prepared.memory.stored_output_bytes = prepared.model_output.len;
 }
 
 fn selectedCommandSource(
