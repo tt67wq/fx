@@ -618,6 +618,18 @@ pub const Capture = struct {
 
     /// Stages a durable descriptor in result memory. The capture remains the
     /// cleanup owner until the caller publishes that memory successfully.
+    /// Adopts an ephemeral backing when the capture was created without one
+    /// (interactive best effort and no session store) so a later retain can
+    /// still materialize captured bytes. Failures leave the capture as-is;
+    /// the retain then degrades to `.unavailable` as before.
+    pub fn ensureReplayBacking(self: *Capture, alloc: Allocator) void {
+        if (self.backing != null) return;
+        if (self.state != .buffered) return;
+        const store = alloc.create(EphemeralStore) catch return;
+        store.* = EphemeralStore.init(alloc);
+        self.backing = .{ .ephemeral = store };
+    }
+
     pub fn retain(
         self: *Capture,
         alloc: Allocator,
