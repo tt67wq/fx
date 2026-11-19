@@ -466,12 +466,14 @@ fn timeoutHeadline(alloc: Allocator, elapsed_ms: i64, budget_ms: usize, from_opt
 // ISSUE-23a: the Timeout headline names the elapsed wall, the effective
 // budget, where the budget came from, and the @options fix, so the model
 // can raise the budget instead of retrying blind. Exact golden.
-test "timeout headline names elapsed, budget, source, and the fix verbatim" {
+test "timeout headline names elapsed, budget, source, the cap, and the poll fix verbatim" {
     const headline = try timeoutHeadline(std.testing.allocator, 30123, 30_000, false);
     defer std.testing.allocator.free(headline);
     try std.testing.expectEqualStrings(
         "codemode script failed: Timeout after 30123ms (budget 30000ms, from default); " ++
-            "raise it with // @options: {\"timeout_ms\": N} on the first script line",
+            "raise it with // @options: {\"timeout_ms\": N} on the first script line, max 120000; " ++
+            "for a wait or a long command, end the script and poll in a later call " ++
+            "(shell interact on the running session) instead of sleeping in a loop",
         headline,
     );
 }
@@ -481,7 +483,9 @@ test "timeout headline pins the @options source verbatim" {
     defer std.testing.allocator.free(headline);
     try std.testing.expectEqualStrings(
         "codemode script failed: Timeout after 5012ms (budget 5000ms, from @options); " ++
-            "raise it with // @options: {\"timeout_ms\": N} on the first script line",
+            "raise it with // @options: {\"timeout_ms\": N} on the first script line, max 120000; " ++
+            "for a wait or a long command, end the script and poll in a later call " ++
+            "(shell interact on the running session) instead of sleeping in a loop",
         headline,
     );
 }
@@ -548,11 +552,13 @@ test "failure body shows the last nested output right after the headline" {
     excerpt.duration_ms = 31496;
     const text = try std.testing.allocator.dupe(u8, "found 3 files");
     defer std.testing.allocator.free(text);
-    const body = try formatFailureBody(std.testing.allocator, "codemode script failed: Timeout after 31496ms (budget 30000ms, from default); raise it with // @options: {\"timeout_ms\": N} on the first script line", .{ .text = text, .console = "" }, &.{}, false, excerpt);
+    const body = try formatFailureBody(std.testing.allocator, "codemode script failed: Timeout after 31496ms (budget 30000ms, from default); raise it with // @options: {\"timeout_ms\": N} on the first script line, max 120000; for a wait or a long command, end the script and poll in a later call (shell interact on the running session) instead of sleeping in a loop", .{ .text = text, .console = "" }, &.{}, false, excerpt);
     defer std.testing.allocator.free(body);
     try std.testing.expectEqualStrings(
         "codemode script failed: Timeout after 31496ms (budget 30000ms, from default); " ++
-            "raise it with // @options: {\"timeout_ms\": N} on the first script line\n" ++
+            "raise it with // @options: {\"timeout_ms\": N} on the first script line, max 120000; " ++
+            "for a wait or a long command, end the script and poll in a later call " ++
+            "(shell interact on the running session) instead of sleeping in a loop\n" ++
             "\n" ++
             "Last nested output before failure (run_command, ok, 31496ms):\n" ++
             "{\"state\":\"running\",\"session_id\":\"shell-abc\",\"output_delta\":\"probe one\\n\"}\n" ++

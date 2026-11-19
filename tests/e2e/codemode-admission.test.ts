@@ -263,7 +263,10 @@ test("nested run_command is killed when the codemode script budget expires", asy
     expect(output.value).toContain("Timeout after ");
     expect(output.value).toContain("(budget 30000ms, from default)");
     expect(output.value).toContain(
-      'raise it with // @options: {"timeout_ms": N} on the first script line',
+      'raise it with // @options: {"timeout_ms": N} on the first script line, max 120000;',
+    );
+    expect(output.value).toContain(
+      "for a wait or a long command, end the script and poll in a later call",
     );
   } finally {
     rmSync(root.workspace, { recursive: true, force: true });
@@ -300,10 +303,93 @@ test("a script timeout with a raised @options budget names the source", async ()
     expect(output.type).toBe("error-text");
     expect(output.value).toContain("Timeout after ");
     expect(output.value).toContain("(budget 5000ms, from @options)");
+    expect(output.value).toContain("for a wait or a long command, end the script and poll in a later call");
+    // The killed sleep is the last returned nested call: its snapshot rides
+    // in the excerpt slot under the headline (coverage matrix row 3, empty
+    // delta because sleep produces no output).
+    expect(output.value).toContain("Last nested output before failure (run_command, failure,");
+    expect(output.value).toContain('"error":"TimeoutExpired"');
   } finally {
     rmSync(root.workspace, { recursive: true, force: true });
   }
 }, 60000);
+
+// ISSUE-23b: the excerpt slot carries the last returned nested call's
+// model-visible output in the timeout failure body. The completed call is
+// the LAST nested call here: a trailing nested sleep would overwrite the
+// slot with its own snapshot per the last-returned rule, so the script
+// burns its remaining budget in a JS loop instead of nesting another call.
+test("timeout failure body carries the completed nested command's output with head and tail sentinels", async () => {
+  const root = createIsolatedRoot();
+  // A 1333-byte nested command output: head sentinel, filler, tail
+  // sentinel, so the slot excerpt is over 1KiB and truncates.
+  writeFileSync(join(root.workspace, "big.txt"), "HEAD-SENT-23b" + "F".repeat(1300) + "TAIL-SENT-23b");
+  const script = 'await tools.call("run_command", { command: "cat big.txt" });\n' +
+    'const t0 = Date.now(); while (Date.now() - t0 < 45000) {}\n' +
+    'text("never");';
+  const gateway = startGateway([
+    fakeGatewayToolCall("excerpt-1", "codemode", { script }),
+    fakeGatewayFinalText("EXCERPT_FINAL"),
+  ]);
+  try {
+    const result = await runFx(
+      ["ask", "--quiet", "--json", "--no-save", "run the excerpt test"],
+      { cwd: root.workspace, env: gatewayEnv(root, gateway), timeoutMs: BUDGET_TEST_TIMEOUT },
+    );
+    expect(result.timedOut).toBe(false);
+    expect(result.code, "stderr: " + result.stderr.slice(0, 400)).toBe(0);
+    expect(gateway.requests.length).toBe(2);
+    const body = toolResultText(gateway.requests[1]!.body, "excerpt-1", "error-text");
+    // The excerpt section rides under the headline, naming the recorded call.
+    expect(body).toContain("Last nested output before failure (run_command, ok, ");
+    // The slot excerpt is verbatim and over 1KiB, so head and tail are
+    // both kept around the shared omission marker.
+    expect(body).toContain("HEAD-SENT-23b");
+    expect(body).toContain("TAIL-SENT-23b");
+    expect(body).toContain(" bytes omitted]...");
+    // The nested call summary still lists the completed exit.
+    expect(body).toContain("- run_command: ok (");
+  } finally {
+    rmSync(root.workspace, { recursive: true, force: true });
+  }
+}, 90000);
+
+// A single long command that keeps producing output is killed at the
+// budget: the shell snapshot's output_delta rides into the excerpt slot,
+// and the tail sentinel must survive because the snapshot envelope's head
+// (state/session_id/handle) eats the head budget while the real progress
+// sits at the tail (review C2).
+test("budget-killed long command leaves its shell snapshot tail in the failure body", async () => {
+  const root = createIsolatedRoot();
+  const script = 'await tools.call("run_command", { command: "sh -c \'while true; do for i in $(seq 1 100000); do echo TAILPROBE-$i; done; done\'" });\n' +
+    'text("never");';
+  const gateway = startGateway([
+    fakeGatewayToolCall("killed-1", "codemode", { script }),
+    fakeGatewayFinalText("KILLED_FINAL"),
+  ]);
+  try {
+    const result = await runFx(
+      ["ask", "--quiet", "--json", "--no-save", "run the killed command test"],
+      { cwd: root.workspace, env: gatewayEnv(root, gateway), timeoutMs: BUDGET_TEST_TIMEOUT },
+    );
+    expect(result.timedOut).toBe(false);
+    expect(result.code, "stderr: " + result.stderr.slice(0, 400)).toBe(0);
+    expect(gateway.requests.length).toBe(2);
+    const body = toolResultText(gateway.requests[1]!.body, "killed-1", "error-text");
+    expect(body).toContain("Last nested output before failure (run_command, ");
+    // The snapshot was over 1KiB, so it is head-tail truncated and the
+    // tail keeps the command's last progress lines (review C2: the tail,
+    // not the head, proves where the command got to).
+    expect(body).toContain(" bytes omitted]...");
+    const excerpt = body.split("Last nested output before failure (run_command, ok,")[1]!
+      .split("Partial output before failure")[0]!;
+    // The excerpt tail ends with the JSON envelope close, but the last
+    // progress line must survive the head-tail split inside it.
+    expect(excerpt).toMatch(/TAILPROBE-\d+\\nTAILPROBE-\d+"}\s*$/);
+  } finally {
+    rmSync(root.workspace, { recursive: true, force: true });
+  }
+}, 90000);
 
 test("a failed script keeps partial output and nested call summary", async () => {
   const root = createIsolatedRoot();

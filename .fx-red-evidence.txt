@@ -1,7 +1,4 @@
-error: 'core.tooling.tool_runtime.test.codemode nested output excerpt stores a short model output verbatim' failed:
-error: 'core.tooling.tool_runtime.test.codemode nested output excerpt keeps head and tail of oversized output' failed without output
-error: 'core.tooling.tool_runtime.test.codemode nested output excerpt freezes past record capacity' failed:
-error: 'core.tooling.tool_runtime.test.codemode nested output excerpt stores the coverage matrix shapes' failed without output
-error: 'core.execution.command_runner.test.runtime cancellation observed at the timeout deadline stays graceful' failed without output
-error: 'tools.codemode.codemode_tool.test.failure body shows the last nested output right after the headline' failed:
-zig build test (red): excerpt slot + failure-body section tests fail as designed (slot unwritten, section not rendered). Full log /tmp/red_test_out.txt at time of commit. Known pre-existing flake: command_runner runtime cancellation (rerun passes).
+error: 'builtins.tools.test.codemode description states the nested command budget truthfully' failed without output
+error: 'tools.codemode.codemode_tool.test.timeout headline names elapsed, budget, source, the cap, and the poll fix verbatim' failed:
+error: 'tools.codemode.codemode_tool.test.timeout headline pins the @options source verbatim' failed:
+zig build test (red 2): headline poll-guidance copy and description truthfulness tests fail as designed. Full log /tmp/red2_test.txt. e2e: the two updated budget tests also fail on the old headline copy (verified above).
