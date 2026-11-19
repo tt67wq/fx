@@ -449,13 +449,19 @@ test("budget-killed long command leaves its shell snapshot tail in the failure b
     expect(result.code, "stderr: " + result.stderr.slice(0, 400)).toBe(0);
     expect(gateway.requests.length).toBe(2);
     const body = toolResultText(gateway.requests[1]!.body, "killed-1", "error-text");
-    expect(body).toContain("Last nested output before failure (run_command, ");
+    // T-27-fix: the budget-boundary command has one deterministic outcome.
+    // Its timeout (the script's remaining budget) lands at or before the
+    // yield, so the foreground waits for the timeout kill instead of
+    // racing a running snapshot: the excerpt is the failure-timeout one.
+    expect(body).toContain("Last nested output before failure (run_command, failure,");
     // The snapshot was over 1KiB, so it is head-tail truncated and the
     // tail keeps the command's last progress lines (review C2: the tail,
     // not the head, proves where the command got to).
     expect(body).toContain(" bytes omitted]...");
-    const excerpt = body.split("Last nested output before failure (run_command, ok,")[1]!
+    const excerpt = body.split("Last nested output before failure (run_command, failure,")[1]!
       .split("Partial output before failure")[0]!;
+    expect(excerpt).toContain('"state":"stopped"');
+    expect(excerpt).toContain('"error":"TimeoutExpired"');
     // The excerpt tail ends with the JSON envelope close, but the last
     // progress line must survive the head-tail split inside it.
     expect(excerpt).toMatch(/TAILPROBE-\d+\\nTAILPROBE-\d+"}\s*$/);
