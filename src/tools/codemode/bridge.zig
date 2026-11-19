@@ -169,6 +169,13 @@ fn call(
         state.recordNestedCall(tool.name, mapNestedOutcome(null, err), nestedDurationMs(started_ms, io_mod.milliTimestamp()), null);
         return err;
     };
+    // Ownership (ISSUE-29 item 2): result.command_replay_capture is always
+    // null on this path. Its only producer, toolRunCommand, runs behind the
+    // run_command backend, which no builtin registry tool invokes; the
+    // production shell path's capture belongs to the managed execution
+    // runtime, which retains and releases it itself. Should a nested path
+    // ever hand a capture to this result, the bridge must abort it here:
+    // the script receives text only and nothing else consumes the field.
     // The bridge consumes the output itself and never hands the delivery
     // reservation to a later interact. Commit it so a terminal entry
     // tombstones and frees its execution slot. Without this every nested
