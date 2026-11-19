@@ -49,15 +49,22 @@ fn argumentError(raw_ctx: ?*anyopaque) ?[]const u8 {
     return state.nested_argument_error.text;
 }
 
-/// Caps nested shell runs at the script's wall-clock budget fields. A
-/// stalled command is killed at the budget instead of blocking the
-/// synchronous callback until it recovers on its own; the shell dispatch
-/// path turns the pair into min(requested, remaining) through the ambient
-/// timeout. No recorded budget (tests, direct runs) keeps the previous
-/// never-times-out nesting behavior.
+/// Caps nested shell runs at the script's remaining wall clock, sampled
+/// when the nested call starts (before admission, so a permission wait
+/// does not eat the command's budget). The registered shell path turns
+/// the pair into min(requested, remaining); a stalled command is killed
+/// at that cap instead of blocking the synchronous callback past the
+/// script deadline. No recorded budget (tests, direct runs) keeps the
+/// previous never-times-out nesting behavior.
 fn applyAmbientBudget(check: *tool_runtime.Context, state: *const tool_runtime.CodemodeHostState) void {
     const budget = state.ambient_budget_ms orelse return;
-    check.command_timeout_ms = budget;
+    const now_ms = io_mod.milliTimestamp();
+    const started = state.ambient_started_ms orelse now_ms;
+    const elapsed: usize = if (now_ms <= started)
+        0
+    else
+        std.math.cast(usize, now_ms - started) orelse std.math.maxInt(usize);
+    check.command_timeout_ms = budget -| elapsed;
     check.command_timeout_started_ms = state.ambient_started_ms;
 }
 

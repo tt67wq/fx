@@ -353,6 +353,40 @@ test("a nested command with a large requested timeout dies at the remaining scri
   }
 }, 30000);
 
+// ISSUE-28 min's other branch: when the requested timeout is below the
+// remaining script budget, the request wins. Default 30s budget, nested
+// sleep 8 requesting 1500ms: the command dies near 1.5s and the script
+// still completes normally.
+test("a nested command requesting less than the remaining budget keeps its requested timeout", async () => {
+  const root = createIsolatedRoot();
+  const script = 'await tools.call("run_command", { command: "sleep 8", timeout_ms: 1500 });\n' +
+    'text("done-after-kill");';
+  const gateway = startGateway([
+    fakeGatewayToolCall("nested-req-1", "codemode", { script }),
+    fakeGatewayFinalText("NESTED_REQ_FINAL"),
+  ]);
+  const startedAt = Date.now();
+  try {
+    const result = await runFx(
+      ["ask", "--quiet", "--json", "--no-save", "run the requested timeout test"],
+      { cwd: root.workspace, env: gatewayEnv(root, gateway), timeoutMs: TIMEOUT },
+    );
+    const elapsedS = (Date.now() - startedAt) / 1000;
+    expect(result.timedOut).toBe(false);
+    expect(result.code, "stderr: " + result.stderr.slice(0, 400)).toBe(0);
+    // requested 1500ms < remaining ~30000ms: the kill happens near 1.5s,
+    // not at the script budget and not after the full 8s sleep.
+    expect(elapsedS).toBeGreaterThan(1);
+    expect(elapsedS).toBeLessThan(6);
+    expect(gateway.requests.length).toBe(2);
+    const body = toolResultText(gateway.requests[1]!.body, "nested-req-1");
+    expect(body).toContain("done-after-kill");
+    expect(body).toContain("- run_command: failure (");
+  } finally {
+    rmSync(root.workspace, { recursive: true, force: true });
+  }
+}, 30000);
+
 // ISSUE-23b: the excerpt slot carries the last returned nested call's
 // model-visible output in the timeout failure body. The completed call is
 // the LAST nested call here: a trailing nested sleep would overwrite the
