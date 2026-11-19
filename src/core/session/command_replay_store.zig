@@ -2200,3 +2200,79 @@ test "command replay cleanup removes tentative and retained spools exactly once"
     defer discarded.deinit();
     try std.testing.expectEqual(@as(usize, 0), discarded.names.len);
 }
+
+// T-28 (ISSUE-30): a capture that adopted its own ephemeral backing via
+// ensureReplayBacking must close that store's spool descriptor on every
+// terminal path. The adopted store has no external owner, so releaseRetained
+// and abort (which keep or ignore the session sidecar) must still deinit it;
+// discard already deletes the spool. Observable criterion: the adopted
+// store's open-file map is empty once the capture is consumed.
+fn adoptedStoreOpenFiles(capture: *const Capture) usize {
+    const backing = capture.backing orelse return 0;
+    return switch (backing) {
+        .ephemeral => |store| store.files.count(),
+        else => 0,
+    };
+}
+
+test "adopted replay backing closes its spool on releaseRetained" {
+    if (comptime builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) return;
+    const alloc = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(alloc);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const capture = try Capture.create(arena, 64, null);
+    capture.appendAccepted(arena, .stdout, "hello");
+    capture.ensureReplayBacking(arena);
+    const replay = capture.retain(arena) orelse return error.TestExpectedReplay;
+    try std.testing.expect(replay == .available);
+    // The adopted store holds one open spool descriptor while retained.
+    try std.testing.expectEqual(@as(usize, 1), adoptedStoreOpenFiles(capture));
+
+    capture.releaseRetained(arena);
+    try std.testing.expectEqual(@as(usize, 0), adoptedStoreOpenFiles(capture));
+    // Idempotent: a second terminal call must not panic or reopen.
+    capture.releaseRetained(arena);
+    try std.testing.expectEqual(@as(usize, 0), adoptedStoreOpenFiles(capture));
+}
+
+test "adopted replay backing closes its spool on abort" {
+    if (comptime builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) return;
+    const alloc = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(alloc);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const capture = try Capture.create(arena, 64, null);
+    capture.appendAccepted(arena, .stdout, "hello");
+    capture.ensureReplayBacking(arena);
+    const replay = capture.retain(arena) orelse return error.TestExpectedReplay;
+    try std.testing.expect(replay == .available);
+    try std.testing.expectEqual(@as(usize, 1), adoptedStoreOpenFiles(capture));
+
+    capture.abort(arena);
+    try std.testing.expectEqual(@as(usize, 0), adoptedStoreOpenFiles(capture));
+    capture.abort(arena);
+    try std.testing.expectEqual(@as(usize, 0), adoptedStoreOpenFiles(capture));
+}
+
+test "adopted replay backing closes its spool on discard" {
+    if (comptime builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) return;
+    const alloc = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(alloc);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const capture = try Capture.create(arena, 64, null);
+    capture.appendAccepted(arena, .stdout, "hello");
+    capture.ensureReplayBacking(arena);
+    const replay = capture.retain(arena) orelse return error.TestExpectedReplay;
+    try std.testing.expect(replay == .available);
+    try std.testing.expectEqual(@as(usize, 1), adoptedStoreOpenFiles(capture));
+
+    capture.discard(arena);
+    try std.testing.expectEqual(@as(usize, 0), adoptedStoreOpenFiles(capture));
+    capture.discard(arena);
+    try std.testing.expectEqual(@as(usize, 0), adoptedStoreOpenFiles(capture));
+}
