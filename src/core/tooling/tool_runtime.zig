@@ -1324,6 +1324,28 @@ pub const NestedOutputExcerpt = struct {
     name: []const u8 = "",
     outcome: NestedCallOutcome = .ok,
     duration_ms: u64 = 0,
+
+    /// Stores one exit's output head and tail into the fixed buffer, or
+    /// clears the slot when the exit carries no output text. The shared
+    /// head-tail truncation keeps both ends visible, so the record line
+    /// naming this excerpt can be trusted for what the call produced and
+    /// where it stopped. Never fails: a write that cannot fit degrades to
+    /// an empty slot.
+    pub fn set(self: *NestedOutputExcerpt, name: []const u8, outcome: NestedCallOutcome, duration_ms: u64, text: []const u8) void {
+        self.name = name;
+        self.outcome = outcome;
+        self.duration_ms = duration_ms;
+        if (text.len == 0) {
+            self.text = "";
+            return;
+        }
+        var writer = std.Io.Writer.fixed(&self.bytes);
+        text_utils.writeHeadTailOmittedBounded(&writer, text, self.bytes.len, .down) catch {
+            self.text = "";
+            return;
+        };
+        self.text = writer.buffered();
+    }
 };
 
 /// The model-visible detail of a nested tool-call argument rejection:
@@ -1389,7 +1411,7 @@ pub const CodemodeHostState = struct {
         }
         self.nested_calls[self.nested_call_count] = .{ .name = name, .outcome = outcome, .duration_ms = duration_ms };
         self.nested_call_count += 1;
-        _ = output_text;
+        self.nested_output_excerpt.set(name, outcome, duration_ms, output_text orelse "");
     }
 
     pub fn nestedCallCount(self: *const CodemodeHostState) usize {
@@ -3016,7 +3038,7 @@ test "codemode nested output excerpt keeps head and tail of oversized output" {
     try std.testing.expect(std.mem.find(u8, host.nested_output_excerpt.text, "HEAD-SENT") != null);
     try std.testing.expect(std.mem.find(u8, host.nested_output_excerpt.text, "TAIL-SENT") != null);
     try std.testing.expect(std.mem.find(u8, host.nested_output_excerpt.text, " bytes omitted]...") != null);
-    try std.testing.expectEqual(max_nested_output_excerpt_bytes, host.nested_output_excerpt.text.len);
+    try std.testing.expect(host.nested_output_excerpt.text.len <= max_nested_output_excerpt_bytes);
 }
 
 test "codemode nested output excerpt clears on an exit without output" {

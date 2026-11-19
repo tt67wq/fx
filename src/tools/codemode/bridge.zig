@@ -150,8 +150,9 @@ fn call(
         check.session_grants,
     );
     if (outcome.decision.isDenied() or outcome.tool_failure != null) {
-        state.recordNestedCall(tool.name, if (outcome.tool_failure != null) .failure else .denied, nestedDurationMs(started_ms, io_mod.milliTimestamp()), null);
-        return deniedResult(allocator, try deniedReason(arena, tool.name, outcome));
+        const reason = try deniedReason(arena, tool.name, outcome);
+        state.recordNestedCall(tool.name, if (outcome.tool_failure != null) .failure else .denied, nestedDurationMs(started_ms, io_mod.milliTimestamp()), reason);
+        return deniedResult(allocator, reason);
     }
 
     const result = tool_runtime.executeToolCallAuthorized(check, .{
@@ -186,7 +187,7 @@ fn call(
 
     // F2: a normal return can carry status .failure (missing file, non-zero
     // exit) or observe cancellation; record the real outcome, not .ok.
-    state.recordNestedCall(tool.name, mapNestedOutcome(result, null), nestedDurationMs(started_ms, io_mod.milliTimestamp()), null);
+    state.recordNestedCall(tool.name, mapNestedOutcome(result, null), nestedDurationMs(started_ms, io_mod.milliTimestamp()), result.model_output);
     if (isShellBackedFaceName(tool.name)) {
         return shellResult(allocator, arena, result);
     }

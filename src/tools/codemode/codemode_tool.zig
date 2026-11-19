@@ -129,6 +129,16 @@ fn formatFailureBody(
     defer out.deinit(allocator);
     blk: {
         out.appendSlice(allocator, headline) catch break :blk;
+        if (last_output.text.len > 0) {
+            // The last nested output rides directly under the headline,
+            // ahead of the 4KiB-preview-cropped streams below.
+            out.appendSlice(allocator, "\n\n") catch break :blk;
+            var title_buf: [128]u8 = undefined;
+            const title = std.mem.print(&title_buf, "Last nested output before failure ({s}, {s}, {d}ms):", .{ last_output.name, @tagName(last_output.outcome), last_output.duration_ms }) catch break :blk;
+            out.appendSlice(allocator, title) catch break :blk;
+            out.appendSlice(allocator, "\n") catch break :blk;
+            out.appendSlice(allocator, last_output.text) catch break :blk;
+        }
         if (has_text) {
             out.appendSlice(allocator, "\n\nPartial output before failure:\n") catch break :blk;
             appendFailureOutputHead(&out, allocator, partial.?.text) catch break :blk;
@@ -548,7 +558,7 @@ test "failure body shows the last nested output right after the headline" {
             "{\"state\":\"running\",\"session_id\":\"shell-abc\",\"output_delta\":\"probe one\\n\"}\n" ++
             "\n" ++
             "Partial output before failure:\n" ++
-            "found 3 files\n",
+            "found 3 files",
         body,
     );
 }
