@@ -313,6 +313,10 @@ pub const Capture = struct {
     sealed: bool = false,
     content_hasher: Sha256 = Sha256.init(.{}),
     digest_started: bool = false,
+    /// True when ensureReplayBacking adopted a capture-owned EphemeralStore.
+    /// The capture is then the store's sole owner and must deinit it on every
+    /// terminal path; a runtime-provided backing is owned elsewhere.
+    owned_store: bool = false,
 
     pub fn create(
         alloc: Allocator,
@@ -628,6 +632,25 @@ pub const Capture = struct {
         const store = alloc.create(EphemeralStore) catch return;
         store.* = EphemeralStore.init(alloc);
         self.backing = .{ .ephemeral = store };
+        self.owned_store = true;
+    }
+
+    /// Closes and frees a capture-owned adopted store. Idempotent: a
+    /// runtime-provided backing (owned_store false) is left untouched, and a
+    /// second call after the first consume is a no-op. Runs after deleteSpool
+    /// so the spool handle is removed from the map before the store deinit.
+    fn deinitOwnedStore(self: *Capture, alloc: Allocator) void {
+        if (!self.owned_store) return;
+        self.owned_store = false;
+        const backing = self.backing orelse return;
+        self.backing = null;
+        switch (backing) {
+            .ephemeral => |store| {
+                store.deinit();
+                alloc.destroy(store);
+            },
+            else => {},
+        }
     }
 
     pub fn retain(
@@ -798,6 +821,7 @@ pub const Capture = struct {
             .retained => {},
             .consumed => return,
         }
+        self.deinitOwnedStore(alloc);
         self.state = .consumed;
     }
 
@@ -810,6 +834,7 @@ pub const Capture = struct {
                     self.deleteSpool(value.handle);
                     alloc.free(value.handle);
                 }
+                self.deinitOwnedStore(alloc);
                 self.state = .consumed;
             },
             else => self.abort(alloc),
@@ -822,6 +847,7 @@ pub const Capture = struct {
         switch (self.state) {
             .retained => |descriptor| {
                 if (descriptor) |value| alloc.free(value.handle);
+                self.deinitOwnedStore(alloc);
                 self.state = .consumed;
             },
             .consumed => {},
