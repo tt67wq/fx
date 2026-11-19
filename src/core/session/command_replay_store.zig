@@ -626,6 +626,10 @@ pub const Capture = struct {
     /// (interactive best effort and no session store) so a later retain can
     /// still materialize captured bytes. Failures leave the capture as-is;
     /// the retain then degrades to `.unavailable` as before.
+    /// Production hosts always pass a capability or runtime ephemeral store,
+    /// so this is a no-op there; the adopted store is capture-owned
+    /// (owned_store) and deinit-ed on every terminal path. The successful
+    /// no-terminal handoff still needs an orchestrator-side release (ISSUE-30).
     pub fn ensureReplayBacking(self: *Capture, alloc: Allocator) void {
         if (self.backing != null) return;
         if (self.state != .buffered) return;
