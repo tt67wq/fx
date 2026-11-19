@@ -5923,6 +5923,75 @@ test "registered read_tool_result restores an omitted stored-result suffix" {
     try expectContains(result.model_output, handle);
 }
 
+test "no-save timeout command surfaces captured output to the model" {
+    if (builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) return;
+
+    const runtime_execution_memory = @import("../agent/runtime/execution_memory.zig");
+    const alloc = std.testing.allocator;
+    var rt = TestRuntime{
+        .interactive = true,
+        .command_timeout_ms = 1000,
+    };
+    defer rt.deinit(alloc);
+    var arena_state = std.heap.ArenaAllocator.init(alloc);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const tool_call = ToolCall{
+        .id = "no-save-timeout",
+        .name = "shell",
+        .arguments_json = "{\"action\":\"run\",\"command\":\"printf PRE-TIMEOUT-OUT; sleep 5\",\"profile\":\"user\",\"timeout_ms\":600000}",
+    };
+
+    const result = try executeTestRunCommand(rt.context(), arena, tool_call);
+    try std.testing.expectEqual(tool_contracts.ToolExecutionStatus.failure, result.status);
+    try expectContains(result.model_output, "timeout=true\n");
+    const capture = result.command_replay_capture orelse return error.TestExpectedReplay;
+    var finalized = false;
+    defer if (!finalized) capture.abort(arena);
+    try std.testing.expect(capture.hasOutput());
+
+    var cancel = std.atomic.Value(bool).init(false);
+    var prepared = try runtime_execution_memory.prepareCapturedToolModelOutput(
+        arena,
+        .{
+            .system_prompt = "",
+            .gateway_retry_count = 0,
+            .gateway_chat_url = "",
+            .agent_step_limit = 1,
+            .cancel_flag = &cancel,
+        },
+        tool_call,
+        result.model_output,
+        capture,
+    );
+    runtime_execution_memory.applyToolResultMemory(
+        &prepared.memory,
+        result.tool_result_memory,
+    );
+    try runtime_execution_memory.finalizeCommandReplay(
+        arena,
+        tool_call,
+        &prepared,
+        null,
+        capture,
+    );
+    finalized = true;
+
+    // The captured bytes must be model-visible: either inline or through a
+    // replay handle notice the model can read with read_tool_result.
+    const replay = prepared.memory.command_output_replay orelse
+        return error.TestExpectedReplay;
+    const descriptor = switch (replay) {
+        .available => |value| value,
+        .unavailable => return error.TestExpectedReplay,
+    };
+    try std.testing.expect(
+        std.mem.find(u8, prepared.model_output, descriptor.handle) != null,
+    );
+    try std.testing.expect(
+        std.mem.find(u8, prepared.model_output, "read_tool_result") != null,
+    );
+}
 test "no-save terminal exec publishes one readable ephemeral replay" {
     if (builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) return;
 
