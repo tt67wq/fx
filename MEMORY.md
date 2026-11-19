@@ -1,0 +1,1 @@
+- [2026-11-19] 踩坑: bridge.call 嵌套结果 command_replay_capture 恒 null（唯一生产者 toolRunCommand 只挂 run_command backend，生产注册表不触达）；best_effort 超时句柄提示缺口在 finalizeCommandReplay，不在 stub 构造 — 来源 T-25/T-26、ISSUE-29
