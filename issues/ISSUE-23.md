@@ -18,9 +18,9 @@
 ## 差距清单
 
 - [x] Timeout 错误信息补齐：实际耗时、生效的上限值与来源（默认值还是 @options）、@options 调整方法（23a 已落，merge 289303f4c）
-- [ ] 超时回传嵌套命令已产生的部分输出（有帽，标注截断），而不是只列调用状态
-- [ ] 复核默认 timeout_ms 对"一条长命令"场景是否偏短，或按嵌套命令预算单独收口
-- [ ] 评估轮询等待场景的引导：文档或错误提示建议拆短命令/分次轮询而非单条 sleep 循环
+- [x] 超时回传嵌套命令已产生的部分输出（有帽，标注截断），而不是只列调用状态（23b 已落：1KiB 摘录槽 + 被杀快照覆盖矩阵）
+- [ ] 复核默认 timeout_ms 对"一条长命令"场景是否偏短，或按嵌套命令预算单独收口（23b 数据判定不改默认与上下界，见 plan 问 2；发现 A 预算传递收口另票 ISSUE-28）
+- [x] 评估轮询等待场景的引导：文档或错误提示建议拆短命令/分次轮询而非单条 sleep 循环（23b 数据判定走错误提示一行，并入 23a headline，max 120000 + poll 引导）
 
 ## 处置
 
@@ -33,3 +33,13 @@
 差距清单第 1 项落地（merge 289303f4c）：Timeout headline 为
 `codemode script failed: Timeout after {elapsed}ms (budget {budget}ms, from default|@options); raise it with // @options: {"timeout_ms": N} on the first script line`
 验证员真机探针两态实证（default 30002ms / @options 4000ms），ScriptError 控制组不变。非阻塞遗留：“first script line”实为首个非空行措辞、elapsed 比预算高 ~2ms（一次读数粒度）——均已记录不修。其余三项（部分输出保留、长命令预算收口、轮询引导）待 23b 方案轮。
+
+## Resolution — 23b（2026-11-19）
+
+差距清单第 2、4 项落地（T-23b-impl，head 见 .agents/tasks/T-23b-impl/impl-report.md）：
+失败体新增 1KiB 摘录槽（最近一次已返回嵌套调用的 model_output 头尾，含被预算杀掉的
+shell 快照 output_delta，标题逐字 Last nested output before failure）；Timeout headline
+合并轮询引导一行（max 120000 + end the script and poll in a later call）。预算裁决：
+默认 30s 与 @options 1000..120000 上下界、clampRunScriptTimeout 均不动（数据不支持改动，
+见 plan 问 2）。真机探针三态坐实（逐字摘录 + 头尾哨兵 / 被杀快照 + 尾哨兵 / 发现 A 8077ms），
+覆盖矩阵三行全有真机证据。发现 A/B 另开 ISSUE-28/ISSUE-29。

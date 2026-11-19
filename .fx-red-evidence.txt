@@ -1,0 +1,4 @@
+error: 'builtins.tools.test.codemode description states the nested command budget truthfully' failed without output
+error: 'tools.codemode.codemode_tool.test.timeout headline names elapsed, budget, source, the cap, and the poll fix verbatim' failed:
+error: 'tools.codemode.codemode_tool.test.timeout headline pins the @options source verbatim' failed:
+zig build test (red 2): headline poll-guidance copy and description truthfulness tests fail as designed. Full log /tmp/red2_test.txt. e2e: the two updated budget tests also fail on the old headline copy (verified above).

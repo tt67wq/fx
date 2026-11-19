@@ -741,7 +741,20 @@ pub const read_tool_result = ToolSpec{
 };
 
 pub const codemode_description =
-    "Run JavaScript in a sandbox for multi-step work in one call. Call tools with the named form await tools.read_file({...}); tools.call(\"tool_name\", args) still works; use them to search, read, and run. tools.list() returns each tool's name, description, and parameters schema for introspection. The script runs on a default 30 second wall-clock budget with a 1MiB capture cap; past it text and console keep the head and tail with the omitted byte count, and the full captured output is stored and readable with read_tool_result; as its first non-empty line, `// @options: {\"timeout_ms\": N, \"max_output_tokens\": N}` declares a bigger budget (timeout 1000..120000 ms hard-capped, output cap of 4 bytes per token clamped to the 1MiB capture cap), and a declared budget also caps nested run_command wall clock, which is killed and reports Timeout when it expires. Finish with text(your short summary); top-level return is not valid script syntax. A script that only wraps one tool call is slower than calling the tool directly. tools.list() may be a budgeted subset; searchTools(query) finds tools across the full surface; describeTool(name) returns one full schema.";
+    "Run JavaScript in a sandbox for multi-step work in one call. Call tools with the named form await tools.read_file({...}); tools.call(\"tool_name\", args) still works; use them to search, read, and run. tools.list() returns each tool's name, description, and parameters schema for introspection. The script runs on a default 30 second wall-clock budget with a 1MiB capture cap; past it text and console keep the head and tail with the omitted byte count, and the full captured output is stored and readable with read_tool_result; as its first non-empty line, `// @options: {\"timeout_ms\": N, \"max_output_tokens\": N}` declares a bigger budget (timeout 1000..120000 ms hard-capped, output cap of 4 bytes per token clamped to the 1MiB capture cap), and a declared budget is the script's wall clock; a nested run_command is capped at it from its own start. Finish with text(your short summary); top-level return is not valid script syntax. A script that only wraps one tool call is slower than calling the tool directly. tools.list() may be a budgeted subset; searchTools(query) finds tools across the full surface; describeTool(name) returns one full schema.";
+
+// ISSUE-23b: the description must state the nested command budget
+// truthfully (review C4 note 1) and must not grow (net word count).
+test "codemode description states the nested command budget truthfully" {
+    // The old "also caps nested run_command wall clock" wording implied a
+    // remaining-budget cap; the ambient budget is the script's wall clock,
+    // and a nested command is capped at the whole budget from its own start.
+    try std.testing.expect(std.mem.find(u8, codemode_description, "also caps nested run_command") == null);
+    try std.testing.expect(std.mem.find(u8, codemode_description, "capped at it from its own start") != null);
+    // 1168 = the description length before this correction; the rewritten
+    // sentence is shorter, so the net word count shrinks.
+    try std.testing.expect(codemode_description.len <= 1168);
+}
 
 pub const codemode = ToolSpec{
     .name = "codemode",

@@ -1306,6 +1306,48 @@ pub const NestedCallRecord = struct {
 /// Fixed failure-body summary capacity; past it only the overflow flag.
 pub const max_nested_call_records: usize = 32;
 
+/// Fixed failure-body excerpt capacity for the most recent returned nested
+/// call's model-visible output. One slot, not per-record excerpts: the
+/// state is a per-call stack variable and the failure body shows one
+/// excerpt, so a single fixed buffer keeps the state bounded.
+pub const max_nested_output_excerpt_bytes: usize = 1024;
+
+/// The head-and-tail excerpt of the most recent returned nested call's
+/// model-visible output, kept in a fixed buffer like NestedArgumentError:
+/// the sandbox thread writes it without touching the host allocator the
+/// engine caps, and the failure-body renderer reads it right after eval
+/// returns. Cleared whenever the latest exit carries no output text, so
+/// one call's excerpt never bleeds into a later failure body.
+pub const NestedOutputExcerpt = struct {
+    bytes: [max_nested_output_excerpt_bytes]u8 = undefined,
+    text: []const u8 = "",
+    name: []const u8 = "",
+    outcome: NestedCallOutcome = .ok,
+    duration_ms: u64 = 0,
+
+    /// Stores one exit's output head and tail into the fixed buffer, or
+    /// clears the slot when the exit carries no output text. The shared
+    /// head-tail truncation keeps both ends visible, so the record line
+    /// naming this excerpt can be trusted for what the call produced and
+    /// where it stopped. Never fails: a write that cannot fit degrades to
+    /// an empty slot.
+    pub fn set(self: *NestedOutputExcerpt, name: []const u8, outcome: NestedCallOutcome, duration_ms: u64, text: []const u8) void {
+        self.name = name;
+        self.outcome = outcome;
+        self.duration_ms = duration_ms;
+        if (text.len == 0) {
+            self.text = "";
+            return;
+        }
+        var writer = std.Io.Writer.fixed(&self.bytes);
+        text_utils.writeHeadTailOmittedBounded(&writer, text, self.bytes.len, .down) catch {
+            self.text = "";
+            return;
+        };
+        self.text = writer.buffered();
+    }
+};
+
 /// The model-visible detail of a nested tool-call argument rejection:
 /// the unknown or missing field names and the expected field names, set
 /// by the codemode bridge before it returns error.InvalidToolArguments.
@@ -1354,15 +1396,22 @@ pub const CodemodeHostState = struct {
     nested_argument_error: NestedArgumentError = .{},
     nested_call_count: usize = 0,
     nested_call_overflow: bool = false,
-    /// Records one nested call exit with its clamped duration. Past
-    /// capacity keeps the recorded entries and raises the overflow flag.
-    pub fn recordNestedCall(self: *CodemodeHostState, name: []const u8, outcome: NestedCallOutcome, duration_ms: u64) void {
+    /// The last returned nested call's output excerpt, described above.
+    /// Cleared by every exit that carries no output text; past record
+    /// capacity it freezes so the excerpt never names a dropped record.
+    nested_output_excerpt: NestedOutputExcerpt = .{},
+    /// Records one nested call exit with its clamped duration, and the
+    /// model-visible output text that exit carries (null clears the
+    /// excerpt slot). Past capacity keeps the recorded entries, raises
+    /// the overflow flag, and leaves the excerpt frozen.
+    pub fn recordNestedCall(self: *CodemodeHostState, name: []const u8, outcome: NestedCallOutcome, duration_ms: u64, output_text: ?[]const u8) void {
         if (self.nested_call_count >= max_nested_call_records) {
             self.nested_call_overflow = true;
             return;
         }
         self.nested_calls[self.nested_call_count] = .{ .name = name, .outcome = outcome, .duration_ms = duration_ms };
         self.nested_call_count += 1;
+        self.nested_output_excerpt.set(name, outcome, duration_ms, output_text orelse "");
     }
 
     pub fn nestedCallCount(self: *const CodemodeHostState) usize {
@@ -2934,8 +2983,8 @@ test "codemode nested call summary records exits and overflow" {
             .arguments_json = "{}",
         },
     };
-    host.recordNestedCall("read_file", .ok, 0);
-    host.recordNestedCall("run_command", .denied, 0);
+    host.recordNestedCall("read_file", .ok, 0, null);
+    host.recordNestedCall("run_command", .denied, 0, null);
     try std.testing.expectEqual(@as(usize, 2), host.nestedCallCount());
     try std.testing.expectEqualStrings("read_file", host.nested_calls[0].name);
     try std.testing.expectEqual(NestedCallOutcome.ok, host.nested_calls[0].outcome);
@@ -2943,9 +2992,131 @@ test "codemode nested call summary records exits and overflow" {
 
     // Filling past the fixed capacity keeps the recorded entries and raises
     // the overflow flag instead of dropping recorded ones.
-    for (0..40) |_| host.recordNestedCall("glob_files", .ok, 0);
+    for (0..40) |_| host.recordNestedCall("glob_files", .ok, 0, null);
     try std.testing.expect(host.nested_call_overflow);
     try std.testing.expectEqual(max_nested_call_records, host.nestedCallCount());
+}
+
+// ISSUE-23b: the failure-body excerpt slot keeps the most recent
+// returned nested call's model-visible output. One fixed slot, cleared by
+// exits with no output, frozen past record capacity.
+test "codemode nested output excerpt stores a short model output verbatim" {
+    var rt = TestRuntime{};
+    defer rt.deinit(std.testing.allocator);
+    var host = CodemodeHostState{
+        .runtime = rt.context(),
+        .script_call = .{
+            .id = "codemode-call",
+            .name = "codemode",
+            .arguments_json = "{}",
+        },
+    };
+    host.recordNestedCall("run_command", .ok, 123, "{\"output_delta\":\"hello probes\"}");
+    try std.testing.expectEqualStrings("{\"output_delta\":\"hello probes\"}", host.nested_output_excerpt.text);
+    try std.testing.expectEqualStrings("run_command", host.nested_output_excerpt.name);
+    try std.testing.expectEqual(NestedCallOutcome.ok, host.nested_output_excerpt.outcome);
+    try std.testing.expectEqual(@as(u64, 123), host.nested_output_excerpt.duration_ms);
+}
+
+test "codemode nested output excerpt keeps head and tail of oversized output" {
+    var rt = TestRuntime{};
+    defer rt.deinit(std.testing.allocator);
+    var host = CodemodeHostState{
+        .runtime = rt.context(),
+        .script_call = .{
+            .id = "codemode-call",
+            .name = "codemode",
+            .arguments_json = "{}",
+        },
+    };
+    const big = try std.testing.allocator.alloc(u8, 10_000);
+    defer std.testing.allocator.free(big);
+    @memset(big, 'x');
+    @memcpy(big[0..9], "HEAD-SENT");
+    @memcpy(big[big.len - 9 ..], "TAIL-SENT");
+    host.recordNestedCall("run_command", .failure, 999, big);
+    try std.testing.expect(std.mem.find(u8, host.nested_output_excerpt.text, "HEAD-SENT") != null);
+    try std.testing.expect(std.mem.find(u8, host.nested_output_excerpt.text, "TAIL-SENT") != null);
+    try std.testing.expect(std.mem.find(u8, host.nested_output_excerpt.text, " bytes omitted]...") != null);
+    try std.testing.expect(host.nested_output_excerpt.text.len <= max_nested_output_excerpt_bytes);
+}
+
+test "codemode nested output excerpt clears on an exit without output" {
+    var rt = TestRuntime{};
+    defer rt.deinit(std.testing.allocator);
+    var host = CodemodeHostState{
+        .runtime = rt.context(),
+        .script_call = .{
+            .id = "codemode-call",
+            .name = "codemode",
+            .arguments_json = "{}",
+        },
+    };
+    host.recordNestedCall("run_command", .ok, 5, "first output");
+    // The latest exit carries no output text: the slot must be empty, not
+    // still holding the previous call's text.
+    host.recordNestedCall("read_file", .ok, 5, null);
+    try std.testing.expectEqualStrings("", host.nested_output_excerpt.text);
+}
+
+test "codemode nested output excerpt freezes past record capacity" {
+    var rt = TestRuntime{};
+    defer rt.deinit(std.testing.allocator);
+    var host = CodemodeHostState{
+        .runtime = rt.context(),
+        .script_call = .{
+            .id = "codemode-call",
+            .name = "codemode",
+            .arguments_json = "{}",
+        },
+    };
+    for (0..max_nested_call_records - 1) |_| host.recordNestedCall("glob_files", .ok, 0, null);
+    host.recordNestedCall("run_command", .ok, 5, "last real output");
+    // The 33rd exit raises the overflow flag and must not clear or
+    // rewrite the excerpt: it never names a dropped record.
+    for (0..40) |_| host.recordNestedCall("glob_files", .ok, 0, null);
+    try std.testing.expect(host.nested_call_overflow);
+    try std.testing.expectEqualStrings("last real output", host.nested_output_excerpt.text);
+    try std.testing.expectEqualStrings("run_command", host.nested_output_excerpt.name);
+}
+
+// ISSUE-23b: the coverage matrix shapes, one per row (plan v2 question 1).
+// All three fall on the single model_output rule: a completed command's
+// delta, a yielded running snapshot's delta, and a killed snapshot's
+// error plus delta.
+test "codemode nested output excerpt stores the coverage matrix shapes" {
+    var rt = TestRuntime{};
+    defer rt.deinit(std.testing.allocator);
+    var host = CodemodeHostState{
+        .runtime = rt.context(),
+        .script_call = .{
+            .id = "codemode-call",
+            .name = "codemode",
+            .arguments_json = "{}",
+        },
+    };
+    // Row 1: the command ran to completion and its full delta is there.
+    host.recordNestedCall("run_command", .ok, 31496, "{\"state\":\"exited\",\"output_delta\":\"probe one\\n\"}");
+    try std.testing.expect(std.mem.find(u8, host.nested_output_excerpt.text, "probe one") != null);
+    try std.testing.expectEqual(NestedCallOutcome.ok, host.nested_output_excerpt.outcome);
+    // Row 2: the yield fired first, so the snapshot reports running and
+    // still carries the bytes produced so far.
+    host.recordNestedCall("run_command", .ok, 30001, "{\"state\":\"running\",\"session_id\":\"shell-xyz\",\"output_delta\":\"partial probe\\n\"}");
+    try std.testing.expect(std.mem.find(u8, host.nested_output_excerpt.text, "state\":\"running") != null);
+    try std.testing.expect(std.mem.find(u8, host.nested_output_excerpt.text, "partial probe") != null);
+    // Row 3: the command was killed by its own timeout; the snapshot
+    // keeps the error name and the bytes produced before the kill.
+    host.recordNestedCall("run_command", .failure, 60001, "{\"error\":\"TimeoutExpired\",\"output_delta\":\"killed probe\"}");
+    try std.testing.expect(std.mem.find(u8, host.nested_output_excerpt.text, "TimeoutExpired") != null);
+    try std.testing.expect(std.mem.find(u8, host.nested_output_excerpt.text, "killed probe") != null);
+    try std.testing.expectEqual(NestedCallOutcome.failure, host.nested_output_excerpt.outcome);
+}
+
+test "codemode host state keeps the excerpt slot bounded" {
+    // Size sentinel: one fixed 1KiB slot, not per-record excerpts. The
+    // rejected designs (32 x 400B, 32 x 1KiB) would add 12.8KiB/32KiB to
+    // a struct constructed as a stack variable on every tool call.
+    try std.testing.expect(@sizeOf(CodemodeHostState) < 32 * 1024);
 }
 
 test "codemode host cancel query reads the worker cancel flag" {
