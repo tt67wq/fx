@@ -670,16 +670,31 @@ fn callRun(
         .extra_environment = if (bridge_registration) |registration| registration.environment() else &.{},
         .yield_hold = if (bridge_registration) |registration| &registration.hold else null,
         .max_output_bytes = ctx.max_command_output_bytes,
-        .timeout_ms = if (input.timeout_ms) |value|
-            std.math.cast(usize, value) orelse return unavailable(ctx)
-        else
-            ctx.command_timeout_ms,
+        .timeout_ms = blk: {
+            const requested = if (input.timeout_ms) |value|
+                std.math.cast(usize, value) orelse return unavailable(ctx)
+            else
+                null;
+            // A started marker means the codemode bridge sampled the
+            // script's remaining wall clock at nested call start; the
+            // command gets min(requested, remaining) so it cannot outlive
+            // the script deadline. Direct runs keep requested-wins.
+            if (ctx.command_timeout_started_ms != null) {
+                if (ctx.command_timeout_ms) |remaining|
+                    break :blk if (requested) |value| @min(value, remaining) else remaining;
+            }
+            break :blk requested orelse ctx.command_timeout_ms;
+        },
         .command_artifact_dir = ctx.command_artifact_dir,
         .replay_capability = ctx.session_child_capability,
         .output_chunk_lifecycle_id = ctx.output_chunk_lifecycle_id,
         .output_chunk_ctx = ctx.output_chunk_ctx,
         .on_output_chunk = ctx.on_output_chunk,
         .yield_time_ms = input.yield_time_ms,
+        // A script-budget command whose timeout lands at or before the
+        // yield waits for the timeout kill instead of racing a running
+        // snapshot (T-27-review finding 1). Direct runs keep the old yield.
+        .yield_waits_for_timeout = ctx.command_timeout_started_ms != null,
         .cancel_flag = ctx.cancel_flag,
     }) catch |err| {
         if (err == error.Cancelled and

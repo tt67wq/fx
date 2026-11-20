@@ -34,6 +34,11 @@ pub const StartCapturedInput = struct {
     output_chunk_ctx: ?*anyopaque = null,
     on_output_chunk: ?command_runner.CommandOutputCallback = null,
     yield_time_ms: u32 = contract.default_yield_time_ms,
+    /// Set by the codemode nested wiring: when the command's timeout lands
+    /// at or before the yield, the foreground waits for the timeout kill
+    /// instead of racing a running snapshot (T-27-review finding 1). Direct
+    /// runs leave it false and keep the previous yield behavior.
+    yield_waits_for_timeout: bool = false,
     cancel_flag: ?*std.atomic.Value(bool) = null,
     /// Added to the command's environment. Copied before `startCaptured`
     /// returns.
@@ -612,7 +617,17 @@ pub const Runtime = struct {
             }
             const elapsed = io_mod.milliTimestamp() - started_ms;
             const held = if (input.yield_hold) |hold| hold.load(.acquire) > 0 else false;
-            if (elapsed >= input.yield_time_ms and !held) break;
+            // A timeout at or before the yield would race the running
+            // snapshot against the timeout kill (T-27-review finding 1).
+            // When the wiring opts in, wait for the kill instead, so the
+            // outcome is the deterministic timeout failure rather than a
+            // coin-flip running snapshot.
+            const timeout_at_yield = input.yield_waits_for_timeout and
+                if (input.timeout_ms) |timeout|
+                    timeout <= input.yield_time_ms
+                else
+                    false;
+            if (elapsed >= input.yield_time_ms and !held and !timeout_at_yield) break;
             io_mod.sleep(10 * std.time.ns_per_ms);
         }
 
@@ -1650,6 +1665,34 @@ fn testAuthority(input: StartCapturedInput) command_admission.CommandExecutionAu
         .fingerprint = .init(ctx),
         .source = .yolo,
     } };
+}
+
+test "a timeout at or before the yield waits for the kill instead of racing a running snapshot" {
+    if (comptime builtin.target.os.tag == .wasi) return;
+    const alloc = testing_allocator.no_resize;
+    var runtime = Runtime.init(alloc);
+    defer runtime.deinit();
+    // T-27-fix: timeout == yield is the boundary race. The foreground must
+    // wait for the timeout kill, returning the deterministic stopped
+    // snapshot, never a running one.
+    var input = StartCapturedInput{
+        .execution_id = "managed-timeout-at-yield",
+        .command = "sleep 5",
+        .cwd = "/tmp",
+        .environment = .legacy,
+        .authority = undefined,
+        .max_output_bytes = 4096,
+        .timeout_ms = 300,
+        .command_artifact_dir = null,
+        .yield_time_ms = 300,
+        .yield_waits_for_timeout = true,
+    };
+    input.authority = testAuthority(input);
+    var prepared = try runtime.startCaptured(alloc, input);
+    defer prepared.deinit(alloc);
+    try std.testing.expect(prepared.snapshot.state != .running);
+    try std.testing.expectEqualStrings("TimeoutExpired", prepared.snapshot.error_name orelse "");
+    try runtime.commitDelivery(prepared.snapshot.execution_id, prepared.reservation_id);
 }
 
 test "captured managed execution yields one handle and delivers ordered output once" {

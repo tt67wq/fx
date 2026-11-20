@@ -451,7 +451,8 @@ pub fn executeToolCallAuthorized(
     execution_ctx.current_turn_messages = request.current_turn_messages;
     execution_ctx.output_chunk_lifecycle_id = request.lifecycle_id;
     execution_ctx.output_chunk_presentation_group_id = request.presentation_group_id;
-    execution_ctx.command_timeout_started_ms = request.command_timeout_started_ms;
+    execution_ctx.command_timeout_started_ms = request.command_timeout_started_ms orelse
+        execution_ctx.command_timeout_started_ms;
     execution_ctx.command_replay_capture = request.command_replay_capture;
     execution_ctx.command_replay_unavailable = request.command_replay_unavailable;
 
@@ -1380,7 +1381,8 @@ pub const CodemodeHostState = struct {
     /// each gets a distinct nested call id.
     call_sequence: usize = 0,
     /// The codemode script's own wall-clock budget and the moment its call
-    /// started. Nested shell runs receive min(requested, remaining budget)
+    /// started. The bridge samples the remaining budget at each nested call's
+    /// start and hands the registered shell path min(requested, remaining),
     /// so a stalled command cannot outlive the script deadline; null keeps
     /// the previous never-times-out nesting behavior (tests, direct runs).
     ambient_budget_ms: ?usize = null,
@@ -1671,6 +1673,7 @@ fn typedDispatchContext(ctx: Context, arena: Allocator) tool_dispatch.DispatchCo
         .output_chunk_ctx = ctx.output_chunk_ctx,
         .on_output_chunk = ctx.on_output_chunk,
         .command_timeout_ms = ctx.command_timeout_ms,
+        .command_timeout_started_ms = ctx.command_timeout_started_ms,
         .ask_question_ctx = if (ctx.interactive or ctx.ask_user_questions) ctx.worker else null,
         .ask_question_batch = if (ctx.interactive or ctx.ask_user_questions) requestQuestionBatchWithWorker else null,
         .web_fetch_runtime = ctx.web_fetch_runtime,
@@ -1982,6 +1985,10 @@ const EffectiveCommandTimeout = struct {
     started_ms: i64,
 };
 
+/// The bridge's ambient budget is already the remaining wall clock sampled
+/// at nested call start; a compat-path call carrying that bridge marker must
+/// not subtract the script elapsed again here (double deduction). Today the
+/// registered shell path consumes the marker and never reaches this fn.
 fn effectiveCommandTimeout(
     request_timeout_ms: u64,
     ambient_timeout_ms: ?usize,
