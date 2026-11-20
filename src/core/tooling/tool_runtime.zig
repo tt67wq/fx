@@ -1985,6 +1985,10 @@ const EffectiveCommandTimeout = struct {
     started_ms: i64,
 };
 
+/// The bridge's ambient budget is already the remaining wall clock sampled
+/// at nested call start; a compat-path call carrying that bridge marker must
+/// not subtract the script elapsed again here (double deduction). Today the
+/// registered shell path consumes the marker and never reaches this fn.
 fn effectiveCommandTimeout(
     request_timeout_ms: u64,
     ambient_timeout_ms: ?usize,

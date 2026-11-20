@@ -691,6 +691,10 @@ fn callRun(
         .output_chunk_ctx = ctx.output_chunk_ctx,
         .on_output_chunk = ctx.on_output_chunk,
         .yield_time_ms = input.yield_time_ms,
+        // A script-budget command whose timeout lands at or before the
+        // yield waits for the timeout kill instead of racing a running
+        // snapshot (T-27-review finding 1). Direct runs keep the old yield.
+        .yield_waits_for_timeout = ctx.command_timeout_started_ms != null,
         .cancel_flag = ctx.cancel_flag,
     }) catch |err| {
         if (err == error.Cancelled and
