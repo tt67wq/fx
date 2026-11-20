@@ -1,0 +1,12 @@
+T-29-impl red evidence (description pin, baseline integrate-issue29 a6b910d06)
+
+Red change: src/builtins/tools.zig test "codemode description states the nested command
+budget truthfully" now pins the T-27 min semantics:
+  - "capped at it from its own start" must be ABSENT (old whole-budget wording, false since T-27)
+  - "min(requested, remaining budget) from its own start" must be PRESENT
+  - length cap re-pinned 1168 -> 1173 (net word count stays 179, C4 no-growth constraint)
+
+Command: zig build test
+Result: Build Summary 20/22 steps succeeded (1 failed); 10026/10029 tests passed (2 skipped, 1 failed)
+error: 'builtins.tools.test.codemode description states the nested command budget truthfully' failed without output
+The description still carries the old whole-budget sentence, so the new pin fails (red).
