@@ -1303,7 +1303,12 @@ pub fn Runtime(comptime App: type) type {
                 if (err == error.Cancelled and agent.worker.worker_cancel_requested.load(.seq_cst)) return;
                 return @as(anyerror!void, err);
             };
-            if (result == null) agent.worker.settleCompactionActivity(operation_id, .{ .outcome = .no_op });
+            if (result == null) {
+                agent.worker.settleCompactionActivity(operation_id, .{ .outcome = .no_op });
+            } else {
+                // A successful manual compaction re-arms the pre-compaction nudge.
+                agent.session.agent.context_nudge_sent = false;
+            }
         }
 
         fn lifecycleContext(app: *App, agent: *AppAgent) agent_runtime.LifecycleContext {

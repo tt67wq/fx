@@ -26,6 +26,10 @@ pub const Agent = struct {
     /// A request size limit learned from a provider rejection, kept for later
     /// requests to the same model in this conversation. Plain value state.
     request_byte_limit: ?RequestByteLimitState = null,
+    /// Whether the pre-compaction context nudge already fired this arm cycle.
+    /// Set when the nudge is shown; reset after a successful compaction so the
+    /// next climb toward the threshold nudges again. Plain value state.
+    context_nudge_sent: bool = false,
 
     pub fn deinit(self: *Agent, alloc: Allocator) void {
         self.clearHistory(alloc);
