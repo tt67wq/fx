@@ -9802,3 +9802,184 @@ fn estimateTextTokens(text: []const u8) usize {
     estimator.consume(text);
     return @intCast(estimator.estimate());
 }
+
+// T-30 (ISSUE-27 P0): a user-side nudge before auto-compaction, at 3/4 of the
+// auto-compact threshold, once per arm cycle, zero model-token cost. The
+// fixture model has usable input 16000 (context 32000 minus output 16000),
+// compact_at 12800 (80%), nudge_at 9600 (3/4). A solid history block estimates
+// ~bytes/4 tokens plus ~179 request overhead: 36000 chars => ~9179 (below
+// nudge), 40000 => ~10179 (nudge zone, below compact), 52000 => ~13179 (due).
+const t30_nudge_model = "anthropic/claude-opus-4.6";
+const t30_runtime_agent = @import("../agent.zig");
+fn t30Caps() model_capabilities.Capabilities {
+    return model_capabilities.resolveCapabilities(
+        t30_nudge_model,
+        .{ .context_window = 32_000, .max_output_tokens = 16_000 },
+    );
+}
+fn t30History(alloc: std.mem.Allocator, block: []u8) ![1]HistoryTurn {
+    const steps = try alloc.alloc(types.ToolExecutionStep, 1);
+    steps[0] = .{ .assistant = block };
+    return .{.{ .assistant = .{
+        .user = .{ .text = @constCast("U") },
+        .assistant = @constCast("A"),
+        .execution = .{ .tool_steps = steps },
+    } }};
+}
+fn t30RunOnAgent(
+    gateway: *FakeGateway,
+    hooks: *FakeAgentRuntimeDeps,
+    config: runtime_config.Config,
+    job: QueuedPrompt,
+    agent: *t30_runtime_agent.Agent,
+) !void {
+    hooks.workspace_root = config.workspace_root;
+    var deps = hooks.deps();
+    deps.agent_stream_provider = gateway.provider();
+    const lifecycle = test_support.testLifecycleContext(
+        lifecycle_hooks.RuntimeView.empty(),
+        hooks.alloc,
+        config.workspace_root,
+    );
+    try runtime_orchestrator.processAgentPrompt(agent, &deps, null, lifecycle, config, job);
+}
+
+test "context nudge stays silent below three quarters of the compact threshold" {
+    const alloc = std.testing.allocator;
+    const block = try alloc.alloc(u8, 36000);
+    defer alloc.free(block);
+    @memset(block, 'a');
+    var history = try t30History(alloc, block);
+    defer alloc.free(history[0].assistant.execution.tool_steps);
+    const overrides = [_]ModelCapabilityOverride{.{ .model = t30_nudge_model, .capabilities = t30Caps() }};
+    const completions = [_]FakeCompletion{.{ .content = "Done" }};
+    var gateway = FakeGateway.init(alloc, &completions);
+    defer gateway.deinit();
+    var hooks = FakeAgentRuntimeDeps.init(alloc);
+    hooks.available_capability_overrides = &overrides;
+    hooks.default_model_capabilities = t30Caps();
+    hooks.enable_interactive_notices = true;
+    defer hooks.deinit();
+    var fixture = PromptFixture{};
+    var job = fixture.job();
+    job.history = &history;
+    try runFakePrompt(&gateway, &hooks, fixture.config(), job);
+    try std.testing.expectEqual(@as(usize, 0), hooks.interactive_notices.items.len);
+}
+
+test "context nudge fires once crossing three quarters with /compact guidance" {
+    const alloc = std.testing.allocator;
+    const block = try alloc.alloc(u8, 40000);
+    defer alloc.free(block);
+    @memset(block, 'a');
+    var history = try t30History(alloc, block);
+    defer alloc.free(history[0].assistant.execution.tool_steps);
+    const overrides = [_]ModelCapabilityOverride{.{ .model = t30_nudge_model, .capabilities = t30Caps() }};
+    const completions = [_]FakeCompletion{.{ .content = "Done" }};
+    var gateway = FakeGateway.init(alloc, &completions);
+    defer gateway.deinit();
+    var hooks = FakeAgentRuntimeDeps.init(alloc);
+    hooks.available_capability_overrides = &overrides;
+    hooks.default_model_capabilities = t30Caps();
+    hooks.enable_interactive_notices = true;
+    defer hooks.deinit();
+    var fixture = PromptFixture{};
+    var job = fixture.job();
+    job.history = &history;
+    try runFakePrompt(&gateway, &hooks, fixture.config(), job);
+    // Nudge zone: no compaction (one request), exactly one user-side notice.
+    try std.testing.expectEqual(@as(usize, 1), gateway.request_bodies.items.len);
+    try std.testing.expectEqual(@as(usize, 1), hooks.interactive_notices.items.len);
+    const body = hooks.interactive_notices.items[0].body;
+    try std.testing.expect(std.mem.find(u8, body, "/compact") != null);
+    // Zero token cost: the nudge text never enters any model request body.
+    for (gateway.request_bodies.items) |req| {
+        try std.testing.expect(std.mem.find(u8, req, "/compact") == null);
+        try std.testing.expect(std.mem.find(u8, req, body) == null);
+    }
+}
+
+test "context nudge does not repeat while staying above the threshold" {
+    const alloc = std.testing.allocator;
+    const block = try alloc.alloc(u8, 40000);
+    defer alloc.free(block);
+    @memset(block, 'a');
+    var history = try t30History(alloc, block);
+    defer alloc.free(history[0].assistant.execution.tool_steps);
+    const overrides = [_]ModelCapabilityOverride{.{ .model = t30_nudge_model, .capabilities = t30Caps() }};
+    // Two model requests in one turn (tool call then final), both nudge zone.
+    const calls = [_]types.ToolCall{.{ .id = "c1", .name = "glob_files", .arguments_json = "{\"pattern\":\"*\"}" }};
+    const completions = [_]FakeCompletion{ .{ .tool_calls = &calls }, .{ .content = "Done" } };
+    var gateway = FakeGateway.init(alloc, &completions);
+    defer gateway.deinit();
+    var hooks = FakeAgentRuntimeDeps.init(alloc);
+    hooks.available_capability_overrides = &overrides;
+    hooks.default_model_capabilities = t30Caps();
+    hooks.enable_interactive_notices = true;
+    hooks.tool_registry = .{ .tools = &.{builtin_tools.glob_files} };
+    defer hooks.deinit();
+    var fixture = PromptFixture{};
+    var job = fixture.job();
+    job.history = &history;
+    job.permission_mode = .yolo;
+    try runFakePrompt(&gateway, &hooks, fixture.config(), job);
+    try std.testing.expect(gateway.request_bodies.items.len >= 2);
+    try std.testing.expectEqual(@as(usize, 1), hooks.interactive_notices.items.len);
+}
+
+test "context nudge re-arms after a successful compaction" {
+    const alloc = std.testing.allocator;
+    const overrides = [_]ModelCapabilityOverride{.{ .model = t30_nudge_model, .capabilities = t30Caps() }};
+    var hooks = FakeAgentRuntimeDeps.init(alloc);
+    hooks.available_capability_overrides = &overrides;
+    hooks.default_model_capabilities = t30Caps();
+    hooks.enable_interactive_notices = true;
+    defer hooks.deinit();
+    var agent: t30_runtime_agent.Agent = .{};
+    defer agent.deinit(alloc);
+    var fixture = PromptFixture{};
+    const config = fixture.config();
+
+    // Prompt 1: nudge zone => nudge #1, flag set.
+    const block1 = try alloc.alloc(u8, 40000);
+    defer alloc.free(block1);
+    @memset(block1, 'a');
+    var history1 = try t30History(alloc, block1);
+    defer alloc.free(history1[0].assistant.execution.tool_steps);
+    const completions1 = [_]FakeCompletion{.{ .content = "Done" }};
+    var gateway1 = FakeGateway.init(alloc, &completions1);
+    defer gateway1.deinit();
+    var job1 = fixture.job();
+    job1.history = &history1;
+    try t30RunOnAgent(&gateway1, &hooks, config, job1, &agent);
+    try std.testing.expectEqual(@as(usize, 1), hooks.interactive_notices.items.len);
+
+    // Prompt 2: compaction due => compaction runs, re-arms the nudge.
+    const block2 = try alloc.alloc(u8, 52000);
+    defer alloc.free(block2);
+    @memset(block2, 'b');
+    var history2 = try t30History(alloc, block2);
+    defer alloc.free(history2[0].assistant.execution.tool_steps);
+    const completions2 = [_]FakeCompletion{ .{ .content = "Summary of earlier work." }, .{ .content = "Done" } };
+    var gateway2 = FakeGateway.init(alloc, &completions2);
+    defer gateway2.deinit();
+    var job2 = fixture.job();
+    job2.history = &history2;
+    try t30RunOnAgent(&gateway2, &hooks, config, job2, &agent);
+    // A compaction summary request happened (>= 2 requests).
+    try std.testing.expect(gateway2.request_bodies.items.len >= 2);
+
+    // Prompt 3: nudge zone again => nudge #2 (re-armed).
+    const block3 = try alloc.alloc(u8, 40000);
+    defer alloc.free(block3);
+    @memset(block3, 'c');
+    var history3 = try t30History(alloc, block3);
+    defer alloc.free(history3[0].assistant.execution.tool_steps);
+    const completions3 = [_]FakeCompletion{.{ .content = "Done" }};
+    var gateway3 = FakeGateway.init(alloc, &completions3);
+    defer gateway3.deinit();
+    var job3 = fixture.job();
+    job3.history = &history3;
+    try t30RunOnAgent(&gateway3, &hooks, config, job3, &agent);
+    try std.testing.expectEqual(@as(usize, 2), hooks.interactive_notices.items.len);
+}
