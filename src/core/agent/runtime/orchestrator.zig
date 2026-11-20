@@ -6347,6 +6347,44 @@ pub const BeforeSummary = struct {
     run_fn: *const fn (context: *anyopaque) anyerror!void,
 };
 
+/// The pre-compaction nudge fires at this fraction of the auto-compact
+/// threshold (3/4): a user-side heads-up while there is still room to run
+/// /compact manually. A written constant, not a setting (ISSUE-27 P0).
+const context_nudge_threshold_divisor: usize = 4;
+const context_nudge_threshold_multiplier: usize = 3;
+
+/// Shows the user a one-time nudge when the request climbs past 3/4 of the
+/// auto-compact threshold but is not yet due for compaction. The notice rides
+/// the interactive channel only: it never enters the model message stream, so
+/// it costs zero model tokens. Once per arm cycle; a successful compaction
+/// re-arms it. Skipped when compaction is already due or overflow is pending
+/// (those paths compact or recover directly, a nudge adds nothing).
+fn maybeNudgeContextPressure(
+    deps: *const AgentRuntimeDeps,
+    arena: Allocator,
+    agent: *runtime_agent.Agent,
+    size: compactor.Size,
+    wants_compaction: bool,
+    overflow_pending: bool,
+    has_new_compactable_context: bool,
+) !void {
+    if (agent.context_nudge_sent) return;
+    if (wants_compaction or overflow_pending or !has_new_compactable_context) return;
+    const at = size.compact_at_tokens orelse return;
+    if (at == 0) return;
+    const request = size.request_tokens orelse return;
+    const nudge_at = at / context_nudge_threshold_divisor * context_nudge_threshold_multiplier;
+    if (request < nudge_at) return;
+    const push = deps.push_interactive_notice orelse return;
+    const percent = request * 100 / at;
+    const body = try arena.print(
+        "Context is at {d}% of the auto-compact threshold. Run /compact to summarize older turns before the automatic compaction.",
+        .{percent},
+    );
+    try push(deps.ctx, .{ .topic = "context", .tone = .information, .body = body });
+    agent.context_nudge_sent = true;
+}
+
 /// The sizes compaction works with for `model`, including what `agent`
 /// measured of its recent requests: their fixed part, and how far fx's token
 /// estimate ran from the provider's count.
@@ -7631,6 +7669,7 @@ fn processQueuedPromptLoop(
                 const usable_tokens = size.usable_tokens;
                 const compact_at_tokens = size.compact_at_tokens;
                 const wants_compaction = has_new_compactable_context and (overflow_pending or size.due());
+                try maybeNudgeContextPressure(deps, arena, agent, size, wants_compaction, overflow_pending, has_new_compactable_context);
                 compactor.traceEventIf(
                     wants_compaction,
                     step_ctx,
@@ -7773,6 +7812,8 @@ fn processQueuedPromptLoop(
                             .{ request_cost.serialized_bytes, request_cost.estimated_input_tokens, outcome.model_text.len, outcome.tool_count },
                         );
                         agent.request_token_calibration = null;
+                        // A successful compaction re-arms the pre-compaction nudge.
+                        agent.context_nudge_sent = false;
                         skip_next_preflight_refresh = true;
                         // A message queued while the compaction ran must ride the
                         // rebuilt request, not wait for the reply after it.
