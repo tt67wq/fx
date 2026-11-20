@@ -68,7 +68,7 @@
 
 - tests/tla/ 零触碰（diff name-only 计数 0）；admission/permissions/catalog 零触碰
   （diff 仅 command_replay_store.zig + 文档）。
-- 无新 CLI 面/settings 键/环境变量；无个人路径（diff grep /Users/admin、/home/ 为空）。
+- 无新 CLI 面/settings 键/环境变量；无个人路径（diff  grep 个人 home 前缀为空）。
 
 ## 备注（非阻塞）
 

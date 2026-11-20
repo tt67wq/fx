@@ -63,3 +63,59 @@ builtins/tools.zig 描述文案未动（23b 已修）。
 - tests/tla/ 零触碰；admission/permissions/parity_review_free_commands/catalog
   零触碰；未触及 recovery 边界（无需 blocked）。
 - 个人路径零入码；探针环境用隔离临时 HOME。
+
+
+---
+
+## T-27-fix 增补（评审阻塞发现 1 处置，conductor 仲裁选项 b）
+
+### 竞争根因
+
+T-27 把嵌套命令超时从整预算改为 remaining = 30000 − ε（ε = 脚本起点到嵌套调用
+发起的 schema 注入/eval 启动耗时），严格小于默认 yield_time 30000。managed
+execution 的 yield 循环（managed_execution.zig:615 一带，foreground 每 10ms 轮询
+elapsed >= yield）与命令 worker 的超时杀（command_runner.zig:1043，elapsed >=
+timeout）两线程竞争：timeout 阈值提前 ε 使 worker 有时先杀（stopped/failure），
+有时 yield 先返回（running/ok）→ 既有第三行 E2E 由稳定绿转 flaky。旧 ok-running
+恰是 ISSUE-28 bug 表现（命令被 yield 留活到脚本超时之后），不能半概率接受。
+
+### 处置（选项 b：消解竞争，结局确定 failure-timeout）
+
+- src/core/execution/managed_execution.zig：StartCapturedInput 增默认 false 的
+  yield_waits_for_timeout；yield 循环在该标志成立且 timeout <= yield 时不按
+  yield 返回 running 快照，改为继续轮询等待 worker 的超时杀（terminal）——结局
+  确定 stopped/TimeoutExpired。标志默认 false，直跑零变化；tty/interact/stop
+  不经过该 captured yield 循环，零触碰。
+- src/tools/shell/shell.zig callRun：仅当嵌套标记
+  ctx.command_timeout_started_ms != null 时置 yield_waits_for_timeout = true。
+  （初版曾把 yield 钳到 min(yield, remaining)，证明对结局冗余——等待条件
+  timeout <= yield 已覆盖——遂移除，只留标志，改动面更小。）
+- 摘录槽代码零改动；第三行 E2E 断言更新为 failure-timeout（failure 标记 +
+  state stopped + TimeoutExpired + 尾哨兵），先红后绿。
+- 顺手补评审发现 2 注释：effectiveCommandTimeout 上方标明 bridge ambient 已为
+  remaining、compat 路径若未来接入 bridge 标记须避免双重扣减（今日不可达）。
+- 新增单元竞争钉死：managed_execution「a timeout at or before the yield waits
+  for the kill instead of racing a running snapshot」（timeout == yield == 300，
+  标志 true，断言非 running + TimeoutExpired）。
+
+### 红绿与复跑证据
+
+- 红（ac740b2d5，先于绿）：第三行 E2E 断言更新后在 T-27 绿实现上复跑 6 次
+  → 2 fail / 4 pass（~33%），失败体为 (run_command, ok, 30002ms) + state running，
+  坐实竞争。证据 red-evidence-fix.txt。
+- 绿：消解竞争后第三行 E2E 复跑 6 次全绿（tally：pass×6，各 ~30.1–30.9s）；
+  min 两支 E2E（remaining 支 ~2.1s、requested 支 ~1.6s）仍绿。
+- zig build test 全绿（TEST_EXIT=0）；codemode-admission.test.ts + cli.test.ts
+  全套 167 pass / 6 skip / 0 fail。
+- zig fmt --check src/、check-public-surface.sh、agents/compactor/indexer/recovery
+  四边界脚本各退 0；FX_BENCH=1 冒烟退 0、stderr 0 字节。
+
+### 边界与红线
+
+- 直跑（无标记）yield 行为逐字节不变（标志默认 false）；仅嵌套预算边界命令由
+  竞争转为确定 failure-timeout。timeout > yield 的非边界嵌套仍按 yield 返回
+  running（命令尚未到预算），与旧行为一致。
+- tests/tla/、admission/permissions/parity_review_free_commands/catalog 零触碰；
+  摘录槽代码零改动；无新 CLI/settings/env；个人路径零入码。
+- 附带修正：T-28-review（review.md）中一处个人 home 前缀字面量触发
+  check-public-surface，已改写为不含该前缀的表述（文档措辞，非语义）。
