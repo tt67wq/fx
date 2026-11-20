@@ -1,6 +1,6 @@
 # ISSUE-27 — 模型自主的上下文压缩：nudge 提示 + 模型可调用的 compress 工具（参考 billion-context 原理）
 
-- **状态**: open
+- **状态**: open（P0 已落地，P1/P2/P3 待开）
 - **发现时间**: 2026-11-18
 - **来源**: 调研 https://github.com/ranxianglei/billion-context 后评估移植可行性，与 fx 现有 compactor 逐点对照
 - **工作量**: P0 小 / P1 中 / P2 大 / P3 待论证（见分阶段计划）
@@ -60,7 +60,7 @@ src/builtins/tools.zig 的 read_tool_result（实现 src/tools/session/read_tool
 
 ## 分阶段计划
 
-### P0 · 压缩前 nudge 提示（小）
+### P0 · 压缩前 nudge 提示（小）— 已落地（2026-11-20）
 
 - 目标：上下文达到阈值前（如 auto_compact_percent 的 70~80% 处）注入一次提示，告知模型与用户"对话已长，可 /compact"。
 - 动哪：compactor/settings.zig + window.zig（判断点）；注入方式需先定（决策点 1）。
@@ -108,3 +108,7 @@ src/builtins/tools.zig 的 read_tool_result（实现 src/tools/session/read_tool
 - fx compactor 文档头：src/core/compactor/compactor.zig:1-23
 - 触发点：src/core/agent/runtime/orchestrator.zig:6366 一带
 - 模型侧检索：src/builtins/tools.zig 的 read_tool_result、src/tools/session/read_tool_result.zig
+
+## P0 落地备注（2026-11-20）
+
+T-30-impl：红 166f39534 → 绿 b79e2f7b7，review approve c3f3ec21c。用户拍板决策点 1：仅用户侧、零 token 成本。nudge_at = compact_at_tokens * 3/4（常量写死，无新 settings/CLI/env）；push_interactive_notice 通道，测试钉死模型请求体不含 nudge 文本；每武装周期一次，自动/overflow/手动 /compact 成功后重新武装；恢复即新武装周期。整合于 integrate-issue29（HEAD 7275e8a08），PR tt67wq/fx#6。真机 tmux+fake gateway 观察恰一次（90%，trace 坐实）。compactor 边界零触碰。
