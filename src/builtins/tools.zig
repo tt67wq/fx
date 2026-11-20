@@ -745,15 +745,18 @@ pub const codemode_description =
 
 // ISSUE-23b: the description must state the nested command budget
 // truthfully (review C4 note 1) and must not grow (net word count).
+// T-29: T-27 changed the semantics to min(requested, remaining script
+// budget), sampled when the nested call starts, so the pin follows.
 test "codemode description states the nested command budget truthfully" {
-    // The old "also caps nested run_command wall clock" wording implied a
-    // remaining-budget cap; the ambient budget is the script's wall clock,
-    // and a nested command is capped at the whole budget from its own start.
+    // The whole-budget wording ("capped at it from its own start") is false
+    // since T-27: a nested run_command gets min(requested, remaining
+    // budget), and the command's own timeout counts from its own start.
     try std.testing.expect(std.mem.find(u8, codemode_description, "also caps nested run_command") == null);
-    try std.testing.expect(std.mem.find(u8, codemode_description, "capped at it from its own start") != null);
-    // 1168 = the description length before this correction; the rewritten
-    // sentence is shorter, so the net word count shrinks.
-    try std.testing.expect(codemode_description.len <= 1168);
+    try std.testing.expect(std.mem.find(u8, codemode_description, "capped at it from its own start") == null);
+    try std.testing.expect(std.mem.find(u8, codemode_description, "min(requested, remaining budget) from its own start") != null);
+    // 1173 = the length with the T-29 min-semantics sentence; the net word
+    // count stays at 179, the pre-T-29 total (no growth, C4 constraint).
+    try std.testing.expect(codemode_description.len <= 1173);
 }
 
 pub const codemode = ToolSpec{
