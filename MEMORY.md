@@ -8,3 +8,4 @@
 - [2026-11-21] 踩坑: worker 报告可能声称未做的改动（T-36 帽测试扩面/长度钉），conductor 验收须核声明级锚点（测试覆盖面/钉值/diff 逐字），不止机械门 — 来源 T-36-review
 - [2026-11-21] 规范: .agents/ 内容一律不入库（gitignore 已覆盖，禁止 git add -f）；任务契约/报告/评审产物只留本地磁盘，commit 仅含产品代码与测试 — 来源 用户指令
 - [2026-11-21] 踩坑: 红证据必须来自 zig build test 全量调用，单文件 zig 直跑会产 import-of-file-outside-module-path 编译错误墙（T-33a worker 存错证据，评审独立复现才坐实红） — 来源 T-33a-review
+- [2026-11-21] 踩坑: 验收新行为测试须证其真进入新代码路径（base 上红/插桩命中），vacuous 测试在 base 也绿会骗过门检查；T-33b 七测试全空转被评审探针抓出 — 来源 T-33b-review
