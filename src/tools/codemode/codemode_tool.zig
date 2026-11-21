@@ -1173,7 +1173,8 @@ test "@options violations echo the value the script declared" {
     defer std.testing.allocator.free(message);
     try std.testing.expectEqualStrings(
         "codemode @options out of range. timeout_ms must be 1000..120000 " ++
-            "and max_output_tokens must be greater than 0. (received timeout_ms: 999)",
+            "and max_output_tokens must be greater than 0. (received timeout_ms: 999). " ++
+            "A valid header line is: // @options: {\"timeout_ms\": 120000}",
         message,
     );
 
@@ -1183,6 +1184,14 @@ test "@options violations echo the value the script declared" {
         parseScriptOptions("// @options: {\"max_output_tokens\": 0}\ntext(\"hi\");", &tokens),
     );
     try std.testing.expectEqualStrings("max_output_tokens: 0", tokens.text);
+    const tokens_message = try optionsOutOfRangeMessage(std.testing.allocator, &tokens);
+    defer std.testing.allocator.free(tokens_message);
+    try std.testing.expectEqualStrings(
+        "codemode @options out of range. timeout_ms must be 1000..120000 " ++
+            "and max_output_tokens must be greater than 0. (received max_output_tokens: 0). " ++
+            "A valid header line is: // @options: {\"max_output_tokens\": 262144}",
+        tokens_message,
+    );
 
     var negative: OptionsViolation = .{};
     try std.testing.expectError(
