@@ -169,7 +169,7 @@ const subagent_properties = [_]model_tool_schema.Property{
 const vision_description =
     "Look at images and return what is visible. Pass exactly one source, image_ids for images the user attached or paths for image files the user named, plus focus.";
 const read_tool_result_description =
-    "Read more of a truncated tool result by its handle: pass query to find lines containing some text, or start_byte and byte_count for a byte range. To find earlier turns and tool calls after context compaction, pass search instead of a handle.";
+    "Read a truncated tool result by handle: query finds lines with text, or start_byte and byte_count a range. After compaction, T12 opens saved tool call 12, M12 turn 12, L1 a whole earlier compaction; search needs no handle, spanning all saved records.";
 
 pub const glob_files = ToolSpec{
     .name = "glob_files",
@@ -914,9 +914,9 @@ test "built-in model-facing tool contract stays byte exact" {
     const actual_hex = std.fmt.bytesToHex(hasher.finalResult(), .lower);
     try std.testing.expectEqualStrings(
         if (builtin.target.os.tag.isDarwin())
-            "fa5ea19713da7e191bbfbc243c5fbe05d6289bfafb68380e7ca344314382abcb"
+            "861c380f04ac650f60a58be5cc807fcc861111647c8f03c869b1dd316a2634fe"
         else
-            "241f636fc291b72210c79acc9a55c9f9d3a2e88b9a91f16d9b8a0170552ea971",
+            "df9fe4554238bd3a9aa0344da6d79372fb6ffd878d23a0a40cd0a1b452d0b4c8",
         &actual_hex,
     );
 }
