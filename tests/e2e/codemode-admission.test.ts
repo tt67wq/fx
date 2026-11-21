@@ -1514,13 +1514,16 @@ describe("codemode script mistake feedback", () => {
 
   test("grace window lets a script finish when work completes just past the budget", async () => {
     const root = createIsolatedRoot();
-    // The script budget is 2s; the nested sleep finishes at ~1.5s. The
-    // remaining microtask chain and text() call spill into the 500ms grace
-    // window so the script succeeds instead of timing out.
+    // The script budget is 2s; the nested sleep finishes at ~1.5s (exit 0,
+    // inside budget). A deterministic 700ms burn then pushes the text()
+    // finalization to ~2.2s, past the budget but inside the 500ms grace
+    // window, so the first drain loop must settle it as success. The burn is
+    // what makes the budget genuinely expire before the script finalizes;
+    // the old microtask loop finished inside budget and passed on base.
     const script =
       "// @options: {\"timeout_ms\": 2000}\n" +
       "await tools.call(\"run_command\", { command: \"sleep 1.5\" });\n" +
-      "for (let i = 0; i < 2000; i++) await Promise.resolve();\n" +
+      "const t0 = Date.now(); while (Date.now() - t0 < 700) {}\n" +
       "text(\"grace-ok\");";
     const gateway = startGateway([
       fakeGatewayToolCall("grace-1", "codemode", { script }),
