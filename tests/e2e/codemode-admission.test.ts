@@ -1437,4 +1437,33 @@ describe("codemode script mistake feedback", () => {
       rmSync(root.workspace, { recursive: true, force: true });
     }
   }, TIMEOUT);
+
+  test("a JSON escape leak in the script names the fix", async () => {
+    const root = createIsolatedRoot();
+    // The issue's typical residual: after one arguments_json decode the
+    // object key and value still carry backslash-quote at code token level.
+    const script = 'const o = {command\\": \\"ls\\"};';
+    const gateway = startGateway([
+      fakeGatewayToolCall("escape-hint-1", "codemode", { script }),
+      fakeGatewayFinalText("ESCAPE_HINT_DONE"),
+    ]);
+    try {
+      const result = await runFx(
+        ["ask", "--quiet", "--json", "--yolo", "--no-save", "Trigger an escape leak."],
+        { cwd: root.workspace, env: gatewayEnv(root, gateway), timeoutMs: TIMEOUT },
+      );
+      expect(result.code, "stderr: " + result.stderr.slice(0, 400)).toBe(0);
+      const body = toolResultText(
+        gateway.requests[1]!.body,
+        "escape-hint-1",
+        "error-text",
+      );
+      expect(body).toContain("SyntaxError:");
+      expect(body).toContain("JSON escape");
+      expect(body).toContain('write " directly');
+    } finally {
+      rmSync(root.workspace, { recursive: true, force: true });
+    }
+  }, TIMEOUT);
+
 });
