@@ -132,11 +132,16 @@ fn writeKey(jw: *std.json.Stringify, key: settings_keys.Key) !void {
             try field(jw, "type", "object");
             try jw.objectField("properties");
             try jw.beginObject();
-            for (key.children, key.child_descriptions) |child, description| {
+            for (key.children, key.child_descriptions, 0..) |child, description, index| {
                 try jw.objectField(child);
                 try jw.beginObject();
                 try field(jw, "description", description);
-                try field(jw, "type", "boolean");
+                const child_kind = if (index < key.child_kinds.len) key.child_kinds[index] else .boolean;
+                if (child_kind == .string) {
+                    try field(jw, "type", "string");
+                } else {
+                    try field(jw, "type", "boolean");
+                }
                 try jw.endObject();
             }
             try jw.endObject();
@@ -214,4 +219,12 @@ test "the .fx.json schema lists only the project-safe keys" {
     }
     try std.testing.expect(properties.contains("$schema"));
     try std.testing.expectEqual(@as(i64, 1024), properties.get("max_tool_result_bytes").?.object.get("minimum").?.integer);
+}
+test "the experimental schema types codemode_python as a string child" {
+    const parsed = try parseSchema(std.testing.allocator, .profile);
+    defer parsed.deinit();
+    const properties = parsed.value.object.get("properties").?.object;
+    const experimental = properties.get("experimental").?.object.get("properties").?.object;
+    try std.testing.expectEqualStrings("string", experimental.get("codemode_python").?.object.get("type").?.string);
+    try std.testing.expectEqualStrings("boolean", experimental.get("codemode").?.object.get("type").?.string);
 }
