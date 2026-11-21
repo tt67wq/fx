@@ -1,6 +1,6 @@
 # ISSUE-35 — codemode run_script 的 python3 解释器硬编码，需可配置（待立项）
 
-- **状态**: fixing（维护者已批准两点，2026-11-21）
+- **状态**: closed（2026-11-21）
 - **发现时间**: 2026-11-21
 - **来源**: 用户反馈：codemode 跑 Python 用的是系统默认 /usr/bin/python3，希望能指定解释器（如 venv/conda）
 - **关联模块**: src/tools/codemode/bridge.zig（canonicalRunScript）、src/core/config/、src/core/tooling/tool_runtime.zig
@@ -63,11 +63,15 @@ run_script(language=python) 的命令由 bridge 固定生成：
 
 ## 处置
 
-- [ ] 维护者立项并确认上面两点
-- [ ] 按改动清单实现 + Zig 单测（解析/merge/quoteShellPath 路径）
-- [ ] e2e：codemode-admission.test.ts 自定义解释器用例
-- [ ] 构建二进制实测 run_script 走自定义解释器（AGENTS.md 就绪门槛）
+- [x] 维护者立项并确认上面两点
+- [x] 按改动清单实现 + Zig 单测（解析/merge/quoteShellPath 路径）
+- [x] e2e：codemode-admission.test.ts 自定义解释器用例
+- [x] 构建二进制实测 run_script 走自定义解释器（AGENTS.md 就绪门槛）
 
 ## 验证状态
 
 可行性分析基于本地代码阅读（行号见上），未实际编译或运行改动；上一轮的试验性编辑已全部还原，git diff -- src/ 为空。
+
+## 关闭备注（2026-11-21）
+
+T-35-impl 红 8f3d4b2b6 → 绿 c8371df37，review APPROVE（fx-pi2 独立核验安全边界/作用域/8 文件接线/红绿/真机证据）。experimental.codemode_python profile-only（workspaces 覆盖），默认 python3 兼容现状；值校验非空/无 NUL/不以 - 开头；quoteShellPath 覆盖 plain 与 CTX_FILE 两种 argv 形状；模型无法注入 interpreter（normalization 拒绝未知字段，钉死测试）；权限链不变。.fx.json 项目层不解析（测试钉死）。真机空格路径解释器双哨兵 + 默认行为不变。已知限制：--config 单次覆盖不可用（experimental.* files_only 现状一致，用户编辑 settings.json）。绿期发现并修复 main.zig/cli_ask.zig 悬垂指针（dup before deinit）。Docs 跟进：fx.sh schemas/settings.json 副本与手册页需上游 PR 同步。已合并 main（cc54d166c），合并树全量测试绿，双远端已推。
