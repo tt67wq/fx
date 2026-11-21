@@ -741,7 +741,7 @@ pub const read_tool_result = ToolSpec{
 };
 
 pub const codemode_description =
-    "Run JavaScript in a sandbox for multi-step work in one call. Call tools with the named form await tools.read_file({...}); tools.call(\"tool_name\", args) still works; use them to search, read, and run. tools.list() returns each tool's name, description, and parameters schema for introspection. The script runs on a default 30 second wall-clock budget with a 1MiB capture cap; past it text and console keep the head and tail with the omitted byte count, and the full captured output is stored and readable with read_tool_result; as its first non-empty line, `// @options: {\"timeout_ms\": N, \"max_output_tokens\": N}` declares a bigger budget (timeout 1000..120000 ms hard-capped, output cap of 4 bytes per token clamped to the 1MiB capture cap), and a declared budget is the script's wall clock; a nested run_command gets min(requested, remaining budget) from its own start. Finish with text(your short summary); top-level return is not valid script syntax. A script that only wraps one tool call is slower than calling the tool directly. tools.list() may be a budgeted subset; searchTools(query) finds tools across the full surface; describeTool(name) returns one full schema.";
+    "Run JavaScript in a sandbox for multi-step work in one call. Call tools as await tools.read_file({...}) or tools.call(\"name\", {args}); arguments are objects, e.g. tools.call(\"run_command\", {command: \"...\"}). Confirm names via searchTools(\"keyword\"), never from memory. No Node.js API: no import/require of fs or process, no top-level tool functions. tools.list() gives each tool's name, description, and parameters schema; it may be a budgeted subset, so searchTools(query) searches the full surface and describeTool(name) returns one full schema. Default: 30 second wall clock, 1MiB capture cap; past it text and console keep head and tail with the omitted byte count, and the full output is stored, readable with read_tool_result. First non-empty line `// @options: {\"timeout_ms\": N, \"max_output_tokens\": N}` raises the budget (timeout 1000..120000 ms hard-capped, output 4 bytes per token clamped to the 1MiB cap); a declared budget is the script's wall clock, and a nested run_command gets min(requested, remaining budget) from its own start. Finish with text(your short summary); top-level return is invalid. Wrapping one tool call is slower than calling it directly.";
 
 // ISSUE-23b: the description must state the nested command budget
 // truthfully (review C4 note 1) and must not grow (net word count).
@@ -754,9 +754,17 @@ test "codemode description states the nested command budget truthfully" {
     try std.testing.expect(std.mem.find(u8, codemode_description, "also caps nested run_command") == null);
     try std.testing.expect(std.mem.find(u8, codemode_description, "capped at it from its own start") == null);
     try std.testing.expect(std.mem.find(u8, codemode_description, "min(requested, remaining budget) from its own start") != null);
-    // 1173 = the length with the T-29 min-semantics sentence; the net word
-    // count stays at 179, the pre-T-29 total (no growth, C4 constraint).
-    try std.testing.expect(codemode_description.len <= 1173);
+    // T-34 (ISSUE-34): the three recurring misuses are pinned up front, in
+    // the description the model reads before writing a script, not only in
+    // the after-the-fact error hints.
+    try std.testing.expect(std.mem.find(u8, codemode_description, "Confirm names via searchTools") != null);
+    try std.testing.expect(std.mem.find(u8, codemode_description, "never from memory") != null);
+    try std.testing.expect(std.mem.find(u8, codemode_description, "No Node.js API: no import/require of fs or process, no top-level tool functions") != null);
+    try std.testing.expect(std.mem.find(u8, codemode_description, "arguments are objects") != null);
+    try std.testing.expect(std.mem.find(u8, codemode_description, "tools.call(\"run_command\", {command: \"...\"})") != null);
+    // 1172 = the length with the T-34 pitfalls folded in by compressing the
+    // existing prose; the net word count drops to 169 (no growth, C4).
+    try std.testing.expect(codemode_description.len <= 1172);
 }
 
 pub const codemode = ToolSpec{
