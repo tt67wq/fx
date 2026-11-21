@@ -5,3 +5,4 @@
 - [2026-11-21] 规范: 模型面工具描述改动须同轮重钉 byte-exact 契约哈希（darwin+linux 双值，linux 可临时强制 setsid detach 实测后还原）；压缩句柄词汇 M/T/L 由工具描述承载，不进系统提示 — 来源 T-31、ISSUE-27 P1
 - [2026-11-21] 规范: 每次 push 须双远端同步 origin（github tt67wq/fx）与 gitlab（gitlab.shizhuang-inc.com wanqiang/fx），main 与 integrate 分支都推 — 来源 用户指令
 - [2026-11-21] 选型: worker model 池只用 magpie/dewu/*（kimi-for-coding 弃用），已派发 worker 不中途换 — 来源 用户指令
+- [2026-11-21] 踩坑: worker 报告可能声称未做的改动（T-36 帽测试扩面/长度钉），conductor 验收须核声明级锚点（测试覆盖面/钉值/diff 逐字），不止机械门 — 来源 T-36-review
