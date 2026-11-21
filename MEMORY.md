@@ -4,3 +4,4 @@
 - [2026-11-20] 选型: 压缩前 nudge 走 push_interactive_notice 用户侧通道（零 token），阈值 compact_at*3/4 常量，压缩成功两路径复位武装位；模型侧注入被用户否决 — 来源 T-30、ISSUE-27 P0
 - [2026-11-21] 规范: 模型面工具描述改动须同轮重钉 byte-exact 契约哈希（darwin+linux 双值，linux 可临时强制 setsid detach 实测后还原）；压缩句柄词汇 M/T/L 由工具描述承载，不进系统提示 — 来源 T-31、ISSUE-27 P1
 - [2026-11-21] 规范: 每次 push 须双远端同步 origin（github tt67wq/fx）与 gitlab（gitlab.shizhuang-inc.com wanqiang/fx），main 与 integrate 分支都推 — 来源 用户指令
+- [2026-11-21] 选型: worker model 池只用 magpie/dewu/*（kimi-for-coding 弃用），已派发 worker 不中途换 — 来源 用户指令
