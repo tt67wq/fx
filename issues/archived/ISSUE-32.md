@@ -1,6 +1,6 @@
 # ISSUE-32 — 嵌套工具字符串参数自动包装为对象
 
-- **状态**: open
+- **状态**: closed（2026-11-21）
 - **发现时间**: 2026-11-20
 - **来源**: 近 40 个 session 记录分析（~/.fx/sessions/v2/，11-19 之后仍有 2 次，且本会话分析过程中模型再次实犯一次）
 - **关联模块**: src/tools/codemode/bridge.zig（参数校验点 bridge.zig:432、592 一带）
@@ -26,6 +26,10 @@ bridge.zig 参数校验处对单字符串参数做 coercion，按工具的主参
 
 ## 处置
 
-- [ ] bridge.zig 校验层 coercion（主参数名取自 schema）
-- [ ] 无法 coerce 时保留并沿用 ISSUE-24 的字段级报错
-- [ ] Zig 单测：字符串/对象/非法值三态
+- [x] bridge.zig 校验层 coercion（主参数名取自 schema）
+- [x] 无法 coerce 时保留并沿用 ISSUE-24 的字段级报错
+- [x] Zig 单测：字符串/对象/非法值三态
+
+## 关闭备注（2026-11-21）
+
+T-32-impl 红 15fbf58c7 → 绿 1e0776143，review approve 87d0ab5ea。bridge.zig canonicalNestedCall 裸字符串按 schema 单一 required string 主参数包装（无第二份硬编码映射）；run_command 走 canonicalRunCommand 同一管线，admission payload 与对象调用逐字相同，权限链无绕过。多 required 工具保留 ISSUE-24 报错；对象字节级透传有指针相等单测。良性观察：vision/web_fetch 实际会被 coerce（评审探针实测无害）。 整合于 integrate-issue29（HEAD deb980a36），PR tt67wq/fx#6。
