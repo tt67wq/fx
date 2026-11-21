@@ -1672,9 +1672,19 @@ test "built-in read_tool_result owns product metadata schema and callbacks" {
     defer parsed.deinit();
 
     try std.testing.expectEqualStrings("read_tool_result", read_tool_result.name);
-    try std.testing.expect(std.mem.find(u8, read_tool_result.description, "pass query") != null);
-    try std.testing.expect(std.mem.find(u8, read_tool_result.description, "pass search instead of a handle") != null);
+    try std.testing.expect(std.mem.find(u8, read_tool_result.description, "query finds lines") != null);
     try std.testing.expect(std.mem.find(u8, read_tool_result.description, "request.") == null);
+    // T-31: the description must teach the compaction handle vocabulary the
+    // checkpoint model_text uses (T/M/L), that L is a whole earlier
+    // compaction, and that search spans all saved records without a handle.
+    try std.testing.expect(std.mem.find(u8, read_tool_result.description, "T12 opens saved tool call 12") != null);
+    try std.testing.expect(std.mem.find(u8, read_tool_result.description, "M12 turn 12") != null);
+    try std.testing.expect(std.mem.find(u8, read_tool_result.description, "L1 a whole earlier compaction") != null);
+    try std.testing.expect(std.mem.find(u8, read_tool_result.description, "search needs no handle") != null);
+    try std.testing.expect(std.mem.find(u8, read_tool_result.description, "spanning all saved records") != null);
+    // 250 = the length with the T-31 handle vocabulary; net word count stays
+    // at 42, the pre-T-31 total (no growth, T-29 C4 spirit).
+    try std.testing.expect(read_tool_result.description.len <= 250);
     try std.testing.expect(std.mem.find(u8, schema_json, "\"mode\"") == null);
     try std.testing.expect(std.mem.find(u8, schema_json, "\"oneOf\"") == null);
     const input_schema = parsed.value.object.get("inputSchema").?.object;
