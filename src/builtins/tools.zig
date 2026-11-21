@@ -754,9 +754,17 @@ test "codemode description states the nested command budget truthfully" {
     try std.testing.expect(std.mem.find(u8, codemode_description, "also caps nested run_command") == null);
     try std.testing.expect(std.mem.find(u8, codemode_description, "capped at it from its own start") == null);
     try std.testing.expect(std.mem.find(u8, codemode_description, "min(requested, remaining budget) from its own start") != null);
-    // 1173 = the length with the T-29 min-semantics sentence; the net word
-    // count stays at 179, the pre-T-29 total (no growth, C4 constraint).
-    try std.testing.expect(codemode_description.len <= 1173);
+    // T-34 (ISSUE-34): the three recurring misuses are pinned up front, in
+    // the description the model reads before writing a script, not only in
+    // the after-the-fact error hints.
+    try std.testing.expect(std.mem.find(u8, codemode_description, "Confirm names via searchTools") != null);
+    try std.testing.expect(std.mem.find(u8, codemode_description, "never from memory") != null);
+    try std.testing.expect(std.mem.find(u8, codemode_description, "No Node.js API: no import/require of fs or process, no top-level tool functions") != null);
+    try std.testing.expect(std.mem.find(u8, codemode_description, "arguments are objects") != null);
+    try std.testing.expect(std.mem.find(u8, codemode_description, "tools.call(\"run_command\", {command: \"...\"})") != null);
+    // 1172 = the length with the T-34 pitfalls folded in by compressing the
+    // existing prose; the net word count drops to 169 (no growth, C4).
+    try std.testing.expect(codemode_description.len <= 1172);
 }
 
 pub const codemode = ToolSpec{
