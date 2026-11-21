@@ -1,6 +1,6 @@
 # ISSUE-27 — 模型自主的上下文压缩：nudge 提示 + 模型可调用的 compress 工具（参考 billion-context 原理）
 
-- **状态**: open（P0 已落地，P1/P2/P3 待开）
+- **状态**: open（P0/P1 已落地，P2/P3 待开）
 - **发现时间**: 2026-11-18
 - **来源**: 调研 https://github.com/ranxianglei/billion-context 后评估移植可行性，与 fx 现有 compactor 逐点对照
 - **工作量**: P0 小 / P1 中 / P2 大 / P3 待论证（见分阶段计划）
@@ -66,7 +66,7 @@ src/builtins/tools.zig 的 read_tool_result（实现 src/tools/session/read_tool
 - 动哪：compactor/settings.zig + window.zig（判断点）；注入方式需先定（决策点 1）。
 - 验收：长会话中阈值前能看到提示；不压时不产生额外 token 开销（一次提示文本可控）。
 
-### P1 · 让模型用好已有检索能力（中）
+### P1 · 让模型用好已有检索能力（中）— 已落地（2026-11-21）
 
 - 目标：确认 read_tool_result 的 search/handle 路径在默认模型面上的可达性与描述清晰度；必要时调描述文案让模型知道"压缩后可用 T12 句柄找回细节"；补齐读 L 记录（早期整份摘要）的语义。
 - 动哪：src/builtins/tools.zig（read_tool_result 描述）、src/tools/session/read_tool_result.zig（按需）、可能涉及模型系统提示中关于压缩行为的说明。
@@ -112,3 +112,7 @@ src/builtins/tools.zig 的 read_tool_result（实现 src/tools/session/read_tool
 ## P0 落地备注（2026-11-20）
 
 T-30-impl：红 166f39534 → 绿 b79e2f7b7，review approve c3f3ec21c。用户拍板决策点 1：仅用户侧、零 token 成本。nudge_at = compact_at_tokens * 3/4（常量写死，无新 settings/CLI/env）；push_interactive_notice 通道，测试钉死模型请求体不含 nudge 文本；每武装周期一次，自动/overflow/手动 /compact 成功后重新武装；恢复即新武装周期。整合于 integrate-issue29（HEAD 7275e8a08），PR tt67wq/fx#6。真机 tmux+fake gateway 观察恰一次（90%，trace 坐实）。compactor 边界零触碰。
+
+## P1 落地备注（2026-11-21）
+
+T-31-impl：红 02c4a912d → 绿 f1d8e72d3，review approve 872fa85c7。核查结论：默认面可达性已成立（registry 16 工具）、search 提示原描述已有、系统提示无缺口不动；真缺口为 M/T/L 句柄词汇，新描述 42 词持平补齐（T12 saved tool call / M12 turn / L1 whole earlier compaction / search 无 handle 跨全部记录）。全链测试两次自动压缩后真实 read_tool_result 四支（T1/search/L1/M1）各钉早期细节哨兵；byte-exact 契约哈希双平台重钉（linux 值临时强确实测后还原干净，评审独立复算一致）。模型自主性属 eval 领域未建（诚实边界）。整合于 integrate-issue29（HEAD 5f4856177），PR tt67wq/fx#6。合并树首跑 command_runner 超时 flake 一次，复跑全绿（既有已知 flake 家族）。

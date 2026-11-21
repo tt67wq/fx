@@ -2,3 +2,4 @@
 - [2026-11-20] 踩坑: 嵌套命令超时阈值一旦严格小于 yield_time，managed execution 的 yield/timeout 双线程竞争使结局非确定；修法为 yield_waits_for_timeout 标志（timeout<=yield 时等待超时杀），勿用 min 钳制（冗余） — 来源 T-27-fix、ISSUE-28
 - [2026-11-20] 规范: 执行语义改动必须同轮核对 codemode_description 钉死测试与 README 陈述（T-27 改 min 语义后 23b 文案再次为假）；文档轮逐句对实现锚点 — 来源 T-29、ISSUE-26
 - [2026-11-20] 选型: 压缩前 nudge 走 push_interactive_notice 用户侧通道（零 token），阈值 compact_at*3/4 常量，压缩成功两路径复位武装位；模型侧注入被用户否决 — 来源 T-30、ISSUE-27 P0
+- [2026-11-21] 规范: 模型面工具描述改动须同轮重钉 byte-exact 契约哈希（darwin+linux 双值，linux 可临时强制 setsid detach 实测后还原）；压缩句柄词汇 M/T/L 由工具描述承载，不进系统提示 — 来源 T-31、ISSUE-27 P1
