@@ -106,6 +106,9 @@ pub const Host = struct {
     /// The stage that produced last_script_error; meaningful only after a
     /// ScriptError, and reset at the start of every eval.
     last_error_stage: ErrorStage = .runtime,
+    /// The script source of the eval in flight, borrowed for the eval's
+    /// lifetime. The SyntaxError escape-leak scan reads it; empty otherwise.
+    current_script: []const u8 = &.{},
     /// Cancel source shared with the caller, typically
     /// &worker.worker_cancel_requested. Read only from the interrupt handler
     /// and eval, both on the host's own thread; the writer is any thread.
@@ -242,6 +245,7 @@ pub const Host = struct {
             self.last_script_error = null;
         }
         self.last_error_stage = .runtime;
+        self.current_script = script;
         const timeout_ms: i64 = std.math.cast(i64, self.options.timeout_ms) orelse std.math.maxInt(i64);
         self.deadline_ms = io_mod.milliTimestamp() +| timeout_ms;
         const source = try self.allocator.dupeSentinel(u8, script, 0);
@@ -563,7 +567,7 @@ pub const Host = struct {
         defer c.JS_FreeCString(ctx, ptr);
         const stack = exceptionStack(self, ctx, exception);
         defer if (stack) |bytes| self.allocator.free(bytes);
-        self.last_script_error = annotatedExceptionMessage(self.allocator, ptr[0..len], stack orelse "") catch null;
+        self.last_script_error = annotatedExceptionMessage(self.allocator, ptr[0..len], stack orelse "", self.current_script) catch null;
     }
 };
 
@@ -595,9 +599,14 @@ fn enginePosition(stack: []const u8) []const u8 {
 /// Composes the model-visible exception text: the engine's own message
 /// plus, for the mistake classes ISSUE-25 catalogued, one line naming the
 /// correction. Everything else keeps its text untouched.
-fn annotatedExceptionMessage(alloc: Allocator, base: []const u8, stack: []const u8) ![]u8 {
+fn annotatedExceptionMessage(alloc: Allocator, base: []const u8, stack: []const u8, script: []const u8) ![]u8 {
     if (std.mem.startsWith(u8, base, "SyntaxError:")) {
         const position = enginePosition(stack);
+        // ISSUE-31 A: a residual JSON escape (backslash-quote at code token
+        // level) is the dominant compile failure. The scan only runs after a
+        // SyntaxError, so a legal escaped string literal that compiles never
+        // reaches it. One directed line names the fix.
+        const escape_leak = std.mem.find(u8, script, "\\\"") != null;
         if (std.mem.indexOf(u8, base, "return not in a function") != null) {
             if (position.len > 0) return alloc.print(
                 "{s} (codemode.js:{s}). top-level return is not allowed; use text() or make the last expression the result",
@@ -608,7 +617,12 @@ fn annotatedExceptionMessage(alloc: Allocator, base: []const u8, stack: []const 
                 .{base},
             );
         }
-        if (position.len > 0) return alloc.print("{s} (codemode.js:{s})", .{ base, position });
+        const escape_hint = " JSON escape leak: the script still contains backslash-quote; write \" directly instead of escaping quotes.";
+        if (position.len > 0) {
+            if (escape_leak) return alloc.print("{s} (codemode.js:{s}).{s}", .{ base, position, escape_hint });
+            return alloc.print("{s} (codemode.js:{s})", .{ base, position });
+        }
+        if (escape_leak) return alloc.print("{s}.{s}", .{ base, escape_hint });
         return alloc.dupe(u8, base);
     }
     if (std.mem.startsWith(u8, base, "ReferenceError:") and

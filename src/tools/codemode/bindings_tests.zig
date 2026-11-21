@@ -890,7 +890,7 @@ test "codemode syntax error from a JSON escape leak names the fix" {
     const message = host.lastExceptionMessage() orelse return error.TestUnexpectedResult;
     try std.testing.expect(std.mem.startsWith(u8, message, "SyntaxError:"));
     try std.testing.expect(std.mem.find(u8, message, "JSON escape") != null);
-    try std.testing.expect(std.mem.find(u8, message, "write \\\" directly") != null);
+    try std.testing.expect(std.mem.find(u8, message, "write \" directly") != null);
 }
 
 test "codemode plain syntax error without an escape leak gets no escape hint" {
