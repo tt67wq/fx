@@ -741,7 +741,7 @@ pub const read_tool_result = ToolSpec{
 };
 
 pub const codemode_description =
-    "Run JavaScript in a sandbox for multi-step work in one call. Call tools as await tools.read_file({...}) or tools.call(\"name\", {args}); arguments are objects, e.g. tools.call(\"run_command\", {command: \"...\"}). Confirm names via searchTools(\"keyword\"), never from memory. No Node.js API: no import/require of fs or process, no top-level tool functions. tools.list() gives each tool's name, description, and parameters schema; it may be a budgeted subset, so searchTools(query) searches the full surface and describeTool(name) returns one full schema. Default: 30 second wall clock, 1MiB capture cap; past it text and console keep head and tail with the omitted byte count, and the full output is stored, readable with read_tool_result. First non-empty line `// @options: {\"timeout_ms\": N, \"max_output_tokens\": N}` raises the budget (timeout 1000..120000 ms hard-capped, output 4 bytes per token clamped to the 1MiB cap); a declared budget is the script's wall clock, and a nested run_command gets min(requested, remaining budget) from its own start. Finish with text(your short summary); top-level return is invalid. Wrapping one tool call is slower than calling it directly.";
+    "JavaScript sandbox for multi-step work in one call. Call tools as await tools.read_file({...}) or tools.call(\"name\", {args}); arguments are objects: tools.call(\"run_command\", {command: \"...\"}). Confirm names via searchTools, never from memory. No Node.js API: no import/require of fs or process, no top-level tool functions. tools.list() may be a budgeted subset; searchTools(query) searches the full surface; describeTool(name) returns one full schema. Defaults: 30s wall clock, 1MiB capture cap; over it, text and console keep head and tail with omitted byte count; read_tool_result reads the full output. First non-empty line `// @options: {\"timeout_ms\": N, \"max_output_tokens\": N}` raises the budget (timeout 1000..120000 ms hard-capped, output 4 bytes per token clamped at 1MiB); a declared budget is the script's wall clock; a nested run_command gets min(requested, remaining budget) from its own start. Finish with text(your short summary); top-level return is invalid. Wrapping one call is slower than a direct call.";
 
 // ISSUE-23b: the description must state the nested command budget
 // truthfully (review C4 note 1) and must not grow (net word count).
@@ -762,9 +762,17 @@ test "codemode description states the nested command budget truthfully" {
     try std.testing.expect(std.mem.find(u8, codemode_description, "No Node.js API: no import/require of fs or process, no top-level tool functions") != null);
     try std.testing.expect(std.mem.find(u8, codemode_description, "arguments are objects") != null);
     try std.testing.expect(std.mem.find(u8, codemode_description, "tools.call(\"run_command\", {command: \"...\"})") != null);
-    // 1172 = the length with the T-34 pitfalls folded in by compressing the
-    // existing prose; the net word count drops to 169 (no growth, C4).
-    try std.testing.expect(codemode_description.len <= 1172);
+    // ISSUE-36 F-2: the script parameter description shows the object
+    // form and keeps no string-form concession wording.
+    const script_description = for (codemode.model_schema.input_schema.properties) |property| {
+        if (std.mem.eql(u8, property.name, "script")) break property.description;
+    } else unreachable;
+    try std.testing.expect(std.mem.find(u8, script_description, "tools.call(\"tool_name\", {args})") != null);
+    try std.testing.expect(std.mem.find(u8, script_description, "still works") == null);
+    // ISSUE-36 F-1: the model-facing cap is 1024 bytes and overlong text
+    // is cut at 1009, so the whole description must fit; the compressed
+    // 1024-byte, 144-word wording also stays below 169 words (C4).
+    try std.testing.expect(codemode_description.len <= model_tool_schema.description_max_bytes);
 }
 
 pub const codemode = ToolSpec{
@@ -775,7 +783,7 @@ pub const codemode = ToolSpec{
         .description = codemode_description,
         .input_schema = .{
             .properties = &.{
-                .{ .name = "script", .json_type = .string, .description = "JavaScript source. Call fx tools with the named form await tools.read_file({...}); tools.call(\"tool_name\", \"{json args}\") still works; tools.list() returns each tool's {name, description, parameters} so scripts can introspect argument shapes" },
+                .{ .name = "script", .json_type = .string, .description = "JavaScript source. Call fx tools with the named form await tools.read_file({...}) or tools.call(\"tool_name\", {args}); tools.list() returns each tool's {name, description, parameters} so scripts can introspect argument shapes" },
             },
             .required = &.{"script"},
             .additional_properties = false,
@@ -931,8 +939,10 @@ test "built-in model-facing tool contract stays byte exact" {
 
 test "built-in tool descriptions fit the model-facing description cap" {
     // Chat-completions requests cut longer descriptions short, so a model
-    // would silently lose the end of the text.
-    inline for (all) |tool| {
+    // would silently lose the end of the text. gated_all includes codemode,
+    // whose description rides the same cap through the builtins
+    // advertisement and the run_script schema injection (ISSUE-36 F-1).
+    inline for (gated_all) |tool| {
         try std.testing.expect(tool.description.len <= model_tool_schema.description_max_bytes);
         for (tool.model_schema.input_schema.properties) |property| {
             try std.testing.expect(property.description.len <= model_tool_schema.description_max_bytes);
