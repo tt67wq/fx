@@ -1,6 +1,6 @@
 # ISSUE-35 — codemode run_script 的 python3 解释器硬编码，需可配置（待立项）
 
-- **状态**: proposed（等待立项）
+- **状态**: fixing（维护者已批准两点，2026-11-21）
 - **发现时间**: 2026-11-21
 - **来源**: 用户反馈：codemode 跑 Python 用的是系统默认 /usr/bin/python3，希望能指定解释器（如 venv/conda）
 - **关联模块**: src/tools/codemode/bridge.zig（canonicalRunScript）、src/core/config/、src/core/tooling/tool_runtime.zig

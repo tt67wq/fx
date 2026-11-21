@@ -1,6 +1,6 @@
 # ISSUE-33 — codemode 超时判定两处收口：命令已完成仍判失败；@options 上限与提示自相矛盾
 
-- **状态**: open
+- **状态**: fixing（现象二片；现象一与上限决策待开）
 - **发现时间**: 2026-11-20
 - **来源**: 近 40 个 session 记录分析（~/.fx/sessions/v2/，11-19 之后 3 次相关失败）
 - **关联模块**: src/tools/codemode/codemode_tool.zig（预算执行）、src/tools/codemode/host.zig
