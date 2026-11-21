@@ -57,7 +57,7 @@
 - 零执行语义：src diff 仅 codemode_description 字符串 + 注释 + 钉死测试断言（非注释/非串/非测试改动行计数 0）；src 逻辑零触碰。
 - tests/tla/、admission/permissions/catalog 零触碰；无新 CLI/settings/env。
 - 无 emoji（README/docs-section/impl-report python 核 none）；文档无 -- 作破折号（README/docs-section 无 ' -- '；impl-report 唯一一处为引用红线规则本身，非破折号用法）。
-- 无个人路径（diff 与三文档 grep /Users/、/home/ 退出 1）。
+- 无个人路径（diff 与三文档按个人路径模式 grep 退出 1）。
 - zig fmt 后提交。
 
 ## 七、结论

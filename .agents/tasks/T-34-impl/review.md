@@ -70,7 +70,7 @@
 
 ## 6. 红线
 
-`5f4856177..9bbb63daf` 只改两处：`src/builtins/tools.zig`（描述 1 行 + 钉测试 11 增 3 删）与 `.agents/tasks/T-34-impl/` 两份报告。`host.zig` / `bridge.zig` / `discovery.zig` / `catalog.zig` / `bindings.zig` 零 diff，ISSUE-31/32 未碰。新增行纯 ASCII、无 `--` 破折号、无 `/Users/` 个人路径；两份报告里个人路径计数 0。既有断言只增不减：ISSUE-23b 的三处正反钉原样留在测试里。
+`5f4856177..9bbb63daf` 只改两处：`src/builtins/tools.zig`（描述 1 行 + 钉测试 11 增 3 删）与 `.agents/tasks/T-34-impl/` 两份报告。`host.zig` / `bridge.zig` / `discovery.zig` / `catalog.zig` / `bindings.zig` 零 diff，ISSUE-31/32 未碰。新增行纯 ASCII、无 `--` 破折号、无个人路径；两份报告里个人路径计数 0。既有断言只增不减：ISSUE-23b 的三处正反钉原样留在测试里。
 
 ## 发现
 
