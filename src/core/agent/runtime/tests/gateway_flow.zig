@@ -4019,6 +4019,171 @@ test "retained context automatic compaction archives oversized parallel results 
     try std.testing.expect(std.mem.find(u8, second, result_b) != null);
 }
 
+// T-31 (ISSUE-27 P1): after an automatic compaction the model can recover an
+// early detail through read_tool_result, by saved-record handle (T/M/L) and
+// by handle-less search. The gateway scripts the recovery calls; a delegate
+// runs the real tool against the session store, so this pins reachability and
+// path correctness, not model autonomy (that is the eval domain).
+test "compaction recovery reads saved tool call, turn and earlier compaction by handle and search" {
+    const alloc = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const result_dir = try io_mod.dirRealpathAlloc(alloc, tmp.dir, ".");
+    defer alloc.free(result_dir);
+    var tool_store = try session_child_store.SessionChildCapability.initLegacyRoute(alloc, result_dir, .tool_results, .writable);
+    defer tool_store.deinit();
+
+    const model = "provider/t31-recovery";
+    // The early detail sentinel lives in a real tool call's result, so the
+    // compactor saves it as T1 (and the turn as M1). A second compaction
+    // folds that first checkpoint into L1, which keeps the detail whole.
+    const early_detail = "EARLY-DETAIL-SENTINEL-7421";
+    const early_output = early_detail ++ "\n" ++ text_utils.repeat("o", 52_000);
+    var early_calls = [_]ToolCall{toolCall("early-read", "read_file", "{\"path\":\"early.md\"}")};
+    var early_results = [_]types.PersistedToolResult{.{
+        .tool_call_id = @constCast("early-read"),
+        .tool_name = @constCast("read_file"),
+        .status = .success,
+        .output = @constCast(early_output),
+        .output_bytes = early_output.len,
+        .stored_output_bytes = early_output.len,
+    }};
+    var early_steps = [_]types.ToolExecutionStep{.{ .tool_calls = &early_calls, .tool_results = &early_results }};
+    const middle_output = "MIDDLE-TURN-SENTINEL-8853\n" ++ text_utils.repeat("m", 52_000);
+    var middle_calls = [_]ToolCall{toolCall("middle-read", "read_file", "{\"path\":\"middle.md\"}")};
+    var middle_results = [_]types.PersistedToolResult{.{
+        .tool_call_id = @constCast("middle-read"),
+        .tool_name = @constCast("read_file"),
+        .status = .success,
+        .output = @constCast(middle_output),
+        .output_bytes = middle_output.len,
+        .stored_output_bytes = middle_output.len,
+    }};
+    var middle_steps = [_]types.ToolExecutionStep{.{ .tool_calls = &middle_calls, .tool_results = &middle_results }};
+    const history = [_]HistoryTurn{
+        .{ .assistant = .{
+            .user = .{ .text = @constCast("early work") },
+            .assistant = @constCast("early work done"),
+            .execution = .{ .tool_steps = &early_steps },
+        } },
+        .{ .assistant = .{
+            .user = .{ .text = @constCast("middle work") },
+            .assistant = @constCast("middle work done"),
+            .execution = .{ .tool_steps = &middle_steps },
+        } },
+    };
+    const early_tokens = estimateTextTokens(early_output);
+    const middle_tokens = estimateTextTokens(middle_output);
+    const context_window = (early_tokens + middle_tokens) * 5 / 4;
+    const capabilities = [_]ModelCapabilityOverride{.{ .model = model, .capabilities = .{ .context_window = @intCast(context_window) } }};
+
+    // The delegate runs the real read_tool_result against the session store.
+    const Recovery = struct {
+        store: *session_child_store.SessionChildCapability,
+        fn execute(raw: *anyopaque, request: ToolExecutionRequest) !ToolExecutionResult {
+            const self: *@This() = @ptrCast(@alignCast(raw));
+            const result = try tool_dispatch.dispatchAuthorizedToolCall(.{
+                .allocator = request.result_allocator,
+                .session_child_capability = self.store,
+            }, builtin_tools.registry, request.call);
+            return .{
+                .status = if (result.status == .success) .success else .failure,
+                .model_output = result.body,
+            };
+        }
+    };
+    var recovery = Recovery{ .store = &tool_store };
+
+    var hooks = FakeAgentRuntimeDeps.init(alloc);
+    defer hooks.deinit();
+    hooks.available_capability_overrides = &capabilities;
+    hooks.execute_delegate = .{ .ctx = &recovery, .run = Recovery.execute };
+    var fixture = PromptFixture{};
+    var config = fixture.config();
+    config.session_child_capability = &tool_store;
+
+    // Prompt 1: the oversized history compacts in two parts (early then
+    // middle), folding the first checkpoint into L1. Two summary requests
+    // plus the turn reply.
+    var gateway1 = FakeGateway.init(alloc, &.{
+        .{ .content = "Turn 1\nIn between: Early work established the project facts." },
+        .{ .content = "Turn 2\nIn between: Middle work continued the project." },
+        .{ .content = "Compacted the early and middle work." },
+    });
+    defer gateway1.deinit();
+    var job1 = fixture.job();
+    job1.model = @constCast(model);
+    job1.history = @constCast(&history);
+    job1.permission_mode = .yolo;
+    try runFakePrompt(&gateway1, &hooks, config, job1);
+    try expectBodyContains(&gateway1, 2, "compacted_conversation");
+
+    // Prompt 2: ask for the early detail; the model opens T1 by handle.
+    const t_call = [_]ToolCall{toolCall("t31-t", "read_tool_result", "{\"handle\":\"T1\"}")};
+    var gateway2 = FakeGateway.init(alloc, &.{
+        .{ .tool_calls = &t_call },
+        .{ .content = "Recovered the early detail from T1." },
+    });
+    defer gateway2.deinit();
+    var job2 = fixture.job();
+    job2.model = @constCast(model);
+    job2.prompt = @constCast("What was the early detail?");
+    job2.history = hooks.history_turns.items;
+    job2.permission_mode = .yolo;
+    try runFakePrompt(&gateway2, &hooks, config, job2);
+    try std.testing.expectEqual(@as(usize, 2), gateway2.request_bodies.items.len);
+    try expectBodyContains(&gateway2, 1, early_detail);
+
+    // Prompt 3: search without a handle finds the same early detail.
+    const search_call = [_]ToolCall{toolCall("t31-search", "read_tool_result", "{\"search\":\"EARLY-DETAIL-SENTINEL-7421\"}")};
+    var gateway3 = FakeGateway.init(alloc, &.{
+        .{ .tool_calls = &search_call },
+        .{ .content = "Recovered the early detail by search." },
+    });
+    defer gateway3.deinit();
+    var job3 = fixture.job();
+    job3.model = @constCast(model);
+    job3.prompt = @constCast("Search the saved history for the early detail.");
+    job3.history = hooks.history_turns.items;
+    job3.permission_mode = .yolo;
+    try runFakePrompt(&gateway3, &hooks, config, job3);
+    try std.testing.expectEqual(@as(usize, 2), gateway3.request_bodies.items.len);
+    try expectBodyContains(&gateway3, 1, early_detail);
+    try expectBodyContains(&gateway3, 1, "saved_search");
+
+    // Prompt 4: open the whole earlier compaction L1 by handle.
+    const l_call = [_]ToolCall{toolCall("t31-l", "read_tool_result", "{\"handle\":\"L1\"}")};
+    var gateway4 = FakeGateway.init(alloc, &.{
+        .{ .tool_calls = &l_call },
+        .{ .content = "Recovered the early detail from L1." },
+    });
+    defer gateway4.deinit();
+    var job4 = fixture.job();
+    job4.model = @constCast(model);
+    job4.prompt = @constCast("Open the earlier compaction.");
+    job4.history = hooks.history_turns.items;
+    job4.permission_mode = .yolo;
+    try runFakePrompt(&gateway4, &hooks, config, job4);
+    try std.testing.expectEqual(@as(usize, 2), gateway4.request_bodies.items.len);
+    try expectBodyContains(&gateway4, 1, early_detail);
+
+    // Prompt 5: open the saved turn M1 by handle.
+    const m_call = [_]ToolCall{toolCall("t31-m", "read_tool_result", "{\"handle\":\"M1\"}")};
+    var gateway5 = FakeGateway.init(alloc, &.{
+        .{ .tool_calls = &m_call },
+        .{ .content = "Recovered the early turn from M1." },
+    });
+    defer gateway5.deinit();
+    var job5 = fixture.job();
+    job5.model = @constCast(model);
+    job5.prompt = @constCast("Open the early turn.");
+    job5.history = hooks.history_turns.items;
+    job5.permission_mode = .yolo;
+    try runFakePrompt(&gateway5, &hooks, config, job5);
+    try std.testing.expectEqual(@as(usize, 2), gateway5.request_bodies.items.len);
+    try expectBodyContains(&gateway5, 1, early_detail);
+}
+
 test "retained context compaction preserves recovered historical replay" {
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});

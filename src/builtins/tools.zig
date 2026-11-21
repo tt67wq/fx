@@ -169,7 +169,7 @@ const subagent_properties = [_]model_tool_schema.Property{
 const vision_description =
     "Look at images and return what is visible. Pass exactly one source, image_ids for images the user attached or paths for image files the user named, plus focus.";
 const read_tool_result_description =
-    "Read more of a truncated tool result by its handle: pass query to find lines containing some text, or start_byte and byte_count for a byte range. To find earlier turns and tool calls after context compaction, pass search instead of a handle.";
+    "Read a truncated tool result by handle: query finds lines with text, or start_byte and byte_count a range. After compaction, T12 opens saved tool call 12, M12 turn 12, L1 a whole earlier compaction; search needs no handle, spanning all saved records.";
 
 pub const glob_files = ToolSpec{
     .name = "glob_files",
@@ -914,9 +914,9 @@ test "built-in model-facing tool contract stays byte exact" {
     const actual_hex = std.fmt.bytesToHex(hasher.finalResult(), .lower);
     try std.testing.expectEqualStrings(
         if (builtin.target.os.tag.isDarwin())
-            "fa5ea19713da7e191bbfbc243c5fbe05d6289bfafb68380e7ca344314382abcb"
+            "861c380f04ac650f60a58be5cc807fcc861111647c8f03c869b1dd316a2634fe"
         else
-            "241f636fc291b72210c79acc9a55c9f9d3a2e88b9a91f16d9b8a0170552ea971",
+            "df9fe4554238bd3a9aa0344da6d79372fb6ffd878d23a0a40cd0a1b452d0b4c8",
         &actual_hex,
     );
 }
@@ -1672,9 +1672,19 @@ test "built-in read_tool_result owns product metadata schema and callbacks" {
     defer parsed.deinit();
 
     try std.testing.expectEqualStrings("read_tool_result", read_tool_result.name);
-    try std.testing.expect(std.mem.find(u8, read_tool_result.description, "pass query") != null);
-    try std.testing.expect(std.mem.find(u8, read_tool_result.description, "pass search instead of a handle") != null);
+    try std.testing.expect(std.mem.find(u8, read_tool_result.description, "query finds lines") != null);
     try std.testing.expect(std.mem.find(u8, read_tool_result.description, "request.") == null);
+    // T-31: the description must teach the compaction handle vocabulary the
+    // checkpoint model_text uses (T/M/L), that L is a whole earlier
+    // compaction, and that search spans all saved records without a handle.
+    try std.testing.expect(std.mem.find(u8, read_tool_result.description, "T12 opens saved tool call 12") != null);
+    try std.testing.expect(std.mem.find(u8, read_tool_result.description, "M12 turn 12") != null);
+    try std.testing.expect(std.mem.find(u8, read_tool_result.description, "L1 a whole earlier compaction") != null);
+    try std.testing.expect(std.mem.find(u8, read_tool_result.description, "search needs no handle") != null);
+    try std.testing.expect(std.mem.find(u8, read_tool_result.description, "spanning all saved records") != null);
+    // 250 = the length with the T-31 handle vocabulary; net word count stays
+    // at 42, the pre-T-31 total (no growth, T-29 C4 spirit).
+    try std.testing.expect(read_tool_result.description.len <= 250);
     try std.testing.expect(std.mem.find(u8, schema_json, "\"mode\"") == null);
     try std.testing.expect(std.mem.find(u8, schema_json, "\"oneOf\"") == null);
     const input_schema = parsed.value.object.get("inputSchema").?.object;
