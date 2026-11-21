@@ -986,12 +986,20 @@ fn recordViolation(violation: ?*OptionsViolation, key: []const u8, value: i128) 
     } else |_| {}
 }
 
-/// The model-visible text for an @options value outside its bound.
-const options_out_of_range_base = "codemode @options out of range. timeout_ms must be 1000..120000 and max_output_tokens must be greater than 0.";
-
+/// The model-visible text for an @options value outside its bound. The
+/// range numbers come from the host constants so the message cannot drift
+/// from the bounds the parser enforces, and a timeout_ms or
+/// max_output_tokens violation appends a copyable valid header line
+/// (ISSUE-33 phenomenon 2).
 fn optionsOutOfRangeMessage(alloc: Allocator, violation: *const OptionsViolation) Allocator.Error![]u8 {
-    if (violation.text.len == 0) return alloc.dupe(u8, options_out_of_range_base);
-    return alloc.print("{s} (received {s})", .{ options_out_of_range_base, violation.text });
+    const range =
+        "codemode @options out of range. timeout_ms must be {d}..{d} and max_output_tokens must be greater than 0.";
+    const bounds = .{ host_mod.min_options_timeout_ms, host_mod.max_options_timeout_ms };
+    if (violation.text.len == 0) return alloc.print(range, bounds);
+    if (std.mem.startsWith(u8, violation.text, "timeout_ms")) {
+        return alloc.print(range ++ " (received {s}). A valid header line is: // @options: {{\"timeout_ms\": {d}}}", .{ bounds[0], bounds[1], violation.text, host_mod.max_options_timeout_ms });
+    }
+    return alloc.print(range ++ " (received {s}). A valid header line is: // @options: {{\"max_output_tokens\": {d}}}", .{ bounds[0], bounds[1], violation.text, host_mod.max_options_output_tokens });
 }
 
 /// The model-visible text for a missing or mistyped top-level "script"
@@ -1173,7 +1181,8 @@ test "@options violations echo the value the script declared" {
     defer std.testing.allocator.free(message);
     try std.testing.expectEqualStrings(
         "codemode @options out of range. timeout_ms must be 1000..120000 " ++
-            "and max_output_tokens must be greater than 0. (received timeout_ms: 999)",
+            "and max_output_tokens must be greater than 0. (received timeout_ms: 999). " ++
+            "A valid header line is: // @options: {\"timeout_ms\": 120000}",
         message,
     );
 
@@ -1183,6 +1192,14 @@ test "@options violations echo the value the script declared" {
         parseScriptOptions("// @options: {\"max_output_tokens\": 0}\ntext(\"hi\");", &tokens),
     );
     try std.testing.expectEqualStrings("max_output_tokens: 0", tokens.text);
+    const tokens_message = try optionsOutOfRangeMessage(std.testing.allocator, &tokens);
+    defer std.testing.allocator.free(tokens_message);
+    try std.testing.expectEqualStrings(
+        "codemode @options out of range. timeout_ms must be 1000..120000 " ++
+            "and max_output_tokens must be greater than 0. (received max_output_tokens: 0). " ++
+            "A valid header line is: // @options: {\"max_output_tokens\": 262144}",
+        tokens_message,
+    );
 
     var negative: OptionsViolation = .{};
     try std.testing.expectError(
