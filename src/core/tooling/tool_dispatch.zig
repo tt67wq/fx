@@ -254,6 +254,9 @@ pub const DispatchContext = struct {
     /// turn's arena, which keeps everything until the turn ends.
     scratch_allocator: Allocator = std.heap.c_allocator,
     command_timeout_ms: ?usize = null,
+    /// When set, command_timeout_ms is a script budget the codemode bridge
+    /// sampled at nested call start; the shell run takes min(requested, it).
+    command_timeout_started_ms: ?i64 = null,
     captured_command_host: command_environment.Host = .native,
     run_command_backend: ?RunCommandBackend = null,
     subagent_provider: ?subagent_tool_provider.Provider = null,

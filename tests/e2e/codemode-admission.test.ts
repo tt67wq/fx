@@ -314,6 +314,79 @@ test("a script timeout with a raised @options budget names the source", async ()
   }
 }, 60000);
 
+// ISSUE-28: a nested run_command with an explicit timeout_ms must still die
+// at min(requested, remaining script budget). The script declares a 2000ms
+// budget and nests sleep 8 with timeout_ms 60000: the command must be killed
+// near the script deadline (~2s), not run its full requested 8s.
+test("a nested command with a large requested timeout dies at the remaining script budget", async () => {
+  const root = createIsolatedRoot();
+  const script = '// @options: {"timeout_ms": 2000}\n' +
+    'await tools.call("run_command", { command: "sleep 8", timeout_ms: 60000 });\n' +
+    'text("slept");';
+  const gateway = startGateway([
+    fakeGatewayToolCall("nested-min-1", "codemode", { script }),
+    fakeGatewayFinalText("NESTED_MIN_FINAL"),
+  ]);
+  const startedAt = Date.now();
+  try {
+    const result = await runFx(
+      ["ask", "--quiet", "--json", "--no-save", "run the nested budget test"],
+      { cwd: root.workspace, env: gatewayEnv(root, gateway), timeoutMs: TIMEOUT },
+    );
+    const elapsedS = (Date.now() - startedAt) / 1000;
+    expect(result.timedOut).toBe(false);
+    expect(result.code, "stderr: " + result.stderr.slice(0, 400)).toBe(0);
+    // min(requested, remaining): the 60000ms request cannot outlive the
+    // 2000ms script budget. The old whole-budget/requested-wins behavior
+    // ran the full sleep (~8s) and fails this window.
+    expect(elapsedS).toBeGreaterThan(1);
+    expect(elapsedS).toBeLessThan(6);
+    expect(gateway.requests.length).toBe(2);
+    const body = toolResultText(gateway.requests[1]!.body, "nested-min-1", "error-text");
+    expect(body).toContain("Timeout after ");
+    expect(body).toContain("(budget 2000ms, from @options)");
+    // Coverage matrix row 3: the killed nested command's TimeoutExpired
+    // snapshot still rides in the excerpt slot.
+    expect(body).toContain('"error":"TimeoutExpired"');
+  } finally {
+    rmSync(root.workspace, { recursive: true, force: true });
+  }
+}, 30000);
+
+// ISSUE-28 min's other branch: when the requested timeout is below the
+// remaining script budget, the request wins. Default 30s budget, nested
+// sleep 8 requesting 1500ms: the command dies near 1.5s and the script
+// still completes normally.
+test("a nested command requesting less than the remaining budget keeps its requested timeout", async () => {
+  const root = createIsolatedRoot();
+  const script = 'await tools.call("run_command", { command: "sleep 8", timeout_ms: 1500 });\n' +
+    'text("done-after-kill");';
+  const gateway = startGateway([
+    fakeGatewayToolCall("nested-req-1", "codemode", { script }),
+    fakeGatewayFinalText("NESTED_REQ_FINAL"),
+  ]);
+  const startedAt = Date.now();
+  try {
+    const result = await runFx(
+      ["ask", "--quiet", "--json", "--no-save", "run the requested timeout test"],
+      { cwd: root.workspace, env: gatewayEnv(root, gateway), timeoutMs: TIMEOUT },
+    );
+    const elapsedS = (Date.now() - startedAt) / 1000;
+    expect(result.timedOut).toBe(false);
+    expect(result.code, "stderr: " + result.stderr.slice(0, 400)).toBe(0);
+    // requested 1500ms < remaining ~30000ms: the kill happens near 1.5s,
+    // not at the script budget and not after the full 8s sleep.
+    expect(elapsedS).toBeGreaterThan(1);
+    expect(elapsedS).toBeLessThan(6);
+    expect(gateway.requests.length).toBe(2);
+    const body = toolResultText(gateway.requests[1]!.body, "nested-req-1");
+    expect(body).toContain("done-after-kill");
+    expect(body).toContain("- run_command: failure (");
+  } finally {
+    rmSync(root.workspace, { recursive: true, force: true });
+  }
+}, 30000);
+
 // ISSUE-23b: the excerpt slot carries the last returned nested call's
 // model-visible output in the timeout failure body. The completed call is
 // the LAST nested call here: a trailing nested sleep would overwrite the
@@ -376,16 +449,48 @@ test("budget-killed long command leaves its shell snapshot tail in the failure b
     expect(result.code, "stderr: " + result.stderr.slice(0, 400)).toBe(0);
     expect(gateway.requests.length).toBe(2);
     const body = toolResultText(gateway.requests[1]!.body, "killed-1", "error-text");
-    expect(body).toContain("Last nested output before failure (run_command, ");
+    // T-27-fix: the budget-boundary command has one deterministic outcome.
+    // Its timeout (the script's remaining budget) lands at or before the
+    // yield, so the foreground waits for the timeout kill instead of
+    // racing a running snapshot: the excerpt is the failure-timeout one.
+    expect(body).toContain("Last nested output before failure (run_command, failure,");
     // The snapshot was over 1KiB, so it is head-tail truncated and the
     // tail keeps the command's last progress lines (review C2: the tail,
     // not the head, proves where the command got to).
     expect(body).toContain(" bytes omitted]...");
-    const excerpt = body.split("Last nested output before failure (run_command, ok,")[1]!
+    const excerpt = body.split("Last nested output before failure (run_command, failure,")[1]!
       .split("Partial output before failure")[0]!;
+    expect(excerpt).toContain('"state":"stopped"');
+    expect(excerpt).toContain('"error":"TimeoutExpired"');
     // The excerpt tail ends with the JSON envelope close, but the last
     // progress line must survive the head-tail split inside it.
     expect(excerpt).toMatch(/TAILPROBE-\d+\\nTAILPROBE-\d+"}\s*$/);
+  } finally {
+    rmSync(root.workspace, { recursive: true, force: true });
+  }
+}, 90000);
+
+// ISSUE-32: a bare string argument coerces onto the tool's schema primary
+// parameter instead of failing with InvalidToolArguments.
+test("nested tools.call accepts a bare string argument", async () => {
+  const root = createIsolatedRoot();
+  writeFileSync(join(root.workspace, "notes.txt"), "alpha notes");
+  const script = 'const out = await tools.call("run_command", "echo hello-coerce");\n' +
+    'const notes = await tools.call("read_file", "notes.txt");\n' +
+    'text(String(out) + "|" + String(notes));';
+  const gateway = startGateway([
+    fakeGatewayToolCall("coerce-1", "codemode", { script }),
+    fakeGatewayFinalText("COERCE_FINAL"),
+  ]);
+  try {
+    const result = await runFx(
+      ["ask", "--quiet", "--json", "--no-save", "run the coerce test"],
+      { cwd: root.workspace, env: gatewayEnv(root, gateway), timeoutMs: TIMEOUT },
+    );
+    expect(result.code, "stderr: " + result.stderr.slice(0, 400)).toBe(0);
+    const body = toolResultText(gateway.requests[1]!.body, "coerce-1");
+    expect(body).toContain("hello-coerce");
+    expect(body).toContain("alpha notes");
   } finally {
     rmSync(root.workspace, { recursive: true, force: true });
   }
@@ -1332,4 +1437,33 @@ describe("codemode script mistake feedback", () => {
       rmSync(root.workspace, { recursive: true, force: true });
     }
   }, TIMEOUT);
+
+  test("a JSON escape leak in the script names the fix", async () => {
+    const root = createIsolatedRoot();
+    // The issue's typical residual: after one arguments_json decode the
+    // object key and value still carry backslash-quote at code token level.
+    const script = 'const o = {command\\": \\"ls\\"};';
+    const gateway = startGateway([
+      fakeGatewayToolCall("escape-hint-1", "codemode", { script }),
+      fakeGatewayFinalText("ESCAPE_HINT_DONE"),
+    ]);
+    try {
+      const result = await runFx(
+        ["ask", "--quiet", "--json", "--yolo", "--no-save", "Trigger an escape leak."],
+        { cwd: root.workspace, env: gatewayEnv(root, gateway), timeoutMs: TIMEOUT },
+      );
+      expect(result.code, "stderr: " + result.stderr.slice(0, 400)).toBe(0);
+      const body = toolResultText(
+        gateway.requests[1]!.body,
+        "escape-hint-1",
+        "error-text",
+      );
+      expect(body).toContain("SyntaxError:");
+      expect(body).toContain("JSON escape");
+      expect(body).toContain('write " directly');
+    } finally {
+      rmSync(root.workspace, { recursive: true, force: true });
+    }
+  }, TIMEOUT);
+
 });

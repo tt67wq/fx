@@ -451,7 +451,8 @@ pub fn executeToolCallAuthorized(
     execution_ctx.current_turn_messages = request.current_turn_messages;
     execution_ctx.output_chunk_lifecycle_id = request.lifecycle_id;
     execution_ctx.output_chunk_presentation_group_id = request.presentation_group_id;
-    execution_ctx.command_timeout_started_ms = request.command_timeout_started_ms;
+    execution_ctx.command_timeout_started_ms = request.command_timeout_started_ms orelse
+        execution_ctx.command_timeout_started_ms;
     execution_ctx.command_replay_capture = request.command_replay_capture;
     execution_ctx.command_replay_unavailable = request.command_replay_unavailable;
 
@@ -1380,7 +1381,8 @@ pub const CodemodeHostState = struct {
     /// each gets a distinct nested call id.
     call_sequence: usize = 0,
     /// The codemode script's own wall-clock budget and the moment its call
-    /// started. Nested shell runs receive min(requested, remaining budget)
+    /// started. The bridge samples the remaining budget at each nested call's
+    /// start and hands the registered shell path min(requested, remaining),
     /// so a stalled command cannot outlive the script deadline; null keeps
     /// the previous never-times-out nesting behavior (tests, direct runs).
     ambient_budget_ms: ?usize = null,
@@ -1671,6 +1673,7 @@ fn typedDispatchContext(ctx: Context, arena: Allocator) tool_dispatch.DispatchCo
         .output_chunk_ctx = ctx.output_chunk_ctx,
         .on_output_chunk = ctx.on_output_chunk,
         .command_timeout_ms = ctx.command_timeout_ms,
+        .command_timeout_started_ms = ctx.command_timeout_started_ms,
         .ask_question_ctx = if (ctx.interactive or ctx.ask_user_questions) ctx.worker else null,
         .ask_question_batch = if (ctx.interactive or ctx.ask_user_questions) requestQuestionBatchWithWorker else null,
         .web_fetch_runtime = ctx.web_fetch_runtime,
@@ -1982,6 +1985,10 @@ const EffectiveCommandTimeout = struct {
     started_ms: i64,
 };
 
+/// The bridge's ambient budget is already the remaining wall clock sampled
+/// at nested call start; a compat-path call carrying that bridge marker must
+/// not subtract the script elapsed again here (double deduction). Today the
+/// registered shell path consumes the marker and never reaches this fn.
 fn effectiveCommandTimeout(
     request_timeout_ms: u64,
     ambient_timeout_ms: ?usize,
@@ -5923,6 +5930,75 @@ test "registered read_tool_result restores an omitted stored-result suffix" {
     try expectContains(result.model_output, handle);
 }
 
+test "no-save timeout command surfaces captured output to the model" {
+    if (builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) return;
+
+    const runtime_execution_memory = @import("../agent/runtime/execution_memory.zig");
+    const alloc = std.testing.allocator;
+    var rt = TestRuntime{
+        .interactive = true,
+        .command_timeout_ms = 1000,
+    };
+    defer rt.deinit(alloc);
+    var arena_state = std.heap.ArenaAllocator.init(alloc);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const tool_call = ToolCall{
+        .id = "no-save-timeout",
+        .name = "shell",
+        .arguments_json = "{\"action\":\"run\",\"command\":\"printf PRE-TIMEOUT-OUT; sleep 5\",\"profile\":\"user\",\"timeout_ms\":600000}",
+    };
+
+    const result = try executeTestRunCommand(rt.context(), arena, tool_call);
+    try std.testing.expectEqual(tool_contracts.ToolExecutionStatus.failure, result.status);
+    try expectContains(result.model_output, "timeout=true\n");
+    const capture = result.command_replay_capture orelse return error.TestExpectedReplay;
+    var finalized = false;
+    defer if (!finalized) capture.abort(arena);
+    try std.testing.expect(capture.hasOutput());
+
+    var cancel = std.atomic.Value(bool).init(false);
+    var prepared = try runtime_execution_memory.prepareCapturedToolModelOutput(
+        arena,
+        .{
+            .system_prompt = "",
+            .gateway_retry_count = 0,
+            .gateway_chat_url = "",
+            .agent_step_limit = 1,
+            .cancel_flag = &cancel,
+        },
+        tool_call,
+        result.model_output,
+        capture,
+    );
+    runtime_execution_memory.applyToolResultMemory(
+        &prepared.memory,
+        result.tool_result_memory,
+    );
+    try runtime_execution_memory.finalizeCommandReplay(
+        arena,
+        tool_call,
+        &prepared,
+        null,
+        capture,
+    );
+    finalized = true;
+
+    // The captured bytes must be model-visible: either inline or through a
+    // replay handle notice the model can read with read_tool_result.
+    const replay = prepared.memory.command_output_replay orelse
+        return error.TestExpectedReplay;
+    const descriptor = switch (replay) {
+        .available => |value| value,
+        .unavailable => return error.TestExpectedReplay,
+    };
+    try std.testing.expect(
+        std.mem.find(u8, prepared.model_output, descriptor.handle) != null,
+    );
+    try std.testing.expect(
+        std.mem.find(u8, prepared.model_output, "read_tool_result") != null,
+    );
+}
 test "no-save terminal exec publishes one readable ephemeral replay" {
     if (builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) return;
 

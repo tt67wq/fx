@@ -49,15 +49,22 @@ fn argumentError(raw_ctx: ?*anyopaque) ?[]const u8 {
     return state.nested_argument_error.text;
 }
 
-/// Caps nested shell runs at the script's wall-clock budget fields. A
-/// stalled command is killed at the budget instead of blocking the
-/// synchronous callback until it recovers on its own; the shell dispatch
-/// path turns the pair into min(requested, remaining) through the ambient
-/// timeout. No recorded budget (tests, direct runs) keeps the previous
-/// never-times-out nesting behavior.
+/// Caps nested shell runs at the script's remaining wall clock, sampled
+/// when the nested call starts (before admission, so a permission wait
+/// does not eat the command's budget). The registered shell path turns
+/// the pair into min(requested, remaining); a stalled command is killed
+/// at that cap instead of blocking the synchronous callback past the
+/// script deadline. No recorded budget (tests, direct runs) keeps the
+/// previous never-times-out nesting behavior.
 fn applyAmbientBudget(check: *tool_runtime.Context, state: *const tool_runtime.CodemodeHostState) void {
     const budget = state.ambient_budget_ms orelse return;
-    check.command_timeout_ms = budget;
+    const now_ms = io_mod.milliTimestamp();
+    const started = state.ambient_started_ms orelse now_ms;
+    const elapsed: usize = if (now_ms <= started)
+        0
+    else
+        std.math.cast(usize, now_ms - started) orelse std.math.maxInt(usize);
+    check.command_timeout_ms = budget -| elapsed;
     check.command_timeout_started_ms = state.ambient_started_ms;
 }
 
@@ -169,6 +176,13 @@ fn call(
         state.recordNestedCall(tool.name, mapNestedOutcome(null, err), nestedDurationMs(started_ms, io_mod.milliTimestamp()), null);
         return err;
     };
+    // Ownership (ISSUE-29 item 2): result.command_replay_capture is always
+    // null on this path. Its only producer, toolRunCommand, runs behind the
+    // run_command backend, which no builtin registry tool invokes; the
+    // production shell path's capture belongs to the managed execution
+    // runtime, which retains and releases it itself. Should a nested path
+    // ever hand a capture to this result, the bridge must abort it here:
+    // the script receives text only and nothing else consumes the field.
     // The bridge consumes the output itself and never hands the delivery
     // reservation to a later interact. Commit it so a terminal entry
     // tombstones and frees its execution slot. Without this every nested
@@ -268,12 +282,65 @@ fn canonicalNestedCall(
     error_out: ?*tool_runtime.NestedArgumentError,
 ) !CanonicalCall {
     if (std.mem.eql(u8, tool.name, "run_command")) {
+        if (bareStringArgument(arena, args_json)) |command| {
+            // Wrap the string onto the command field, then take the same
+            // run-form path an object call takes so the action is added
+            // and admission sees the identical payload.
+            const wrapped = try wrapPrimaryParameter(arena, "run_command", "command", command);
+            return canonicalRunCommand(arena, wrapped.arguments_json, error_out);
+        }
         return canonicalRunCommand(arena, args_json, error_out);
     }
     if (std.mem.eql(u8, tool.name, "run_script")) {
         return canonicalRunScript(arena, args_json, env, temp_dir_out, error_out);
     }
+    // ISSUE-32: a bare string argument coerces onto the tool's single
+    // required string parameter, named by that tool's own schema, so the
+    // model's "one value" call shape executes instead of failing. A tool
+    // whose schema requires anything else (no or several required fields,
+    // a non-string primary) is not coercible and passes through untouched
+    // for its own field-level rejection.
+    if (bareStringArgument(arena, args_json)) |value| {
+        if (primaryStringParameter(tool.name)) |field| {
+            return wrapPrimaryParameter(arena, tool.name, field, value);
+        }
+    }
     return .{ .name = tool.name, .arguments_json = args_json };
+}
+
+/// The single required string parameter of one script-facing tool, read
+/// from that tool's model schema, not from a second hardcoded mapping. A tool whose schema requires anything but exactly
+/// one string field has no primary parameter and returns null.
+fn primaryStringParameter(script_name: []const u8) ?[]const u8 {
+    const registered = builtin_tools.registry.lookup(registeredName(script_name)) orelse return null;
+    const required = registered.model_schema.input_schema.required;
+    if (required.len != 1) return null;
+    for (registered.model_schema.input_schema.properties) |property| {
+        if (!std.mem.eql(u8, property.name, required[0])) continue;
+        return if (property.json_type == .string) required[0] else null;
+    }
+    return null;
+}
+
+/// The bare string argument a coercion applies to. The sandbox hands a
+/// script string through raw (host.zig quotes only objects), so both a
+/// JSON-quoted string and text that is not valid JSON count; any other
+/// JSON value keeps the existing behavior.
+fn bareStringArgument(arena: std.mem.Allocator, args_json: []const u8) ?[]const u8 {
+    const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, args_json, .{}) catch return args_json;
+    if (parsed != .string) return null;
+    return parsed.string;
+}
+
+/// Builds the one-field object {"field": value} for a coerced argument.
+fn wrapPrimaryParameter(arena: std.mem.Allocator, name: []const u8, field: []const u8, value: []const u8) !CanonicalCall {
+    var out: std.Io.Writer.Allocating = .init(arena);
+    try out.writer.writeAll("{");
+    try std.json.Stringify.value(field, .{}, &out.writer);
+    try out.writer.writeAll(":");
+    try std.json.Stringify.value(value, .{}, &out.writer);
+    try out.writer.writeByte('}');
+    return .{ .name = name, .arguments_json = try out.toOwnedSlice() };
 }
 
 /// Inputs canonicalNestedCall needs only for run_script: the workspace
@@ -784,6 +851,81 @@ test "run_command argument rejections name the fields" {
         );
         try std.testing.expectEqualStrings(case.detail, detail.text);
     }
+}
+
+// ISSUE-32: a bare string argument coerces onto the tool's primary
+// parameter instead of failing as InvalidToolArguments: run_command's
+// canonical run form takes the string as its command field, and a
+// registry-backed tool takes it as its single required string field,
+// named by that tool's schema. Tools without one clear primary parameter
+// (run_script's language+code, write_file's path+content) keep the
+// ISSUE-24 field-level rejection, and object arguments pass through
+// byte for byte.
+test "run_command coerces a bare string onto its command field" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const canonical = try canonicalNestedCall(
+        arena_state.allocator(),
+        .{ .name = "run_command" },
+        "\"ls -la\"",
+        .{},
+        null,
+        null,
+    );
+    try std.testing.expectEqualStrings("shell", canonical.name);
+    try std.testing.expectEqualStrings(
+        "{\"action\":\"run\",\"command\":\"ls -la\"}",
+        canonical.arguments_json,
+    );
+}
+
+test "read_file glob_files grep_files coerce a bare string onto the schema primary field" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const Case = struct { tool: []const u8, args: []const u8, expected: []const u8 };
+    const cases = [_]Case{
+        .{ .tool = "read_file", .args = "\"src/main.zig\"", .expected = "{\"path\":\"src/main.zig\"}" },
+        .{ .tool = "glob_files", .args = "\"**/*.py\"", .expected = "{\"pattern\":\"**/*.py\"}" },
+        .{ .tool = "grep_files", .args = "\"needle\"", .expected = "{\"pattern\":\"needle\"}" },
+    };
+    for (cases) |case| {
+        const canonical = try canonicalNestedCall(arena, .{ .name = case.tool }, case.args, .{}, null, null);
+        try std.testing.expectEqualStrings(case.tool, canonical.name);
+        try std.testing.expectEqualStrings(case.expected, canonical.arguments_json);
+    }
+}
+
+test "a bare string with no single primary parameter keeps the existing behavior" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    // run_script requires language and code: the string is not coercible
+    // and the ISSUE-24 object-form rejection text is kept verbatim.
+    var detail: tool_runtime.NestedArgumentError = .{};
+    try std.testing.expectError(
+        error.InvalidToolArguments,
+        canonicalNestedCall(arena, .{ .name = "run_script" }, "\"echo hi\"", .{}, null, &detail),
+    );
+    try std.testing.expectEqualStrings("run_script arguments must be a JSON object", detail.text);
+
+    // write_file requires path and content: the string passes through
+    // untouched for the tool's own field-level decoder error.
+    const passthrough = try canonicalNestedCall(arena, .{ .name = "write_file" }, "\"notes\"", .{}, null, null);
+    try std.testing.expectEqualStrings("\"notes\"", passthrough.arguments_json);
+}
+
+test "object arguments keep their exact bytes through canonicalization" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const args = "{\"path\":\"a.zig\",\"start_line\":3}";
+    const canonical = try canonicalNestedCall(arena, .{ .name = "read_file" }, args, .{}, null, null);
+    try std.testing.expectEqualStrings(args, canonical.arguments_json);
+    try std.testing.expectEqual(args.ptr, canonical.arguments_json.ptr);
 }
 
 test "run_script argument rejections name the fields" {
@@ -1395,15 +1537,29 @@ test "schemas errors when a whitelisted name is missing from the registry" {
 }
 
 test "bridge caps nested commands with the script budget fields" {
+    // ISSUE-28: the nested command receives the script's REMAINING wall
+    // clock sampled when the nested call starts, not the whole budget.
+    // The script started 10s ago against a 30s budget, so ~20s remain;
+    // the window absorbs clock drift between the two readings.
     var state: tool_runtime.CodemodeHostState = undefined;
     state.ambient_budget_ms = 30_000;
-    state.ambient_started_ms = 1_000;
+    state.ambient_started_ms = io_mod.milliTimestamp() - 10_000;
     var check: tool_runtime.Context = undefined;
     check.command_timeout_ms = null;
     check.command_timeout_started_ms = null;
     applyAmbientBudget(&check, &state);
-    try std.testing.expectEqual(@as(?usize, 30_000), check.command_timeout_ms);
-    try std.testing.expectEqual(@as(?i64, 1_000), check.command_timeout_started_ms);
+    const remaining = check.command_timeout_ms orelse return error.TestExpectedRemaining;
+    try std.testing.expect(remaining >= 19_000 and remaining <= 20_500);
+    try std.testing.expectEqual(state.ambient_started_ms, check.command_timeout_started_ms);
+
+    // An exhausted budget leaves zero: the next nested command dies at once.
+    var exhausted: tool_runtime.CodemodeHostState = undefined;
+    exhausted.ambient_budget_ms = 1_000;
+    exhausted.ambient_started_ms = io_mod.milliTimestamp() - 5_000;
+    check.command_timeout_ms = null;
+    check.command_timeout_started_ms = null;
+    applyAmbientBudget(&check, &exhausted);
+    try std.testing.expectEqual(@as(?usize, 0), check.command_timeout_ms);
 
     // Without a recorded budget the fields stay untouched.
     var unbudgeted: tool_runtime.CodemodeHostState = undefined;

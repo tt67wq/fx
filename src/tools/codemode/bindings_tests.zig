@@ -876,3 +876,39 @@ test "codemode throwing an empty string keeps the runtime stage and no text" {
     try std.testing.expectEqualStrings("", host.lastExceptionMessage() orelse "<nil>");
     try std.testing.expectEqual(host_mod.ErrorStage.runtime, host.lastExceptionStage());
 }
+
+// T-31b (ISSUE-31 A): a SyntaxError whose script still carries a residual
+// JSON escape (backslash-quote at code token level) gets one directed line
+// telling the model to write the quote directly. The scan only runs after a
+// SyntaxError, so a legal escaped string literal that compiles never reaches it.
+test "codemode syntax error from a JSON escape leak names the fix" {
+    var host = Host.init(std.testing.allocator, .{});
+    defer host.deinit();
+    // The issue's typical sample after one arguments_json decode: the
+    // object key and value still carry backslash-quote at code level.
+    try std.testing.expectError(error.ScriptError, host.eval("const o = {command\\\": \\\"ls\\\"};"));
+    const message = host.lastExceptionMessage() orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.startsWith(u8, message, "SyntaxError:"));
+    try std.testing.expect(std.mem.find(u8, message, "JSON escape") != null);
+    try std.testing.expect(std.mem.find(u8, message, "write \" directly") != null);
+}
+
+test "codemode plain syntax error without an escape leak gets no escape hint" {
+    var host = Host.init(std.testing.allocator, .{});
+    defer host.deinit();
+    try std.testing.expectError(error.ScriptError, host.eval("const o = {\n  a: ,\n};"));
+    const message = host.lastExceptionMessage() orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.startsWith(u8, message, "SyntaxError:"));
+    try std.testing.expect(std.mem.find(u8, message, "JSON escape") == null);
+}
+
+test "codemode legal escaped string literal compiles without an escape hint" {
+    var host = Host.init(std.testing.allocator, .{});
+    defer host.deinit();
+    // A legal JS string literal containing backslash-quote compiles fine; the
+    // escape scan never runs because there is no SyntaxError.
+    var result = try host.eval("text(\"a\\\"b\");");
+    defer result.deinit();
+    try std.testing.expectEqualStrings("a\"b", result.text);
+    try std.testing.expect(host.lastExceptionMessage() == null);
+}

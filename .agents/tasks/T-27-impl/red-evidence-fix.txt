@@ -1,0 +1,22 @@
+T-27-fix red evidence (race reproduction on current green 8b56f4cd4 + updated third-row assertions)
+
+Test updated: "budget-killed long command leaves its shell snapshot tail in the failure body"
+now asserts the deterministic new-semantics outcome: excerpt marker (run_command, failure,
++ "state":"stopped" + "error":"TimeoutExpired" + tail sentinel.
+
+Re-runs on the CURRENT green implementation (no fix yet), each ~30s:
+  run 1: pass [30229ms]   (yield won the race -> ok-running, new assertion lucky? no: pass means failure-timeout observed)
+  run 2: fail [30179ms]
+  run 3: pass [30157ms]
+  run 4: pass [30176ms]
+  run 5: fail [30153ms]
+  run 6: pass [30166ms]
+  additional fail captured with full body: run_command, ok, 30002ms + state running
+    -> expect(body).toContain("...(run_command, failure,") failed; the yield snapshot
+       won the boundary race and left the command running past the script budget.
+
+Tally: 6 runs -> 2 fail / 4 pass (~33% failure), matching T-27-review finding 1 (33-50%).
+The race: command timeout = remaining = 30000-eps lands eps before the 30000ms yield;
+the managed-execution yield loop (managed_execution.zig:615) and the worker timeout kill
+(command_runner.zig:1043) race, giving ok-running or failure-timeout nondeterministically.
+Full failure body: /tmp/t27fix-red-run.log (this machine).

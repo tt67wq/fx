@@ -4019,6 +4019,171 @@ test "retained context automatic compaction archives oversized parallel results 
     try std.testing.expect(std.mem.find(u8, second, result_b) != null);
 }
 
+// T-31 (ISSUE-27 P1): after an automatic compaction the model can recover an
+// early detail through read_tool_result, by saved-record handle (T/M/L) and
+// by handle-less search. The gateway scripts the recovery calls; a delegate
+// runs the real tool against the session store, so this pins reachability and
+// path correctness, not model autonomy (that is the eval domain).
+test "compaction recovery reads saved tool call, turn and earlier compaction by handle and search" {
+    const alloc = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const result_dir = try io_mod.dirRealpathAlloc(alloc, tmp.dir, ".");
+    defer alloc.free(result_dir);
+    var tool_store = try session_child_store.SessionChildCapability.initLegacyRoute(alloc, result_dir, .tool_results, .writable);
+    defer tool_store.deinit();
+
+    const model = "provider/t31-recovery";
+    // The early detail sentinel lives in a real tool call's result, so the
+    // compactor saves it as T1 (and the turn as M1). A second compaction
+    // folds that first checkpoint into L1, which keeps the detail whole.
+    const early_detail = "EARLY-DETAIL-SENTINEL-7421";
+    const early_output = early_detail ++ "\n" ++ text_utils.repeat("o", 52_000);
+    var early_calls = [_]ToolCall{toolCall("early-read", "read_file", "{\"path\":\"early.md\"}")};
+    var early_results = [_]types.PersistedToolResult{.{
+        .tool_call_id = @constCast("early-read"),
+        .tool_name = @constCast("read_file"),
+        .status = .success,
+        .output = @constCast(early_output),
+        .output_bytes = early_output.len,
+        .stored_output_bytes = early_output.len,
+    }};
+    var early_steps = [_]types.ToolExecutionStep{.{ .tool_calls = &early_calls, .tool_results = &early_results }};
+    const middle_output = "MIDDLE-TURN-SENTINEL-8853\n" ++ text_utils.repeat("m", 52_000);
+    var middle_calls = [_]ToolCall{toolCall("middle-read", "read_file", "{\"path\":\"middle.md\"}")};
+    var middle_results = [_]types.PersistedToolResult{.{
+        .tool_call_id = @constCast("middle-read"),
+        .tool_name = @constCast("read_file"),
+        .status = .success,
+        .output = @constCast(middle_output),
+        .output_bytes = middle_output.len,
+        .stored_output_bytes = middle_output.len,
+    }};
+    var middle_steps = [_]types.ToolExecutionStep{.{ .tool_calls = &middle_calls, .tool_results = &middle_results }};
+    const history = [_]HistoryTurn{
+        .{ .assistant = .{
+            .user = .{ .text = @constCast("early work") },
+            .assistant = @constCast("early work done"),
+            .execution = .{ .tool_steps = &early_steps },
+        } },
+        .{ .assistant = .{
+            .user = .{ .text = @constCast("middle work") },
+            .assistant = @constCast("middle work done"),
+            .execution = .{ .tool_steps = &middle_steps },
+        } },
+    };
+    const early_tokens = estimateTextTokens(early_output);
+    const middle_tokens = estimateTextTokens(middle_output);
+    const context_window = (early_tokens + middle_tokens) * 5 / 4;
+    const capabilities = [_]ModelCapabilityOverride{.{ .model = model, .capabilities = .{ .context_window = @intCast(context_window) } }};
+
+    // The delegate runs the real read_tool_result against the session store.
+    const Recovery = struct {
+        store: *session_child_store.SessionChildCapability,
+        fn execute(raw: *anyopaque, request: ToolExecutionRequest) !ToolExecutionResult {
+            const self: *@This() = @ptrCast(@alignCast(raw));
+            const result = try tool_dispatch.dispatchAuthorizedToolCall(.{
+                .allocator = request.result_allocator,
+                .session_child_capability = self.store,
+            }, builtin_tools.registry, request.call);
+            return .{
+                .status = if (result.status == .success) .success else .failure,
+                .model_output = result.body,
+            };
+        }
+    };
+    var recovery = Recovery{ .store = &tool_store };
+
+    var hooks = FakeAgentRuntimeDeps.init(alloc);
+    defer hooks.deinit();
+    hooks.available_capability_overrides = &capabilities;
+    hooks.execute_delegate = .{ .ctx = &recovery, .run = Recovery.execute };
+    var fixture = PromptFixture{};
+    var config = fixture.config();
+    config.session_child_capability = &tool_store;
+
+    // Prompt 1: the oversized history compacts in two parts (early then
+    // middle), folding the first checkpoint into L1. Two summary requests
+    // plus the turn reply.
+    var gateway1 = FakeGateway.init(alloc, &.{
+        .{ .content = "Turn 1\nIn between: Early work established the project facts." },
+        .{ .content = "Turn 2\nIn between: Middle work continued the project." },
+        .{ .content = "Compacted the early and middle work." },
+    });
+    defer gateway1.deinit();
+    var job1 = fixture.job();
+    job1.model = @constCast(model);
+    job1.history = @constCast(&history);
+    job1.permission_mode = .yolo;
+    try runFakePrompt(&gateway1, &hooks, config, job1);
+    try expectBodyContains(&gateway1, 2, "compacted_conversation");
+
+    // Prompt 2: ask for the early detail; the model opens T1 by handle.
+    const t_call = [_]ToolCall{toolCall("t31-t", "read_tool_result", "{\"handle\":\"T1\"}")};
+    var gateway2 = FakeGateway.init(alloc, &.{
+        .{ .tool_calls = &t_call },
+        .{ .content = "Recovered the early detail from T1." },
+    });
+    defer gateway2.deinit();
+    var job2 = fixture.job();
+    job2.model = @constCast(model);
+    job2.prompt = @constCast("What was the early detail?");
+    job2.history = hooks.history_turns.items;
+    job2.permission_mode = .yolo;
+    try runFakePrompt(&gateway2, &hooks, config, job2);
+    try std.testing.expectEqual(@as(usize, 2), gateway2.request_bodies.items.len);
+    try expectBodyContains(&gateway2, 1, early_detail);
+
+    // Prompt 3: search without a handle finds the same early detail.
+    const search_call = [_]ToolCall{toolCall("t31-search", "read_tool_result", "{\"search\":\"EARLY-DETAIL-SENTINEL-7421\"}")};
+    var gateway3 = FakeGateway.init(alloc, &.{
+        .{ .tool_calls = &search_call },
+        .{ .content = "Recovered the early detail by search." },
+    });
+    defer gateway3.deinit();
+    var job3 = fixture.job();
+    job3.model = @constCast(model);
+    job3.prompt = @constCast("Search the saved history for the early detail.");
+    job3.history = hooks.history_turns.items;
+    job3.permission_mode = .yolo;
+    try runFakePrompt(&gateway3, &hooks, config, job3);
+    try std.testing.expectEqual(@as(usize, 2), gateway3.request_bodies.items.len);
+    try expectBodyContains(&gateway3, 1, early_detail);
+    try expectBodyContains(&gateway3, 1, "saved_search");
+
+    // Prompt 4: open the whole earlier compaction L1 by handle.
+    const l_call = [_]ToolCall{toolCall("t31-l", "read_tool_result", "{\"handle\":\"L1\"}")};
+    var gateway4 = FakeGateway.init(alloc, &.{
+        .{ .tool_calls = &l_call },
+        .{ .content = "Recovered the early detail from L1." },
+    });
+    defer gateway4.deinit();
+    var job4 = fixture.job();
+    job4.model = @constCast(model);
+    job4.prompt = @constCast("Open the earlier compaction.");
+    job4.history = hooks.history_turns.items;
+    job4.permission_mode = .yolo;
+    try runFakePrompt(&gateway4, &hooks, config, job4);
+    try std.testing.expectEqual(@as(usize, 2), gateway4.request_bodies.items.len);
+    try expectBodyContains(&gateway4, 1, early_detail);
+
+    // Prompt 5: open the saved turn M1 by handle.
+    const m_call = [_]ToolCall{toolCall("t31-m", "read_tool_result", "{\"handle\":\"M1\"}")};
+    var gateway5 = FakeGateway.init(alloc, &.{
+        .{ .tool_calls = &m_call },
+        .{ .content = "Recovered the early turn from M1." },
+    });
+    defer gateway5.deinit();
+    var job5 = fixture.job();
+    job5.model = @constCast(model);
+    job5.prompt = @constCast("Open the early turn.");
+    job5.history = hooks.history_turns.items;
+    job5.permission_mode = .yolo;
+    try runFakePrompt(&gateway5, &hooks, config, job5);
+    try std.testing.expectEqual(@as(usize, 2), gateway5.request_bodies.items.len);
+    try expectBodyContains(&gateway5, 1, early_detail);
+}
+
 test "retained context compaction preserves recovered historical replay" {
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
@@ -9801,4 +9966,185 @@ fn estimateTextTokens(text: []const u8) usize {
     var estimator = token_estimate.StreamingEstimator{};
     estimator.consume(text);
     return @intCast(estimator.estimate());
+}
+
+// T-30 (ISSUE-27 P0): a user-side nudge before auto-compaction, at 3/4 of the
+// auto-compact threshold, once per arm cycle, zero model-token cost. The
+// fixture model has usable input 16000 (context 32000 minus output 16000),
+// compact_at 12800 (80%), nudge_at 9600 (3/4). A solid history block estimates
+// ~bytes/4 tokens plus ~179 request overhead: 36000 chars => ~9179 (below
+// nudge), 40000 => ~10179 (nudge zone, below compact), 52000 => ~13179 (due).
+const t30_nudge_model = "anthropic/claude-opus-4.6";
+const t30_runtime_agent = @import("../agent.zig");
+fn t30Caps() model_capabilities.Capabilities {
+    return model_capabilities.resolveCapabilities(
+        t30_nudge_model,
+        .{ .context_window = 32_000, .max_output_tokens = 16_000 },
+    );
+}
+fn t30History(alloc: std.mem.Allocator, block: []u8) ![1]HistoryTurn {
+    const steps = try alloc.alloc(types.ToolExecutionStep, 1);
+    steps[0] = .{ .assistant = block };
+    return .{.{ .assistant = .{
+        .user = .{ .text = @constCast("U") },
+        .assistant = @constCast("A"),
+        .execution = .{ .tool_steps = steps },
+    } }};
+}
+fn t30RunOnAgent(
+    gateway: *FakeGateway,
+    hooks: *FakeAgentRuntimeDeps,
+    config: runtime_config.Config,
+    job: QueuedPrompt,
+    agent: *t30_runtime_agent.Agent,
+) !void {
+    hooks.workspace_root = config.workspace_root;
+    var deps = hooks.deps();
+    deps.agent_stream_provider = gateway.provider();
+    const lifecycle = test_support.testLifecycleContext(
+        lifecycle_hooks.RuntimeView.empty(),
+        hooks.alloc,
+        config.workspace_root,
+    );
+    try runtime_orchestrator.processAgentPrompt(agent, &deps, null, lifecycle, config, job);
+}
+
+test "context nudge stays silent below three quarters of the compact threshold" {
+    const alloc = std.testing.allocator;
+    const block = try alloc.alloc(u8, 36000);
+    defer alloc.free(block);
+    @memset(block, 'a');
+    var history = try t30History(alloc, block);
+    defer alloc.free(history[0].assistant.execution.tool_steps);
+    const overrides = [_]ModelCapabilityOverride{.{ .model = t30_nudge_model, .capabilities = t30Caps() }};
+    const completions = [_]FakeCompletion{.{ .content = "Done" }};
+    var gateway = FakeGateway.init(alloc, &completions);
+    defer gateway.deinit();
+    var hooks = FakeAgentRuntimeDeps.init(alloc);
+    hooks.available_capability_overrides = &overrides;
+    hooks.default_model_capabilities = t30Caps();
+    hooks.enable_interactive_notices = true;
+    defer hooks.deinit();
+    var fixture = PromptFixture{};
+    var job = fixture.job();
+    job.history = &history;
+    try runFakePrompt(&gateway, &hooks, fixture.config(), job);
+    try std.testing.expectEqual(@as(usize, 0), hooks.interactive_notices.items.len);
+}
+
+test "context nudge fires once crossing three quarters with /compact guidance" {
+    const alloc = std.testing.allocator;
+    const block = try alloc.alloc(u8, 40000);
+    defer alloc.free(block);
+    @memset(block, 'a');
+    var history = try t30History(alloc, block);
+    defer alloc.free(history[0].assistant.execution.tool_steps);
+    const overrides = [_]ModelCapabilityOverride{.{ .model = t30_nudge_model, .capabilities = t30Caps() }};
+    const completions = [_]FakeCompletion{.{ .content = "Done" }};
+    var gateway = FakeGateway.init(alloc, &completions);
+    defer gateway.deinit();
+    var hooks = FakeAgentRuntimeDeps.init(alloc);
+    hooks.available_capability_overrides = &overrides;
+    hooks.default_model_capabilities = t30Caps();
+    hooks.enable_interactive_notices = true;
+    defer hooks.deinit();
+    var fixture = PromptFixture{};
+    var job = fixture.job();
+    job.history = &history;
+    try runFakePrompt(&gateway, &hooks, fixture.config(), job);
+    // Nudge zone: no compaction (one request), exactly one user-side notice.
+    try std.testing.expectEqual(@as(usize, 1), gateway.request_bodies.items.len);
+    try std.testing.expectEqual(@as(usize, 1), hooks.interactive_notices.items.len);
+    const body = hooks.interactive_notices.items[0].body;
+    try std.testing.expect(std.mem.find(u8, body, "/compact") != null);
+    // Zero token cost: the nudge text never enters any model request body.
+    for (gateway.request_bodies.items) |req| {
+        try std.testing.expect(std.mem.find(u8, req, "/compact") == null);
+        try std.testing.expect(std.mem.find(u8, req, body) == null);
+    }
+}
+
+test "context nudge does not repeat while staying above the threshold" {
+    const alloc = std.testing.allocator;
+    const block = try alloc.alloc(u8, 40000);
+    defer alloc.free(block);
+    @memset(block, 'a');
+    var history = try t30History(alloc, block);
+    defer alloc.free(history[0].assistant.execution.tool_steps);
+    const overrides = [_]ModelCapabilityOverride{.{ .model = t30_nudge_model, .capabilities = t30Caps() }};
+    // Two model requests in one turn (tool call then final), both nudge zone.
+    const calls = [_]types.ToolCall{.{ .id = "c1", .name = "glob_files", .arguments_json = "{\"pattern\":\"*\"}" }};
+    const completions = [_]FakeCompletion{ .{ .tool_calls = &calls }, .{ .content = "Done" } };
+    var gateway = FakeGateway.init(alloc, &completions);
+    defer gateway.deinit();
+    var hooks = FakeAgentRuntimeDeps.init(alloc);
+    hooks.available_capability_overrides = &overrides;
+    hooks.default_model_capabilities = t30Caps();
+    hooks.enable_interactive_notices = true;
+    hooks.tool_registry = .{ .tools = &.{builtin_tools.glob_files} };
+    defer hooks.deinit();
+    var fixture = PromptFixture{};
+    var job = fixture.job();
+    job.history = &history;
+    job.permission_mode = .yolo;
+    try runFakePrompt(&gateway, &hooks, fixture.config(), job);
+    try std.testing.expect(gateway.request_bodies.items.len >= 2);
+    try std.testing.expectEqual(@as(usize, 1), hooks.interactive_notices.items.len);
+}
+
+test "context nudge re-arms after a successful compaction" {
+    const alloc = std.testing.allocator;
+    const overrides = [_]ModelCapabilityOverride{.{ .model = t30_nudge_model, .capabilities = t30Caps() }};
+    var hooks = FakeAgentRuntimeDeps.init(alloc);
+    hooks.available_capability_overrides = &overrides;
+    hooks.default_model_capabilities = t30Caps();
+    hooks.enable_interactive_notices = true;
+    defer hooks.deinit();
+    var agent: t30_runtime_agent.Agent = .{};
+    defer agent.deinit(alloc);
+    var fixture = PromptFixture{};
+    const config = fixture.config();
+
+    // Prompt 1: nudge zone => nudge #1, flag set.
+    const block1 = try alloc.alloc(u8, 40000);
+    defer alloc.free(block1);
+    @memset(block1, 'a');
+    var history1 = try t30History(alloc, block1);
+    defer alloc.free(history1[0].assistant.execution.tool_steps);
+    const completions1 = [_]FakeCompletion{.{ .content = "Done" }};
+    var gateway1 = FakeGateway.init(alloc, &completions1);
+    defer gateway1.deinit();
+    var job1 = fixture.job();
+    job1.history = &history1;
+    try t30RunOnAgent(&gateway1, &hooks, config, job1, &agent);
+    try std.testing.expectEqual(@as(usize, 1), hooks.interactive_notices.items.len);
+
+    // Prompt 2: compaction due => compaction runs, re-arms the nudge.
+    const block2 = try alloc.alloc(u8, 52000);
+    defer alloc.free(block2);
+    @memset(block2, 'b');
+    var history2 = try t30History(alloc, block2);
+    defer alloc.free(history2[0].assistant.execution.tool_steps);
+    const completions2 = [_]FakeCompletion{ .{ .content = "Summary of earlier work." }, .{ .content = "Done" } };
+    var gateway2 = FakeGateway.init(alloc, &completions2);
+    defer gateway2.deinit();
+    var job2 = fixture.job();
+    job2.history = &history2;
+    try t30RunOnAgent(&gateway2, &hooks, config, job2, &agent);
+    // A compaction summary request happened (>= 2 requests).
+    try std.testing.expect(gateway2.request_bodies.items.len >= 2);
+
+    // Prompt 3: nudge zone again => nudge #2 (re-armed).
+    const block3 = try alloc.alloc(u8, 40000);
+    defer alloc.free(block3);
+    @memset(block3, 'c');
+    var history3 = try t30History(alloc, block3);
+    defer alloc.free(history3[0].assistant.execution.tool_steps);
+    const completions3 = [_]FakeCompletion{.{ .content = "Done" }};
+    var gateway3 = FakeGateway.init(alloc, &completions3);
+    defer gateway3.deinit();
+    var job3 = fixture.job();
+    job3.history = &history3;
+    try t30RunOnAgent(&gateway3, &hooks, config, job3, &agent);
+    try std.testing.expectEqual(@as(usize, 2), hooks.interactive_notices.items.len);
 }

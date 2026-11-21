@@ -169,7 +169,7 @@ const subagent_properties = [_]model_tool_schema.Property{
 const vision_description =
     "Look at images and return what is visible. Pass exactly one source, image_ids for images the user attached or paths for image files the user named, plus focus.";
 const read_tool_result_description =
-    "Read more of a truncated tool result by its handle: pass query to find lines containing some text, or start_byte and byte_count for a byte range. To find earlier turns and tool calls after context compaction, pass search instead of a handle.";
+    "Read a truncated tool result by handle: query finds lines with text, or start_byte and byte_count a range. After compaction, T12 opens saved tool call 12, M12 turn 12, L1 a whole earlier compaction; search needs no handle, spanning all saved records.";
 
 pub const glob_files = ToolSpec{
     .name = "glob_files",
@@ -741,19 +741,38 @@ pub const read_tool_result = ToolSpec{
 };
 
 pub const codemode_description =
-    "Run JavaScript in a sandbox for multi-step work in one call. Call tools with the named form await tools.read_file({...}); tools.call(\"tool_name\", args) still works; use them to search, read, and run. tools.list() returns each tool's name, description, and parameters schema for introspection. The script runs on a default 30 second wall-clock budget with a 1MiB capture cap; past it text and console keep the head and tail with the omitted byte count, and the full captured output is stored and readable with read_tool_result; as its first non-empty line, `// @options: {\"timeout_ms\": N, \"max_output_tokens\": N}` declares a bigger budget (timeout 1000..120000 ms hard-capped, output cap of 4 bytes per token clamped to the 1MiB capture cap), and a declared budget is the script's wall clock; a nested run_command is capped at it from its own start. Finish with text(your short summary); top-level return is not valid script syntax. A script that only wraps one tool call is slower than calling the tool directly. tools.list() may be a budgeted subset; searchTools(query) finds tools across the full surface; describeTool(name) returns one full schema.";
+    "JavaScript sandbox for multi-step work in one call. Call tools as await tools.read_file({...}) or tools.call(\"name\", {args}); arguments are objects: tools.call(\"run_command\", {command: \"...\"}). Confirm names via searchTools, never from memory. No Node.js API: no import/require of fs or process, no top-level tool functions. tools.list() may be a budgeted subset; searchTools(query) searches the full surface; describeTool(name) returns one full schema. Defaults: 30s wall clock, 1MiB capture cap; over it, text and console keep head and tail with omitted byte count; read_tool_result reads the full output. First non-empty line `// @options: {\"timeout_ms\": N, \"max_output_tokens\": N}` raises the budget (timeout 1000..120000 ms hard-capped, output 4 bytes per token clamped at 1MiB); a declared budget is the script's wall clock; a nested run_command gets min(requested, remaining budget) from its own start. Finish with text(your short summary); top-level return is invalid. Wrapping one call is slower than a direct call.";
 
 // ISSUE-23b: the description must state the nested command budget
 // truthfully (review C4 note 1) and must not grow (net word count).
+// T-29: T-27 changed the semantics to min(requested, remaining script
+// budget), sampled when the nested call starts, so the pin follows.
 test "codemode description states the nested command budget truthfully" {
-    // The old "also caps nested run_command wall clock" wording implied a
-    // remaining-budget cap; the ambient budget is the script's wall clock,
-    // and a nested command is capped at the whole budget from its own start.
+    // The whole-budget wording ("capped at it from its own start") is false
+    // since T-27: a nested run_command gets min(requested, remaining
+    // budget), and the command's own timeout counts from its own start.
     try std.testing.expect(std.mem.find(u8, codemode_description, "also caps nested run_command") == null);
-    try std.testing.expect(std.mem.find(u8, codemode_description, "capped at it from its own start") != null);
-    // 1168 = the description length before this correction; the rewritten
-    // sentence is shorter, so the net word count shrinks.
-    try std.testing.expect(codemode_description.len <= 1168);
+    try std.testing.expect(std.mem.find(u8, codemode_description, "capped at it from its own start") == null);
+    try std.testing.expect(std.mem.find(u8, codemode_description, "min(requested, remaining budget) from its own start") != null);
+    // T-34 (ISSUE-34): the three recurring misuses are pinned up front, in
+    // the description the model reads before writing a script, not only in
+    // the after-the-fact error hints.
+    try std.testing.expect(std.mem.find(u8, codemode_description, "Confirm names via searchTools") != null);
+    try std.testing.expect(std.mem.find(u8, codemode_description, "never from memory") != null);
+    try std.testing.expect(std.mem.find(u8, codemode_description, "No Node.js API: no import/require of fs or process, no top-level tool functions") != null);
+    try std.testing.expect(std.mem.find(u8, codemode_description, "arguments are objects") != null);
+    try std.testing.expect(std.mem.find(u8, codemode_description, "tools.call(\"run_command\", {command: \"...\"})") != null);
+    // ISSUE-36 F-2: the script parameter description shows the object
+    // form and keeps no string-form concession wording.
+    const script_description = for (codemode.model_schema.input_schema.properties) |property| {
+        if (std.mem.eql(u8, property.name, "script")) break property.description;
+    } else unreachable;
+    try std.testing.expect(std.mem.find(u8, script_description, "tools.call(\"tool_name\", {args})") != null);
+    try std.testing.expect(std.mem.find(u8, script_description, "still works") == null);
+    // ISSUE-36 F-1: the model-facing cap is 1024 bytes and overlong text
+    // is cut at 1009, so the whole description must fit; the compressed
+    // 1024-byte, 144-word wording also stays below 169 words (C4).
+    try std.testing.expect(codemode_description.len <= model_tool_schema.description_max_bytes);
 }
 
 pub const codemode = ToolSpec{
@@ -764,7 +783,7 @@ pub const codemode = ToolSpec{
         .description = codemode_description,
         .input_schema = .{
             .properties = &.{
-                .{ .name = "script", .json_type = .string, .description = "JavaScript source. Call fx tools with the named form await tools.read_file({...}); tools.call(\"tool_name\", \"{json args}\") still works; tools.list() returns each tool's {name, description, parameters} so scripts can introspect argument shapes" },
+                .{ .name = "script", .json_type = .string, .description = "JavaScript source. Call fx tools with the named form await tools.read_file({...}) or tools.call(\"tool_name\", {args}); tools.list() returns each tool's {name, description, parameters} so scripts can introspect argument shapes" },
             },
             .required = &.{"script"},
             .additional_properties = false,
@@ -911,17 +930,19 @@ test "built-in model-facing tool contract stays byte exact" {
     const actual_hex = std.fmt.bytesToHex(hasher.finalResult(), .lower);
     try std.testing.expectEqualStrings(
         if (builtin.target.os.tag.isDarwin())
-            "fa5ea19713da7e191bbfbc243c5fbe05d6289bfafb68380e7ca344314382abcb"
+            "861c380f04ac650f60a58be5cc807fcc861111647c8f03c869b1dd316a2634fe"
         else
-            "241f636fc291b72210c79acc9a55c9f9d3a2e88b9a91f16d9b8a0170552ea971",
+            "df9fe4554238bd3a9aa0344da6d79372fb6ffd878d23a0a40cd0a1b452d0b4c8",
         &actual_hex,
     );
 }
 
 test "built-in tool descriptions fit the model-facing description cap" {
     // Chat-completions requests cut longer descriptions short, so a model
-    // would silently lose the end of the text.
-    inline for (all) |tool| {
+    // would silently lose the end of the text. gated_all includes codemode,
+    // whose description rides the same cap through the builtins
+    // advertisement and the run_script schema injection (ISSUE-36 F-1).
+    inline for (gated_all) |tool| {
         try std.testing.expect(tool.description.len <= model_tool_schema.description_max_bytes);
         for (tool.model_schema.input_schema.properties) |property| {
             try std.testing.expect(property.description.len <= model_tool_schema.description_max_bytes);
@@ -1669,9 +1690,19 @@ test "built-in read_tool_result owns product metadata schema and callbacks" {
     defer parsed.deinit();
 
     try std.testing.expectEqualStrings("read_tool_result", read_tool_result.name);
-    try std.testing.expect(std.mem.find(u8, read_tool_result.description, "pass query") != null);
-    try std.testing.expect(std.mem.find(u8, read_tool_result.description, "pass search instead of a handle") != null);
+    try std.testing.expect(std.mem.find(u8, read_tool_result.description, "query finds lines") != null);
     try std.testing.expect(std.mem.find(u8, read_tool_result.description, "request.") == null);
+    // T-31: the description must teach the compaction handle vocabulary the
+    // checkpoint model_text uses (T/M/L), that L is a whole earlier
+    // compaction, and that search spans all saved records without a handle.
+    try std.testing.expect(std.mem.find(u8, read_tool_result.description, "T12 opens saved tool call 12") != null);
+    try std.testing.expect(std.mem.find(u8, read_tool_result.description, "M12 turn 12") != null);
+    try std.testing.expect(std.mem.find(u8, read_tool_result.description, "L1 a whole earlier compaction") != null);
+    try std.testing.expect(std.mem.find(u8, read_tool_result.description, "search needs no handle") != null);
+    try std.testing.expect(std.mem.find(u8, read_tool_result.description, "spanning all saved records") != null);
+    // 250 = the length with the T-31 handle vocabulary; net word count stays
+    // at 42, the pre-T-31 total (no growth, T-29 C4 spirit).
+    try std.testing.expect(read_tool_result.description.len <= 250);
     try std.testing.expect(std.mem.find(u8, schema_json, "\"mode\"") == null);
     try std.testing.expect(std.mem.find(u8, schema_json, "\"oneOf\"") == null);
     const input_schema = parsed.value.object.get("inputSchema").?.object;

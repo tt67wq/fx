@@ -1,0 +1,20 @@
+T-28 red evidence (ISSUE-30 adopted-store fd cleanup)
+Base: integrate-issue29 0323b5f35, branch T-28-impl.
+Red test commit adds three tests to src/core/session/command_replay_store.zig:
+  - adopted replay backing closes its spool on releaseRetained
+  - adopted replay backing closes its spool on abort
+  - adopted replay backing closes its spool on discard
+
+Command: zig build test --cache-dir /tmp/t28-cache --summary all
+Result: EXIT=1, Build Summary 20/22 steps succeeded (1 failed); 10275/10284 tests passed (7 skipped, 2 failed).
+
+Failures (deterministic, expected 0 found 1):
+  error: 'core.session.command_replay_store.test.adopted replay backing closes its spool on releaseRetained' failed:
+         expected 0, found 1
+  error: 'core.session.command_replay_store.test.adopted replay backing closes its spool on abort' failed:
+         expected 0, found 1
+
+The discard test passes already (discard deletes the spool via deleteSpool).
+releaseRetained and abort leave the adopted EphemeralStore's open spool
+descriptor (files.count == 1) after the capture is consumed: the leak.
+Full log: /tmp/t28_red.log (conductor machine).
