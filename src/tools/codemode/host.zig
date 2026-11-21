@@ -1552,3 +1552,108 @@ test "takePartialOutput moves captured buffers to the caller" {
     try std.testing.expectEqualStrings("", empty.text);
     try std.testing.expectEqualStrings("", empty.console);
 }
+
+test "codemode settling promise is not misdiagnosed as Timeout when pending hits zero" {
+    // Pinning test for the pre-existing bug: when JS_ExecutePendingJob
+    // settles the promise and returns 0 pending jobs, the inner drain
+    // loop must check settlement before returning Timeout. Without the
+    // fix this test returns error.Timeout; with the fix it succeeds.
+    var host = Host.init(std.testing.allocator, .{ .timeout_ms = 30_000 });
+    defer host.deinit();
+
+    var result = try host.eval("Promise.resolve().then(() => 42)");
+    defer result.deinit();
+    try std.testing.expectEqualStrings("42", result.value);
+}
+
+test "codemode grace window lets a settling script finish" {
+    var host = Host.init(std.testing.allocator, .{ .timeout_ms = 30_000 });
+    defer host.deinit();
+
+    // Past budget, inside grace window — the inner drain loop continues.
+    host.deadline_ms = -100_000;
+    host.grace_deadline_ms = std.math.maxInt(i64);
+
+    var result = try host.eval("Promise.resolve().then(() => 42)");
+    defer result.deinit();
+    try std.testing.expectEqualStrings("42", result.value);
+}
+
+test "codemode stalled promise returns Timeout even in grace" {
+    var host = Host.init(std.testing.allocator, .{ .timeout_ms = 30_000 });
+    defer host.deinit();
+
+    // A promise that never settles: pending == 0 returns Timeout
+    // before the grace check is reached.
+    host.deadline_ms = -100_000;
+    host.grace_deadline_ms = std.math.maxInt(i64);
+
+    try std.testing.expectError(error.Timeout, host.eval("new Promise(() => {})"));
+}
+
+test "codemode grace period rejection returns ScriptError" {
+    var host = Host.init(std.testing.allocator, .{ .timeout_ms = 30_000 });
+    defer host.deinit();
+
+    host.deadline_ms = -100_000;
+    host.grace_deadline_ms = std.math.maxInt(i64);
+
+    try std.testing.expectError(error.ScriptError, host.eval("throw new Error('boom')"));
+}
+
+test "codemode total wall time bounded by budget plus grace plus epsilon" {
+    var host = Host.init(std.testing.allocator, .{ .timeout_ms = 50 });
+    defer host.deinit();
+
+    const start = io_mod.milliTimestamp();
+    _ = host.eval("while (true) {}") catch {};
+    const elapsed = io_mod.milliTimestamp() - start;
+
+    // budget (50ms) + grace (500ms) + epsilon (200ms for scheduling)
+    try std.testing.expect(elapsed < 50 + drain_grace_ms + 200);
+}
+
+test "codemode first drain loop is unchanged by grace fields" {
+    // Pinning test: the first drain loop (eval promise) must remain
+    // unaffected by grace_deadline_ms. Even with grace_deadline_ms set
+    // to the far future, a script whose eval promise is still pending
+    // when the deadline is reached must return Timeout immediately.
+    // The first drain loop intentionally does not use the grace logic.
+    var host = Host.init(std.testing.allocator, .{ .timeout_ms = 30_000 });
+    defer host.deinit();
+
+    host.deadline_ms = -100_000;
+    host.grace_deadline_ms = std.math.maxInt(i64);
+
+    // Synchronous infinite loop: eval promise stays pending.
+    // First drain loop must return Timeout without entering grace.
+    try std.testing.expectError(error.Timeout, host.eval("while (true) {}"));
+
+    var result = try host.eval("42");
+    defer result.deinit();
+    try std.testing.expectEqualStrings("42", result.value);
+}
+
+test "codemode cancel during grace returns Cancelled" {
+    var host = Host.init(std.testing.allocator, .{ .timeout_ms = 30_000 });
+    defer host.deinit();
+
+    host.deadline_ms = -100_000;
+    host.grace_deadline_ms = std.math.maxInt(i64);
+
+    // Set a cancel flag that is already true.
+    var cancel_flag = std.atomic.Value(bool).init(true);
+    host.cancel_flag = &cancel_flag;
+
+    // Infinite microtask chain: the interrupt handler sees the cancel
+    // flag during JS execution and returns Cancelled.
+    try std.testing.expectError(error.Cancelled, host.eval(
+        \\Promise.resolve().then(function loop() {
+        \\    return Promise.resolve().then(loop);
+        \\})
+    ));
+
+    var result = try host.eval("42");
+    defer result.deinit();
+    try std.testing.expectEqualStrings("42", result.value);
+}
