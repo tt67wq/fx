@@ -1,6 +1,6 @@
 # ISSUE-33 — codemode 超时判定两处收口：命令已完成仍判失败；@options 上限与提示自相矛盾
 
-- **状态**: fixing（现象二片；现象一与上限决策待开）
+- **状态**: open（现象二已落地；现象一与上限决策待开）
 - **发现时间**: 2026-11-20
 - **来源**: 近 40 个 session 记录分析（~/.fx/sessions/v2/，11-19 之后 3 次相关失败）
 - **关联模块**: src/tools/codemode/codemode_tool.zig（预算执行）、src/tools/codemode/host.zig
@@ -27,6 +27,10 @@ ISSUE-23 已补部分输出与耗时回显，但"完成与失败的边界"没处
 ## 处置
 
 - [ ] 预算到期 grace drain 与"差 text() 收尾按成功结算"
-- [ ] @options 越界报错带合法示例行
+- [x] @options 越界报错带合法示例行
 - [ ] 上限调整的产品决定（维持 120s / 提高）
 - [ ] e2e 登记：30s 预算 + 29s 完成命令的成功结算路径
+
+## 现象二落地备注（2026-11-21）
+
+T-33a-impl 红 7192208ae → 绿 6bd46da89，review PASS（fx-pi3 独立复现红）。OutOfRange 两支各带可复制合法示例行，range 与示例值全部引用 host 常量（无魔数）；Malformed 分支现状已清晰未动；上限常量未动。已合并 main（7fa7281ef），双远端已推。评审证据尾账：worker 存的 red-evidence.txt 是单文件 zig 直跑的错误调用输出，红本身经评审 detached worktree 独立复现为真。
