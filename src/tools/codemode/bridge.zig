@@ -800,6 +800,81 @@ test "run_command argument rejections name the fields" {
     }
 }
 
+// ISSUE-32: a bare string argument coerces onto the tool's primary
+// parameter instead of failing as InvalidToolArguments: run_command's
+// canonical run form takes the string as its command field, and a
+// registry-backed tool takes it as its single required string field,
+// named by that tool's schema. Tools without one clear primary parameter
+// (run_script's language+code, write_file's path+content) keep the
+// ISSUE-24 field-level rejection, and object arguments pass through
+// byte for byte.
+test "run_command coerces a bare string onto its command field" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const canonical = try canonicalNestedCall(
+        arena_state.allocator(),
+        .{ .name = "run_command" },
+        "\"ls -la\"",
+        .{},
+        null,
+        null,
+    );
+    try std.testing.expectEqualStrings("shell", canonical.name);
+    try std.testing.expectEqualStrings(
+        "{\"action\":\"run\",\"command\":\"ls -la\"}",
+        canonical.arguments_json,
+    );
+}
+
+test "read_file glob_files grep_files coerce a bare string onto the schema primary field" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const Case = struct { tool: []const u8, args: []const u8, expected: []const u8 };
+    const cases = [_]Case{
+        .{ .tool = "read_file", .args = "\"src/main.zig\"", .expected = "{\"path\":\"src/main.zig\"}" },
+        .{ .tool = "glob_files", .args = "\"**/*.py\"", .expected = "{\"pattern\":\"**/*.py\"}" },
+        .{ .tool = "grep_files", .args = "\"needle\"", .expected = "{\"pattern\":\"needle\"}" },
+    };
+    for (cases) |case| {
+        const canonical = try canonicalNestedCall(arena, .{ .name = case.tool }, case.args, .{}, null, null);
+        try std.testing.expectEqualStrings(case.tool, canonical.name);
+        try std.testing.expectEqualStrings(case.expected, canonical.arguments_json);
+    }
+}
+
+test "a bare string with no single primary parameter keeps the existing behavior" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    // run_script requires language and code: the string is not coercible
+    // and the ISSUE-24 object-form rejection text is kept verbatim.
+    var detail: tool_runtime.NestedArgumentError = .{};
+    try std.testing.expectError(
+        error.InvalidToolArguments,
+        canonicalNestedCall(arena, .{ .name = "run_script" }, "\"echo hi\"", .{}, null, &detail),
+    );
+    try std.testing.expectEqualStrings("run_script arguments must be a JSON object", detail.text);
+
+    // write_file requires path and content: the string passes through
+    // untouched for the tool's own field-level decoder error.
+    const passthrough = try canonicalNestedCall(arena, .{ .name = "write_file" }, "\"notes\"", .{}, null, null);
+    try std.testing.expectEqualStrings("\"notes\"", passthrough.arguments_json);
+}
+
+test "object arguments keep their exact bytes through canonicalization" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const args = "{\"path\":\"a.zig\",\"start_line\":3}";
+    const canonical = try canonicalNestedCall(arena, .{ .name = "read_file" }, args, .{}, null, null);
+    try std.testing.expectEqualStrings(args, canonical.arguments_json);
+    try std.testing.expectEqual(args.ptr, canonical.arguments_json.ptr);
+}
+
 test "run_script argument rejections name the fields" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
