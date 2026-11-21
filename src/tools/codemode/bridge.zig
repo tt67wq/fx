@@ -1736,3 +1736,33 @@ const TestCodemodeRuntime = struct {
         };
     }
 };
+test "run_script python uses the configured interpreter and quotes a space path" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const temp_base = try arena.print("/tmp/fx-run-script-interp-{d}", .{io_mod.nanoTimestamp()});
+    try std.Io.Dir.cwd().createDirPath(io_mod.getIo(), temp_base);
+    defer std.Io.Dir.cwd().deleteTree(io_mod.getIo(), temp_base) catch {};
+    var temp_dir: ?[]const u8 = null;
+    const canonical = try canonicalNestedCall(
+        arena,
+        .{ .name = "run_script" },
+        "{\"language\":\"python\",\"code\":\"print('hi')\"}",
+        .{
+            .workspace_root = temp_base,
+            .temp_base = temp_base,
+            .interpreter = "/Users/example/my interpreters/bin/python3",
+        },
+        &temp_dir,
+        null,
+    );
+    try std.testing.expectEqualStrings("shell", canonical.name);
+    // The configured interpreter is the argv token, single-quoted because the
+    // path holds a space; the fx-written temp script stays the second token.
+    try std.testing.expect(std.mem.startsWith(
+        u8,
+        canonical.arguments_json,
+        "{\"action\":\"run\",\"command\":\"'/Users/example/my interpreters/bin/python3' ",
+    ));
+    try std.testing.expect(std.mem.endsWith(u8, canonical.arguments_json, "/script.py\"}"));
+}

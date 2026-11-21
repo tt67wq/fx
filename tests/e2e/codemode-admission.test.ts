@@ -578,6 +578,52 @@ text("padding " + "x".repeat(20000));
   }
 });
 
+test("run_script python runs through the configured codemode_python interpreter", async () => {
+  const root = createIsolatedRoot();
+  // A wrapper interpreter under a path with a space: it prints a sentinel,
+  // then delegates to the real python3. The sentinel proves the configured
+  // interpreter ran (not the default python3), and the space exercises
+  // quoteShellPath end to end.
+  const interpDir = join(root.workspace, "my interpreters");
+  mkdirSync(interpDir, { recursive: true });
+  const interp = join(interpDir, "pywrap.sh");
+  writeFileSync(interp, "#!/bin/sh\nprintf 'INTERP_SENTINEL_35\\n'\nexec python3 \"$@\"\n");
+  chmodSync(interp, 0o755);
+  writeFileSync(
+    join(root.home, ".fx", "settings.json"),
+    JSON.stringify({
+      sandbox: "none",
+      permission_mode: "auto",
+      experimental: { codemode: true, codemode_derived_surface: true, codemode_python: interp },
+    }) + "\n",
+  );
+  const script = "const r = await tools.call(\"run_script\", { language: \"python\", code: \"print('PY_BODY_35')\" });\ntext(\"RESULT:\" + (typeof r === \"string\" ? r : JSON.stringify(r)));\n";
+  const gateway = startGateway([
+    fakeGatewayToolCall("interp-1", "codemode", { script }),
+    fakeGatewayFinalText("INTERP_FINAL"),
+  ]);
+  try {
+    const result = await runFx(
+      ["ask", "--quiet", "--json", "--no-save", "run the interpreter test"],
+      { cwd: root.workspace, env: gatewayEnv(root, gateway), timeoutMs: TIMEOUT },
+    );
+    expect(result.code, "stderr: " + result.stderr.slice(0, 400)).toBe(0);
+    const request = JSON.parse(gateway.requests[1]!.body) as {
+      prompt?: Array<{ content?: Array<Record<string, unknown>> }>;
+    };
+    const toolResult = (request.prompt ?? [])
+      .flatMap((message) => message.content ?? [])
+      .find((part) => part.type === "tool-result" && part.toolCallId === "interp-1");
+    expect(toolResult).toBeDefined();
+    const output = toolResult!.output as { type: string; value: string };
+    expect(output.type).toBe("text");
+    // The sentinel comes from the configured wrapper, not the default python3.
+    expect(output.value).toContain("INTERP_SENTINEL_35");
+    expect(output.value).toContain("PY_BODY_35");
+  } finally {
+    rmSync(root.workspace, { recursive: true, force: true });
+  }
+});
 describe("codemode nested admission parity", () => {
   test(
     "one command produces one review payload and one result on both paths",

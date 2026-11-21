@@ -528,3 +528,21 @@ test "a non-object file has no unknown keys" {
     defer std.testing.allocator.free(unknown);
     try std.testing.expectEqual(@as(usize, 0), unknown.len);
 }
+test "experimental carries a string child kind for codemode_python" {
+    const experimental = find("experimental").?;
+    try std.testing.expect(experimental.hasChild("codemode_python"));
+    try std.testing.expectEqual(experimental.children.len, experimental.child_kinds.len);
+    var found_string = false;
+    for (experimental.children, experimental.child_kinds) |child, kind| {
+        if (std.mem.eql(u8, child, "codemode_python")) {
+            try std.testing.expectEqual(Kind.string, kind);
+            found_string = true;
+        } else {
+            try std.testing.expectEqual(Kind.boolean, kind);
+        }
+    }
+    try std.testing.expect(found_string);
+    // A group without child_kinds keeps every child a switch.
+    const status_line = find("status_line").?;
+    try std.testing.expectEqual(@as(usize, 0), status_line.child_kinds.len);
+}

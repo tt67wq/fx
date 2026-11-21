@@ -3145,6 +3145,37 @@ test "review_model parses, merges, and yields to FX_REVIEW_MODEL" {
     try std.testing.expectEqualStrings("process/review", result.settings.review_model.?);
 }
 
+test "codemode_python parses, merges, and validates the interpreter token" {
+    const alloc = std.testing.allocator;
+    // Absent keeps the default: null makes the bridge fall back to python3.
+    var absent = try parseSettingsJson(alloc, "{}");
+    defer absent.deinit(alloc);
+    try std.testing.expect(absent.codemode_python == null);
+    try std.testing.expect(codemodePython(&absent) == null);
+    // An absolute path and a bare PATH command name both parse.
+    var base = try parseSettingsJson(alloc, "{\"experimental\":{\"codemode_python\":\"/Users/example/venv/bin/python3\"}}");
+    defer base.deinit(alloc);
+    try std.testing.expectEqualStrings("/Users/example/venv/bin/python3", base.codemode_python.?);
+    var cmd = try parseSettingsJson(alloc, "{\"experimental\":{\"codemode_python\":\"python3.12\"}}");
+    defer cmd.deinit(alloc);
+    try std.testing.expectEqualStrings("python3.12", cmd.codemode_python.?);
+    // A later layer wins, is trimmed, and frees the value it replaces.
+    var over = try parseSettingsJson(alloc, "{\"experimental\":{\"codemode_python\":\" /Users/example/conda/bin/python \"}}");
+    defer over.deinit(alloc);
+    try mergeSettings(&base, &over, alloc);
+    try std.testing.expectEqualStrings("/Users/example/conda/bin/python", base.codemode_python.?);
+    try std.testing.expect(over.codemode_python == null);
+    // Type and value guards: non-string, empty, NUL, and a leading dash.
+    try std.testing.expectError(error.InvalidExperimentalCodemodePythonType, parseSettingsJson(alloc, "{\"experimental\":{\"codemode_python\":false}}"));
+    try std.testing.expectError(error.InvalidExperimentalCodemodePythonValue, parseSettingsJson(alloc, "{\"experimental\":{\"codemode_python\":\"\"}}"));
+    try std.testing.expectError(error.InvalidExperimentalCodemodePythonValue, parseSettingsJson(alloc, "{\"experimental\":{\"codemode_python\":\"  \"}}"));
+    try std.testing.expectError(error.InvalidExperimentalCodemodePythonValue, parseSettingsJson(alloc, "{\"experimental\":{\"codemode_python\":\"-c\"}}"));
+    try std.testing.expectError(error.InvalidExperimentalCodemodePythonValue, parseSettingsJson(alloc, "{\"experimental\":{\"codemode_python\":\"bad\\u0000python\"}}"));
+    // The project layer never parses the key: an interpreter path is profile-only.
+    var project = try parseSettingsJsonForLayer(alloc, "{\"experimental\":{\"codemode_python\":\"/Users/example/x\"}}", .project);
+    defer project.deinit(alloc);
+    try std.testing.expect(project.codemode_python == null);
+}
 test "renamed groups read either spelling and the current one wins" {
     const alloc = std.testing.allocator;
     var both = try parseSettingsJson(alloc,

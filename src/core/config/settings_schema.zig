@@ -215,3 +215,11 @@ test "the .fx.json schema lists only the project-safe keys" {
     try std.testing.expect(properties.contains("$schema"));
     try std.testing.expectEqual(@as(i64, 1024), properties.get("max_tool_result_bytes").?.object.get("minimum").?.integer);
 }
+test "the experimental schema types codemode_python as a string child" {
+    const parsed = try parseSchema(std.testing.allocator, .profile);
+    defer parsed.deinit();
+    const properties = parsed.value.object.get("properties").?.object;
+    const experimental = properties.get("experimental").?.object.get("properties").?.object;
+    try std.testing.expectEqualStrings("string", experimental.get("codemode_python").?.object.get("type").?.string);
+    try std.testing.expectEqualStrings("boolean", experimental.get("codemode").?.object.get("type").?.string);
+}
