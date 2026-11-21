@@ -1,0 +1,12 @@
+T-36-impl red evidence (cap-test gated_all + <=1024 pin + F-2 pins on the 1172-byte description)
+
+zig build test (red commit):
+
+error: 'builtins.tools.test.codemode description states the nested command budget truthfully' failed without output
+
+Build Summary: 20/22 steps succeeded (1 failed); 10031/10034 tests passed (2 skipped, 1 failed)
+
+The single failure is the extended cap test: gated_all now includes codemode,
+whose 1172-byte description exceeds the 1024-byte model-facing cap, and the
+F-2 pins (object-form example, no "still works") do not hold on the old
+script parameter description.

@@ -762,6 +762,11 @@ test "codemode description states the nested command budget truthfully" {
     try std.testing.expect(std.mem.find(u8, codemode_description, "No Node.js API: no import/require of fs or process, no top-level tool functions") != null);
     try std.testing.expect(std.mem.find(u8, codemode_description, "arguments are objects") != null);
     try std.testing.expect(std.mem.find(u8, codemode_description, "tools.call(\"run_command\", {command: \"...\"})") != null);
+    // ISSUE-36 F-2: the script parameter description shows the object
+    // form and keeps no string-form concession wording.
+    const script_description = codemode.model_schema.input_schema.properties[0].description;
+    try std.testing.expect(std.mem.find(u8, script_description, "tools.call(\"tool_name\", {args})") != null);
+    try std.testing.expect(std.mem.find(u8, script_description, "still works") == null);
     // 1172 = the length with the T-34 pitfalls folded in by compressing the
     // existing prose; the net word count drops to 169 (no growth, C4).
     try std.testing.expect(codemode_description.len <= 1172);
