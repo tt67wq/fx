@@ -622,6 +622,9 @@ const AskContext = struct {
     /// Resolved experimental.codemode_derived_surface gate, cached after the
     /// first read so one ask run merges profile settings at most once.
     codemode_derived_surface_gate: ?bool = null,
+    /// Resolved experimental.codemode_python interpreter, cached for the run.
+    codemode_python_gate: ?[]const u8 = null,
+    codemode_python_resolved: bool = false,
     /// Profile preference used only when creating a new durable session.
     /// Process and CLI overrides remain per-run and never rewrite this value.
     persisted_ultrafast_mode: bool = false,
@@ -1109,6 +1112,7 @@ const AskContext = struct {
             .permission_rules = self.permission_rules,
             .tool_registry = self.toolRegistry(),
             .codemode_derived_surface = self.codemodeDerivedSurface(),
+            .codemode_python = self.codemodePython(),
             .subagent_host = self.subagent_host,
             .subagent_caller_id = self.activeSessionId(),
             .auto_classifier = self.admissionAutoClassifier(),
@@ -1181,6 +1185,21 @@ const AskContext = struct {
         };
         self.codemode_derived_surface_gate = enabled;
         return enabled;
+    }
+    /// The python interpreter for codemode run_script, read on demand from
+    /// merged profile settings and cached for the run, mirroring the
+    /// interactive app. Duplicated into the run allocator to outlive the load.
+    fn codemodePython(self: *AskContext) ?[]const u8 {
+        if (self.codemode_python_resolved) return self.codemode_python_gate;
+        const duped = blk: {
+            var settings = config_runtime.loadMergedSettings(self.alloc, self.workspace_root) catch break :blk null;
+            defer settings.deinit(self.alloc);
+            const value = config_runtime.codemodePython(&settings) orelse break :blk null;
+            break :blk self.alloc.dupe(u8, value) catch null;
+        };
+        self.codemode_python_gate = duped;
+        self.codemode_python_resolved = true;
+        return duped;
     }
 
     fn toolRegistry(self: *const AskContext) tool_dispatch.Registry {

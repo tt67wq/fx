@@ -114,6 +114,7 @@ fn call(
     state.nested_argument_error.clear();
     const canonical = try canonicalNestedCall(arena, tool, args_json, .{
         .workspace_root = ctx.workspace_root,
+        .interpreter = ctx.codemode_python orelse "python3",
     }, &script_temp_dir, &state.nested_argument_error);
     const nested_call: types.ToolCall = .{
         .id = nested_id,
@@ -350,6 +351,10 @@ fn wrapPrimaryParameter(arena: std.mem.Allocator, name: []const u8, field: []con
 pub const RunScriptEnv = struct {
     workspace_root: []const u8 = "",
     temp_base: []const u8 = "",
+    /// The python interpreter token, from the profile setting
+    /// experimental.codemode_python. Defaults to python3; the caller quotes it
+    /// for the shell command line, so a path with spaces keeps the argv shape.
+    interpreter: []const u8 = "python3",
 };
 
 /// The v1 language enum. The interpreter token below is the only source of
@@ -478,10 +483,10 @@ fn clampRunScriptTimeout(requested: i64) u64 {
 }
 
 /// Normalizes one run_script call onto the registered shell tool's
-/// `action:"run"` form. The interpreter token comes from the language enum
-/// above, the python script body and any CTX_FILE copy are written by fx
-/// into a per-call temp directory, and the command is the fixed argv shape
-/// `python3 <fx temp path>` (shell forwards the command line itself, which
+/// `action:"run"` form. The interpreter token comes from the profile
+/// (default python3), the python script body and any CTX_FILE copy are written
+/// by fx into a per-call temp directory, and the command is the fixed argv
+/// shape `<interpreter> <fx temp path>` (shell forwards the command line itself, which
 /// keeps the command_effect word-form guard in charge). Model text never
 /// becomes an interpreter option token: fields beyond the five below would
 /// be the only carriers for one, and unknown fields are rejected here at
@@ -583,9 +588,9 @@ fn canonicalRunScript(
             try writeRunScriptFile(arena, temp_dir.?, "script.py", code_value.string);
             const script_path = try std.Io.Dir.path.join(arena, &.{ temp_dir.?, "script.py" });
             command = if (ctx_path) |path|
-                try arena.print("CTX_FILE={s} python3 {s}", .{ try quoteShellPath(arena, path), try quoteShellPath(arena, script_path) })
+                try arena.print("CTX_FILE={s} {s} {s}", .{ try quoteShellPath(arena, path), try quoteShellPath(arena, env.interpreter), try quoteShellPath(arena, script_path) })
             else
-                try arena.print("python3 {s}", .{try quoteShellPath(arena, script_path)});
+                try arena.print("{s} {s}", .{ try quoteShellPath(arena, env.interpreter), try quoteShellPath(arena, script_path) });
         },
     }
 

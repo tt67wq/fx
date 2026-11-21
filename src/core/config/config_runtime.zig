@@ -75,6 +75,9 @@ pub const Settings = struct {
     /// tool surface. Profile-only; a missing value keeps the shipped four
     /// names.
     codemode_derived_surface_enabled: ?bool = null,
+    /// Interpreter for codemode run_script python: an absolute path or a PATH
+    /// command name. Owned by this Settings; freed in deinit. Null keeps python3.
+    codemode_python: ?[]const u8 = null,
     /// Whether the experimental rtk output-compression hook is on. Profile-only;
     /// default off. Read with rtkEnabled.
     rtk_enabled: ?bool = null,
@@ -103,6 +106,7 @@ pub const Settings = struct {
         if (self.providers) |*providers| providers.deinit(alloc);
         self.permission_rules.deinit(alloc);
         if (self.review_model) |value| alloc.free(value);
+        if (self.codemode_python) |value| alloc.free(value);
         if (self.theme) |value| alloc.free(value);
         if (self.provider_order) |order| {
             for (order) |slug| alloc.free(@constCast(slug));
@@ -215,6 +219,11 @@ pub fn codemodeEnabled(settings: *const Settings) bool {
 /// in the profile turns it on.
 pub fn codemodeDerivedSurfaceEnabled(settings: *const Settings) bool {
     return settings.codemode_derived_surface_enabled orelse false;
+}
+/// The interpreter codemode run_script uses for python. Null keeps the
+/// default python3; only the profile may name it, never a project file.
+pub fn codemodePython(settings: *const Settings) ?[]const u8 {
+    return settings.codemode_python;
 }
 
 /// Whether the experimental rtk output-compression hook is enabled. Default
@@ -1889,6 +1898,15 @@ fn parseProfileOnlyFields(
             if (derived != .bool) return error.InvalidExperimentalCodemodeDerivedSurfaceType;
             settings.codemode_derived_surface_enabled = derived.bool;
         }
+        if (experimental_value.object.get("codemode_python")) |python| {
+            if (python != .string) return error.InvalidExperimentalCodemodePythonType;
+            const trimmed = std.mem.trim(u8, python.string, " \t\r\n");
+            // Non-empty, no NUL, and no leading dash: the token is an argv
+            // program, never an option, and it comes from the user's profile.
+            if (trimmed.len == 0 or trimmed[0] == '-' or std.mem.findScalar(u8, trimmed, 0) != null)
+                return error.InvalidExperimentalCodemodePythonValue;
+            settings.codemode_python = try alloc.dupe(u8, trimmed);
+        }
         if (experimental_value.object.get("rtk")) |rtk| {
             if (rtk != .bool) return error.InvalidExperimentalRtkType;
             settings.rtk_enabled = rtk.bool;
@@ -2107,6 +2125,11 @@ fn mergeSettings(target: *Settings, incoming: *Settings, alloc: Allocator) !void
     if (incoming.prompt_history_enabled) |value| target.prompt_history_enabled = value;
     if (incoming.codemode_enabled) |value| target.codemode_enabled = value;
     if (incoming.codemode_derived_surface_enabled) |value| target.codemode_derived_surface_enabled = value;
+    if (incoming.codemode_python) |value| {
+        if (target.codemode_python) |old| alloc.free(old);
+        target.codemode_python = value;
+        incoming.codemode_python = null;
+    }
     if (incoming.rtk_enabled) |value| target.rtk_enabled = value;
     if (incoming.effort) |value| target.effort = value;
     if (incoming.review_model) |value| {

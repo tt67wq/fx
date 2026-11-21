@@ -49,10 +49,13 @@ pub const Key = struct {
     kind: Kind,
     description: []const u8,
     /// Fixed child keys of an object setting, such as `statusLine.context`.
-    /// Empty for plain values and for maps. Every child is a switch.
+    /// Empty for plain values and for maps.
     children: []const []const u8 = &.{},
     /// What each of `children` does, in the same order.
     child_descriptions: []const []const u8 = &.{},
+    /// The kind of each child, in the same order. Empty means every child is
+    /// a switch; a group with a non-switch child lists all child kinds.
+    child_kinds: []const Kind = &.{},
     /// The strings fx accepts for a string key with a fixed set. fx ignores
     /// case; the schema lists the spellings fx writes and documents.
     values: []const []const u8 = &.{},
@@ -118,7 +121,7 @@ pub const keys = [_]Key{
     .{ .name = "effort", .where = .profile, .kind = .string_or_null, .description = "Reasoning effort: auto or a name the model supports; null means auto" },
     .{ .name = "enableAllProjectMcpServers", .where = .profile, .kind = .boolean, .workspace_only = true, .description = "Approve every server in this workspace's .mcp.json; manage it with fx mcp approve and reject" },
     .{ .name = "enabledMcpjsonServers", .where = .profile, .kind = .strings, .workspace_only = true, .description = "Project MCP servers approved in this workspace; manage them with fx mcp approve and reject" },
-    .{ .name = "experimental", .where = .profile, .kind = .switches, .children = &.{ "codemode", "codemode_derived_surface", "rtk" }, .child_descriptions = &.{ "Run JavaScript through the codemode tool bridge", "Let codemode scripts name the registry-derived tool surface instead of the shipped four", "Rewrite shell commands through rtk for compact output" }, .description = "Experimental features" },
+    .{ .name = "experimental", .where = .profile, .kind = .switches, .children = &.{ "codemode", "codemode_derived_surface", "codemode_python", "rtk" }, .child_descriptions = &.{ "Run JavaScript through the codemode tool bridge", "Let codemode scripts name the registry-derived tool surface instead of the shipped four", "Python interpreter for codemode run_script: an absolute path or a PATH command name; defaults to python3", "Rewrite shell commands through rtk for compact output" }, .child_kinds = &.{ .boolean, .boolean, .string, .boolean }, .description = "Experimental features" },
     .{ .name = "fast_mode", .where = .profile, .kind = .boolean, .description = "Use faster inference when the model supports it" },
     .{ .name = "fast_mode_model_bound", .where = .profile, .kind = .boolean, .description = "Managed by fx alongside fast_mode" },
     .{ .name = "first_call_tool_choice", .where = .profile, .kind = .string, .values = &.{ "auto", "none" }, .description = "Tool choice for the first request of a turn" },

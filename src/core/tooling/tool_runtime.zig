@@ -173,6 +173,9 @@ pub const Context = struct {
     /// shipped four names, or the registry-derived face the experimental
     /// gate turns on. It changes only which names a script may forward.
     codemode_derived_surface: bool = false,
+    /// Interpreter for codemode run_script python, from the profile setting
+    /// experimental.codemode_python. Null keeps the bridge default python3.
+    codemode_python: ?[]const u8 = null,
     subagent_host: ?*subagent_tool_host.Runtime = null,
     subagent_caller_id: ?[]const u8 = null,
     permission_mode: PermissionMode,

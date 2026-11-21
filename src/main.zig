@@ -501,6 +501,11 @@ const App = struct {
     /// Resolved experimental.codemode_derived_surface gate, cached after the
     /// first read.
     codemode_derived_surface_gate: ?bool = null,
+    /// Resolved experimental.codemode_python interpreter, cached after the
+    /// first read. Null keeps python3; the resolved flag separates an unset
+    /// default from a gate that has not been read yet.
+    codemode_python_gate: ?[]const u8 = null,
+    codemode_python_resolved: bool = false,
     rtk_gate: ?bool = null,
     codemode_gate_from_cwd: bool = false,
     workspace_identity: statusline_identity.Runtime = .{},
@@ -1893,6 +1898,22 @@ const App = struct {
         @constCast(self).codemode_derived_surface_gate = enabled;
         return enabled;
     }
+    /// The python interpreter for codemode run_script, read once from merged
+    /// profile settings and cached like the codemode gate. The string is
+    /// duplicated into the app allocator so it outlives the settings load.
+    pub fn codemodePython(self: *const App) ?[]const u8 {
+        if (self.codemode_python_resolved) return self.codemode_python_gate;
+        const root = if (self.workspace_root.len == 0) "." else self.workspace_root;
+        const duped = blk: {
+            var settings = config_runtime.loadMergedSettings(self.alloc, root) catch break :blk null;
+            defer settings.deinit(self.alloc);
+            const value = config_runtime.codemodePython(&settings) orelse break :blk null;
+            break :blk self.alloc.dupe(u8, value) catch null;
+        };
+        @constCast(self).codemode_python_gate = duped;
+        @constCast(self).codemode_python_resolved = true;
+        return duped;
+    }
 
     /// Re-resolves the gate once when it was cached before bootstrap named
     /// the real workspace root: a workspace-scoped override keyed by the
@@ -1903,6 +1924,8 @@ const App = struct {
         if (self.workspace_root.len == 0) return;
         self.codemode_gate = null;
         self.codemode_derived_surface_gate = null;
+        self.codemode_python_gate = null;
+        self.codemode_python_resolved = false;
         self.codemode_gate_from_cwd = false;
         _ = self.codemodeGate();
         // A launch profile narrowed against the pre-bootstrap base already

@@ -394,6 +394,10 @@ pub fn Runtime(comptime App: type) type {
                     app.codemodeDerivedSurface()
                 else
                     false,
+                .codemode_python = if (comptime @hasDecl(App, "codemodePython"))
+                    app.codemodePython()
+                else
+                    null,
                 .tool_registry = if (comptime @hasDecl(App, "toolRegistry")) app.toolRegistry(agent) else .{},
                 .subagent_host = if (comptime agents.hasAgentField(App, "session_persistence"))
                     app_session_runtime.Runtime(App).ownSubagentHost(agent)
