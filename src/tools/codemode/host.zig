@@ -30,6 +30,7 @@ pub const default_capture_buffer_bytes: usize = 1024 * 1024;
 pub const min_options_timeout_ms: u64 = 1_000;
 /// Hard cap for a script-declared @options timeout: 2 minutes.
 pub const max_options_timeout_ms: u64 = 120_000;
+pub const drain_grace_ms: i64 = 500;
 /// Hard cap for script-declared max_output_tokens: 1MiB / 4 bytes per token,
 /// matching the default capture buffer so a declared budget can reach it.
 pub const max_options_output_tokens: u64 = 262_144;
@@ -100,6 +101,7 @@ pub const Host = struct {
     runtime: ?*c.JSRuntime = null,
     context: ?*c.JSContext = null,
     deadline_ms: i64 = 0,
+    grace_deadline_ms: i64 = 0,
     timed_out: bool = false,
     cancelled_flag: bool = false,
     last_script_error: ?[]u8 = null,
@@ -239,6 +241,7 @@ pub const Host = struct {
         self.text_dropped_bytes = 0;
         self.console_dropped_bytes = 0;
         self.timed_out = false;
+        self.grace_deadline_ms = 0;
         self.cancelled_flag = false;
         if (self.last_script_error) |message| {
             self.allocator.free(message);
@@ -307,11 +310,19 @@ pub const Host = struct {
             while (c.JS_PromiseState(ctx, current) == c.JS_PROMISE_PENDING) {
                 var job_ctx: ?*c.JSContext = null;
                 const pending = c.JS_ExecutePendingJob(self.runtime.?, &job_ctx);
-                if (pending == 0) return error.Timeout;
-                if (self.cancelRequested()) return error.Cancelled;
-                if (io_mod.milliTimestamp() >= self.deadline_ms) {
-                    self.timed_out = true;
+                if (pending == 0) {
+                    if (c.JS_PromiseState(ctx, current) != c.JS_PROMISE_PENDING) break;
                     return error.Timeout;
+                }
+                if (self.cancelRequested()) return error.Cancelled;
+                const now = io_mod.milliTimestamp();
+                if (self.grace_deadline_ms > 0) {
+                    if (now >= self.grace_deadline_ms) {
+                        self.timed_out = true;
+                        return error.Timeout;
+                    }
+                } else if (now >= self.deadline_ms) {
+                    self.grace_deadline_ms = now + drain_grace_ms;
                 }
             }
             const inner = c.JS_PromiseResult(ctx, current);
@@ -646,9 +657,16 @@ fn interruptHandler(_: ?*c.JSContext, opaque_ptr: ?*anyopaque) callconv(.c) c_in
     const host: *Host = @ptrCast(@alignCast(opaque_ptr orelse return 0));
     // A zero deadline means no eval is in flight (bindings still installing);
     // only the cancel source may interrupt then.
-    if (host.deadline_ms != 0 and io_mod.milliTimestamp() >= host.deadline_ms) {
-        host.timed_out = true;
-        return 1;
+    if (host.deadline_ms != 0) {
+        const now = io_mod.milliTimestamp();
+        const effective = if (host.grace_deadline_ms > 0)
+            host.grace_deadline_ms
+        else
+            host.deadline_ms + drain_grace_ms;
+        if (now >= effective) {
+            host.timed_out = true;
+            return 1;
+        }
     }
     // The cancel flag is the same atomic the worker path sets, so Escape and
     // every other cancel route stop the script through one source.
@@ -1068,7 +1086,12 @@ fn toolsCallCallback(ctx: ?*c.JSContext, _: c.JSValue, argc: c_int, argv: [*c]c.
         host.cancelled_flag = true;
         return c.JS_ThrowPlainError(context, "codemode cancelled");
     }
-    if (io_mod.milliTimestamp() >= host.deadline_ms) {
+    const now = io_mod.milliTimestamp();
+    const effective = if (host.grace_deadline_ms > 0)
+        host.grace_deadline_ms
+    else
+        host.deadline_ms + drain_grace_ms;
+    if (now >= effective) {
         host.timed_out = true;
         return c.JS_ThrowPlainError(context, "codemode timed out");
     }
