@@ -470,6 +470,32 @@ test("budget-killed long command leaves its shell snapshot tail in the failure b
   }
 }, 90000);
 
+// ISSUE-32: a bare string argument coerces onto the tool's schema primary
+// parameter instead of failing with InvalidToolArguments.
+test("nested tools.call accepts a bare string argument", async () => {
+  const root = createIsolatedRoot();
+  writeFileSync(join(root.workspace, "notes.txt"), "alpha notes");
+  const script = 'const out = await tools.call("run_command", "echo hello-coerce");\n' +
+    'const notes = await tools.call("read_file", "notes.txt");\n' +
+    'text(String(out) + "|" + String(notes));';
+  const gateway = startGateway([
+    fakeGatewayToolCall("coerce-1", "codemode", { script }),
+    fakeGatewayFinalText("COERCE_FINAL"),
+  ]);
+  try {
+    const result = await runFx(
+      ["ask", "--quiet", "--json", "--no-save", "run the coerce test"],
+      { cwd: root.workspace, env: gatewayEnv(root, gateway), timeoutMs: TIMEOUT },
+    );
+    expect(result.code, "stderr: " + result.stderr.slice(0, 400)).toBe(0);
+    const body = toolResultText(gateway.requests[1]!.body, "coerce-1");
+    expect(body).toContain("hello-coerce");
+    expect(body).toContain("alpha notes");
+  } finally {
+    rmSync(root.workspace, { recursive: true, force: true });
+  }
+}, 90000);
+
 test("a failed script keeps partial output and nested call summary", async () => {
   const root = createIsolatedRoot();
   writeFileSync(join(root.workspace, "notes.txt"), "alpha notes");

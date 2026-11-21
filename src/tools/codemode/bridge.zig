@@ -282,12 +282,65 @@ fn canonicalNestedCall(
     error_out: ?*tool_runtime.NestedArgumentError,
 ) !CanonicalCall {
     if (std.mem.eql(u8, tool.name, "run_command")) {
+        if (bareStringArgument(arena, args_json)) |command| {
+            // Wrap the string onto the command field, then take the same
+            // run-form path an object call takes so the action is added
+            // and admission sees the identical payload.
+            const wrapped = try wrapPrimaryParameter(arena, "run_command", "command", command);
+            return canonicalRunCommand(arena, wrapped.arguments_json, error_out);
+        }
         return canonicalRunCommand(arena, args_json, error_out);
     }
     if (std.mem.eql(u8, tool.name, "run_script")) {
         return canonicalRunScript(arena, args_json, env, temp_dir_out, error_out);
     }
+    // ISSUE-32: a bare string argument coerces onto the tool's single
+    // required string parameter, named by that tool's own schema, so the
+    // model's "one value" call shape executes instead of failing. A tool
+    // whose schema requires anything else (no or several required fields,
+    // a non-string primary) is not coercible and passes through untouched
+    // for its own field-level rejection.
+    if (bareStringArgument(arena, args_json)) |value| {
+        if (primaryStringParameter(tool.name)) |field| {
+            return wrapPrimaryParameter(arena, tool.name, field, value);
+        }
+    }
     return .{ .name = tool.name, .arguments_json = args_json };
+}
+
+/// The single required string parameter of one script-facing tool, read
+/// from that tool's model schema, not from a second hardcoded mapping. A tool whose schema requires anything but exactly
+/// one string field has no primary parameter and returns null.
+fn primaryStringParameter(script_name: []const u8) ?[]const u8 {
+    const registered = builtin_tools.registry.lookup(registeredName(script_name)) orelse return null;
+    const required = registered.model_schema.input_schema.required;
+    if (required.len != 1) return null;
+    for (registered.model_schema.input_schema.properties) |property| {
+        if (!std.mem.eql(u8, property.name, required[0])) continue;
+        return if (property.json_type == .string) required[0] else null;
+    }
+    return null;
+}
+
+/// The bare string argument a coercion applies to. The sandbox hands a
+/// script string through raw (host.zig quotes only objects), so both a
+/// JSON-quoted string and text that is not valid JSON count; any other
+/// JSON value keeps the existing behavior.
+fn bareStringArgument(arena: std.mem.Allocator, args_json: []const u8) ?[]const u8 {
+    const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, args_json, .{}) catch return args_json;
+    if (parsed != .string) return null;
+    return parsed.string;
+}
+
+/// Builds the one-field object {"field": value} for a coerced argument.
+fn wrapPrimaryParameter(arena: std.mem.Allocator, name: []const u8, field: []const u8, value: []const u8) !CanonicalCall {
+    var out: std.Io.Writer.Allocating = .init(arena);
+    try out.writer.writeAll("{");
+    try std.json.Stringify.value(field, .{}, &out.writer);
+    try out.writer.writeAll(":");
+    try std.json.Stringify.value(value, .{}, &out.writer);
+    try out.writer.writeByte('}');
+    return .{ .name = name, .arguments_json = try out.toOwnedSlice() };
 }
 
 /// Inputs canonicalNestedCall needs only for run_script: the workspace
