@@ -1,12 +1,17 @@
-T-36-impl red evidence (cap-test gated_all + <=1024 pin + F-2 pins on the 1172-byte description)
+T-36-fix red evidence
 
-zig build test (red commit):
+State: the codemode description reverted to the T-34 1172-byte version,
+while the cap test now covers gated_all, the length pin reads
+model_tool_schema.description_max_bytes, and the F-2 pins use a
+name-based script property lookup. Both guard tests fail on the old
+description, as they must:
 
 error: 'builtins.tools.test.codemode description states the nested command budget truthfully' failed without output
+error: 'builtins.tools.test.built-in tool descriptions fit the model-facing description cap' failed without output
 
-Build Summary: 20/22 steps succeeded (1 failed); 10031/10034 tests passed (2 skipped, 1 failed)
+Build Summary: 20/22 steps succeeded (1 failed); 10030/10034 tests passed (2 skipped, 2 failed)
 
-The single failure is the extended cap test: gated_all now includes codemode,
-whose 1172-byte description exceeds the 1024-byte model-facing cap, and the
-F-2 pins (object-form example, no "still works") do not hold on the old
-script parameter description.
+Correction of the previous red-evidence.txt: it claimed the cap-test
+widening and the <=1024 pin were in the red commit, but the edit script
+aborted before writing the file and only the F-2 pins landed. The two
+failures above are the honest attribution for this round.
