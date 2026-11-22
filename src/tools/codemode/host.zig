@@ -30,6 +30,7 @@ pub const default_capture_buffer_bytes: usize = 1024 * 1024;
 pub const min_options_timeout_ms: u64 = 1_000;
 /// Hard cap for a script-declared @options timeout: 2 minutes.
 pub const max_options_timeout_ms: u64 = 120_000;
+pub const drain_grace_ms: i64 = 500;
 /// Hard cap for script-declared max_output_tokens: 1MiB / 4 bytes per token,
 /// matching the default capture buffer so a declared budget can reach it.
 pub const max_options_output_tokens: u64 = 262_144;
@@ -100,6 +101,7 @@ pub const Host = struct {
     runtime: ?*c.JSRuntime = null,
     context: ?*c.JSContext = null,
     deadline_ms: i64 = 0,
+    grace_deadline_ms: i64 = 0,
     timed_out: bool = false,
     cancelled_flag: bool = false,
     last_script_error: ?[]u8 = null,
@@ -239,6 +241,7 @@ pub const Host = struct {
         self.text_dropped_bytes = 0;
         self.console_dropped_bytes = 0;
         self.timed_out = false;
+        self.grace_deadline_ms = 0;
         self.cancelled_flag = false;
         if (self.last_script_error) |message| {
             self.allocator.free(message);
@@ -272,9 +275,17 @@ pub const Host = struct {
             const pending = c.JS_ExecutePendingJob(self.runtime.?, &job_ctx);
             if (pending == 0) return error.Timeout;
             if (self.cancelRequested()) return error.Cancelled;
-            if (io_mod.milliTimestamp() >= self.deadline_ms) {
-                self.timed_out = true;
-                return error.Timeout;
+            const now = io_mod.milliTimestamp();
+            if (self.grace_deadline_ms > 0) {
+                if (now >= self.grace_deadline_ms) {
+                    self.timed_out = true;
+                    return error.Timeout;
+                }
+            } else if (now >= self.deadline_ms) {
+                // Deadline reached with jobs still pending: open the grace
+                // window so already-queued work can settle (ISSUE-33). Do not
+                // set timed_out here; a grace rejection must stay ScriptError.
+                self.grace_deadline_ms = now + drain_grace_ms;
             }
         }
         const settled = c.JS_PromiseResult(ctx, value);
@@ -309,9 +320,14 @@ pub const Host = struct {
                 const pending = c.JS_ExecutePendingJob(self.runtime.?, &job_ctx);
                 if (pending == 0) return error.Timeout;
                 if (self.cancelRequested()) return error.Cancelled;
-                if (io_mod.milliTimestamp() >= self.deadline_ms) {
-                    self.timed_out = true;
-                    return error.Timeout;
+                const now = io_mod.milliTimestamp();
+                if (self.grace_deadline_ms > 0) {
+                    if (now >= self.grace_deadline_ms) {
+                        self.timed_out = true;
+                        return error.Timeout;
+                    }
+                } else if (now >= self.deadline_ms) {
+                    self.grace_deadline_ms = now + drain_grace_ms;
                 }
             }
             const inner = c.JS_PromiseResult(ctx, current);
@@ -336,6 +352,11 @@ pub const Host = struct {
             current_owned = true;
         }
 
+        // A budget death marked during a nested call (or an exhausted grace)
+        // is authoritative: a script cannot settle success past its budget.
+        // Only finalization of work that completed within budget may succeed,
+        // which is exactly the ISSUE-33 grace case (timed_out stays unset).
+        if (self.timed_out) return error.Timeout;
         const rendered = try self.stringify(ctx, current);
         errdefer self.allocator.free(rendered);
         const text = try self.text_buf.toOwnedSlice(self.allocator);
@@ -646,9 +667,16 @@ fn interruptHandler(_: ?*c.JSContext, opaque_ptr: ?*anyopaque) callconv(.c) c_in
     const host: *Host = @ptrCast(@alignCast(opaque_ptr orelse return 0));
     // A zero deadline means no eval is in flight (bindings still installing);
     // only the cancel source may interrupt then.
-    if (host.deadline_ms != 0 and io_mod.milliTimestamp() >= host.deadline_ms) {
-        host.timed_out = true;
-        return 1;
+    if (host.deadline_ms != 0) {
+        const now = io_mod.milliTimestamp();
+        const effective = if (host.grace_deadline_ms > 0)
+            host.grace_deadline_ms
+        else
+            host.deadline_ms + drain_grace_ms;
+        if (now >= effective) {
+            host.timed_out = true;
+            return 1;
+        }
     }
     // The cancel flag is the same atomic the worker path sets, so Escape and
     // every other cancel route stop the script through one source.
@@ -1140,8 +1168,10 @@ fn toolsCallCallback(ctx: ?*c.JSContext, _: c.JSValue, argc: c_int, argv: [*c]c.
                 .{ tool.name, @errorName(err) },
                 0,
             ) catch "codemode tool call failed";
+        if (io_mod.milliTimestamp() >= host.deadline_ms) host.timed_out = true;
         return c.JS_ThrowPlainError(context, "%s", message.ptr);
     };
+    if (io_mod.milliTimestamp() >= host.deadline_ms) host.timed_out = true;
     defer host.allocator.free(result);
     return c.JS_NewStringLen(context, result.ptr, result.len);
 }
@@ -1551,4 +1581,185 @@ test "takePartialOutput moves captured buffers to the caller" {
     defer host.allocator.free(empty.console);
     try std.testing.expectEqualStrings("", empty.text);
     try std.testing.expectEqualStrings("", empty.console);
+}
+
+/// Counts whether a nested call ever reached the backend, so a grace-window
+/// test can prove a call started after the budget died was refused at entry.
+const CountBackend = struct {
+    calls: usize = 0,
+    fn call(raw_ctx: ?*anyopaque, allocator: Allocator, _: bindings.Tool, _: []const u8) anyerror![]u8 {
+        const self: *CountBackend = @ptrCast(@alignCast(raw_ctx.?));
+        self.calls += 1;
+        return allocator.dupe(u8, "{\"ok\":true}");
+    }
+};
+
+/// Simulates the ambient budget killing a nested command: the call starts
+/// before the deadline, blocks past it, then returns the timeout error the
+/// shell bridge raises when the remaining script budget runs out.
+const KillBackend = struct {
+    fn call(_: ?*anyopaque, _: Allocator, _: bindings.Tool, _: []const u8) anyerror![]u8 {
+        const start = io_mod.milliTimestamp();
+        while (io_mod.milliTimestamp() - start < 150) {}
+        return error.TimeoutExpired;
+    }
+};
+
+/// Returns a normal success result only after the budget has died, the way
+/// the shell bridge hands back a budget-killed command's result envelope.
+const LateSuccessBackend = struct {
+    fn call(_: ?*anyopaque, allocator: Allocator, _: bindings.Tool, _: []const u8) anyerror![]u8 {
+        const start = io_mod.milliTimestamp();
+        while (io_mod.milliTimestamp() - start < 150) {}
+        return allocator.dupe(u8, "{\"ok\":true}");
+    }
+};
+
+// The burn chain below spends real wall clock in deterministic 25ms hops so
+// the deadline genuinely passes while microtask jobs are still pending. Each
+// hop yields with await, so the drain loop runs (and checks the deadline)
+// between hops; that is what lets the loop enter the grace window. Field
+// injection cannot work here because eval() owns deadline_ms and
+// grace_deadline_ms and resets both at entry (T-33b-review Finding 1).
+const burn_chain =
+    \\function burn(ms){var t=Date.now();while(Date.now()-t<ms){}}
+    \\async function work(n){for(var i=0;i<n;i++){burn(25);await Promise.resolve();}return 42;}
+;
+
+test "codemode first drain loop grace lets an awaited script finish past budget" {
+    var host = Host.init(std.testing.allocator, .{ .timeout_ms = 120 });
+    defer host.deinit();
+    const start = io_mod.milliTimestamp();
+    var result = try host.eval(burn_chain ++ "await work(10);");
+    defer result.deinit();
+    try std.testing.expectEqualStrings("42", result.value);
+    // Non-vacuous: the first loop entered grace (deadline passed while the
+    // eval promise was pending) and the script settled inside the window.
+    try std.testing.expect(host.grace_deadline_ms > 0);
+    const elapsed = io_mod.milliTimestamp() - start;
+    try std.testing.expect(elapsed >= 120);
+    try std.testing.expect(elapsed < 120 + drain_grace_ms + 200);
+}
+
+test "codemode inner drain loop grace lets a returned promise finish past budget" {
+    var host = Host.init(std.testing.allocator, .{ .timeout_ms = 120 });
+    defer host.deinit();
+    // No top-level await: work()'s promise is the completion value, so the
+    // inner drain loop settles it. This is the shape the inner grace already
+    // handles; the test pins it against the base tree (no grace at all).
+    var result = try host.eval(burn_chain ++ "work(10);");
+    defer result.deinit();
+    try std.testing.expectEqualStrings("42", result.value);
+    try std.testing.expect(host.grace_deadline_ms > 0);
+}
+
+test "codemode first loop grace still times out a truly stalled promise" {
+    var host = Host.init(std.testing.allocator, .{ .timeout_ms = 120 });
+    defer host.deinit();
+    // Burn into grace, then hand back a promise that can never settle: with
+    // no pending jobs grace must not wash a real stall into a wait.
+    try std.testing.expectError(error.Timeout, host.eval(burn_chain ++
+        \\async function stall(){for(var i=0;i<6;i++){burn(25);await Promise.resolve();}return new Promise(function(){});}
+        \\await stall();
+    ));
+    try std.testing.expect(host.grace_deadline_ms > 0);
+}
+
+test "codemode first loop grace rejection is ScriptError not Timeout" {
+    var host = Host.init(std.testing.allocator, .{ .timeout_ms = 120 });
+    defer host.deinit();
+    try std.testing.expectError(error.ScriptError, host.eval(burn_chain ++
+        \\async function boom(){for(var i=0;i<6;i++){burn(25);await Promise.resolve();}throw new Error('boom');}
+        \\await boom();
+    ));
+    try std.testing.expect(host.grace_deadline_ms > 0);
+    try std.testing.expect(!host.timed_out);
+}
+
+test "codemode synchronous loop is killed at budget plus grace deliberately" {
+    var host = Host.init(std.testing.allocator, .{ .timeout_ms = 50 });
+    defer host.deinit();
+    const start = io_mod.milliTimestamp();
+    try std.testing.expectError(error.Timeout, host.eval("while (true) {}"));
+    const elapsed = io_mod.milliTimestamp() - start;
+    // Deliberate decision (contract case c): the interrupt handler hands
+    // synchronous code budget+grace, then kills it. The lower bound makes
+    // this red on the base tree (kills at ~budget); the upper bound catches
+    // an over-long grace. A bare <750ms bound could not see the difference.
+    try std.testing.expect(elapsed >= 50 + drain_grace_ms - 100);
+    try std.testing.expect(elapsed < 50 + drain_grace_ms + 200);
+    try std.testing.expect(host.timed_out);
+}
+
+test "codemode first loop grace cancel returns Cancelled" {
+    var host = Host.init(std.testing.allocator, .{ .timeout_ms = 120 });
+    defer host.deinit();
+    var flag = std.atomic.Value(bool).init(false);
+    host.cancel_flag = &flag;
+    const Setter = struct {
+        fn run(f: *std.atomic.Value(bool)) void {
+            io_mod.sleep(250 * std.time.ns_per_ms);
+            f.store(true, .seq_cst);
+        }
+    };
+    const thread = try std.Thread.spawn(.{}, Setter.run, .{&flag});
+    defer thread.join();
+    // The chain runs ~500ms; grace enters at ~120ms and the flag flips at
+    // ~250ms inside the window, so the drain loop must return Cancelled.
+    try std.testing.expectError(error.Cancelled, host.eval(burn_chain ++ "await work(20);"));
+    try std.testing.expect(host.grace_deadline_ms > 0);
+}
+
+test "codemode grace refuses a nested call started after the budget died" {
+    var host = Host.init(std.testing.allocator, .{ .timeout_ms = 120 });
+    defer host.deinit();
+    var fake = CountBackend{};
+    host.setToolBackend(.{ .ctx = &fake, .call = CountBackend.call });
+    // Burn into grace, then try to START a new call: the entry deadline check
+    // must refuse it (Finding 6), so the backend is never reached. Catching the
+    // refusal cannot wash the dead budget into a success either: the settlement
+    // stays Timeout. grace_deadline proves the window was actually entered.
+    try std.testing.expectError(error.Timeout, host.eval(burn_chain ++
+        \\async function probe(){for(var i=0;i<6;i++){burn(25);await Promise.resolve();}
+        \\try{await tools.call('run_command',{});return 'started';}catch(e){return 'refused';}}
+        \\await probe();
+    ));
+    try std.testing.expectEqual(@as(usize, 0), fake.calls);
+    try std.testing.expect(host.grace_deadline_ms > 0);
+}
+
+test "codemode budget-killed nested call rejection stays Timeout in grace" {
+    var host = Host.init(std.testing.allocator, .{ .timeout_ms = 120 });
+    defer host.deinit();
+    var fake = KillBackend{};
+    host.setToolBackend(.{ .ctx = &fake, .call = KillBackend.call });
+    // The call starts before the deadline and the backend kills it past the
+    // deadline. The uncaught rejection settles in grace, but because the
+    // budget died during the call it must stay Timeout, not become
+    // ScriptError (the four budget-expiry e2e cases depend on this).
+    try std.testing.expectError(error.Timeout, host.eval(
+        \\await tools.call('run_command',{});
+        \\text('never');
+    ));
+    // The rejection may settle before the loop formally opens grace, so the
+    // pin is the Timeout mapping (timed_out marked at the budget-killed call),
+    // not a grace_deadline assertion. Without the marking this is ScriptError.
+    try std.testing.expect(host.timed_out);
+}
+
+test "codemode nested call returning after the budget died raises Timeout" {
+    var host = Host.init(std.testing.allocator, .{ .timeout_ms = 120 });
+    defer host.deinit();
+    var fake = LateSuccessBackend{};
+    host.setToolBackend(.{ .ctx = &fake, .call = LateSuccessBackend.call });
+    // The call starts before the deadline and returns a success result past
+    // it. The callback marks timed_out and the settled-success path honors it,
+    // so the script cannot settle success inside grace. This is the mechanism
+    // that keeps the four budget-expiry e2e cases Timeout under first-loop
+    // grace while still returning the result (preserving partial output).
+    try std.testing.expectError(error.Timeout, host.eval(
+        \\await tools.call('run_command',{});
+        \\text('never');
+    ));
+    try std.testing.expect(host.timed_out);
 }

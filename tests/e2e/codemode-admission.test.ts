@@ -1512,4 +1512,40 @@ describe("codemode script mistake feedback", () => {
     }
   }, TIMEOUT);
 
+  test("grace window lets a script finish when work completes just past the budget", async () => {
+    const root = createIsolatedRoot();
+    // The script budget is 2s; the nested sleep finishes at ~1.5s (exit 0,
+    // inside budget). A deterministic 700ms burn then pushes the text()
+    // finalization to ~2.2s, past the budget but inside the 500ms grace
+    // window, so the first drain loop must settle it as success. The burn is
+    // what makes the budget genuinely expire before the script finalizes;
+    // the old microtask loop finished inside budget and passed on base.
+    const script =
+      "// @options: {\"timeout_ms\": 2000}\n" +
+      "await tools.call(\"run_command\", { command: \"sleep 1.5\" });\n" +
+      "const t0 = Date.now(); while (Date.now() - t0 < 700) {}\n" +
+      "text(\"grace-ok\");";
+    const gateway = startGateway([
+      fakeGatewayToolCall("grace-1", "codemode", { script }),
+      fakeGatewayFinalText("GRACE_DONE"),
+    ]);
+    try {
+      const result = await runFx(
+        ["ask", "--quiet", "--json", "--no-save", "run the grace test"],
+        { cwd: root.workspace, env: gatewayEnv(root, gateway), timeoutMs: 30_000 },
+      );
+      expect(result.timedOut).toBe(false);
+      expect(result.code, "stderr: " + result.stderr.slice(0, 400)).toBe(0);
+      expect(gateway.requests.length).toBe(2);
+      const body = toolResultText(
+        gateway.requests[1]!.body,
+        "grace-1",
+        "text",
+      );
+      expect(body).toContain("grace-ok");
+    } finally {
+      rmSync(root.workspace, { recursive: true, force: true });
+    }
+  }, 30_000);
+
 });
