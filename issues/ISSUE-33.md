@@ -1,6 +1,6 @@
 # ISSUE-33 — codemode 超时判定两处收口：命令已完成仍判失败；@options 上限与提示自相矛盾
 
-- **状态**: fixing（现象一施工中；现象二已落地；上限决策待开）
+- **状态**: open（现象一/二已落地；上限产品决策待开）
 - **发现时间**: 2026-11-20
 - **来源**: 近 40 个 session 记录分析（~/.fx/sessions/v2/，11-19 之后 3 次相关失败）
 - **关联模块**: src/tools/codemode/codemode_tool.zig（预算执行）、src/tools/codemode/host.zig
@@ -26,7 +26,7 @@ ISSUE-23 已补部分输出与耗时回显，但"完成与失败的边界"没处
 
 ## 处置
 
-- [ ] 预算到期 grace drain 与"差 text() 收尾按成功结算"
+- [x] 预算到期 grace drain 与"差 text() 收尾按成功结算"
 - [x] @options 越界报错带合法示例行
 - [ ] 上限调整的产品决定（维持 120s / 提高）
 - [ ] e2e 登记：30s 预算 + 29s 完成命令的成功结算路径
@@ -34,3 +34,7 @@ ISSUE-23 已补部分输出与耗时回显，但"完成与失败的边界"没处
 ## 现象二落地备注（2026-11-21）
 
 T-33a-impl 红 7192208ae → 绿 6bd46da89，review PASS（fx-pi3 独立复现红）。OutOfRange 两支各带可复制合法示例行，range 与示例值全部引用 host 常量（无魔数）；Malformed 分支现状已清晰未动；上限常量未动。已合并 main（7fa7281ef），双远端已推。评审证据尾账：worker 存的 red-evidence.txt 是单文件 zig 直跑的错误调用输出，红本身经评审 detached worktree 独立复现为真。
+
+## 现象一落地备注（2026-11-22）
+
+T-33b 三轮：首轮 deepseek 实现错循环（grace 只在 inner，现象一 settle 在 first eval 循环）+ 七测试全 vacuous，评审插桩探针 CHANGES-REQUESTED（F1-F6）；换 qwen4-max 重做 T-33b-fix 红 de7cf766a → 绿 f77a0a5a5，复审 PASS（fx-pi2 原评审者，逐条 Required 消解 + 探针实证）。终态：grace 进第一个 eval drain 循环（500ms 常量），仅 pending>0 进 grace、pending==0 真停滞立即 Timeout；设计冲突消解 = 预算死权威高于 grace settle（call 返回超预算置 timed_out，settled-SUCCESS honor 它），四个 budget-expiry e2e 恢复 Timeout 且 partial/excerpt 完整，现象一（call exit0 在预算内、finalization spill）成功；新调用 deadline 后仍拒（calls==0 钉死）；interrupt +500ms 刻意双侧 wall bound；pending==0 不必要 hunk 已丢。七 vacuous 测试换确定性 burn 链（grace_deadline_ms>0 断言真进窗口），e2e 对 base 二进制红再信。评审尾账：报告 EXCERPT_LEN 1117/1037 引用不存在（断言实为头尾标记+omitted+stopped/TimeoutExpired 字段，底层声明为真，订正引用非代码）；grace-cancel 测试饱和 runner 潜在 flake（若 flake 加宽 margin 非 timeout）。已合并 main（47757ef4a），合并树全量测试绿，双远端已推。上限产品决策（120s 维持/提高）仍待开。
