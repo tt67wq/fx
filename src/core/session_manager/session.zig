@@ -2874,6 +2874,77 @@ const session_tests = struct {
         defer gpa.free(kinds);
         for (kinds) |k| try testing.expect(k != .child_finished);
     }
+
+    test "codemode store writes survive close and resume, including from a snapshot" {
+        var t: TestEnv = undefined;
+        t.init(.{ .snapshot_every_bytes = 1024 });
+        defer t.deinit();
+        const s = try newRoot(&t);
+        _ = try s.append(&.{ .turn_started, item });
+        _ = try s.append(&.{.{ .codemode_store = "{\"set\":{\"a\":1},\"delete\":[]}" }});
+        _ = try s.append(&.{.turn_committed});
+        // A pad past the snapshot interval puts a snapshot over the first
+        // store line, so the resume below starts from the snapshot, not line 1.
+        var pad: std.ArrayList(u8) = .empty;
+        defer pad.deinit(gpa);
+        try pad.appendSlice(gpa, "{\"pad\":\"");
+        try pad.appendNTimes(gpa, 'x', 2048);
+        try pad.appendSlice(gpa, "\"}");
+        _ = try s.append(&.{ .turn_started, .{ .item = .{ .type = "assistant", .data = pad.items } } });
+        _ = try s.append(&.{.{ .codemode_store = "{\"set\":{\"b\":2},\"delete\":[\"a\"]}" }});
+        _ = try s.append(&.{.turn_committed});
+        const id = try gpa.dupe(u8, s.id());
+        defer gpa.free(id);
+        crash(&t, s);
+
+        const r = try resumeRoot(&t, id);
+        var resumed = try r.stateCopy(gpa);
+        defer resumed.deinit(gpa);
+        try testing.expectEqualStrings("{\"b\":2}", resumed.codemode_store.?);
+        try closeAndDestroy(r);
+        const all = try t.kinds(id);
+        defer gpa.free(all);
+        var snapshots: usize = 0;
+        for (all) |k| {
+            if (k == .snapshot) snapshots += 1;
+        }
+        try testing.expect(snapshots >= 1);
+    }
+
+    // T-6 equivalent (the original compat test file was lost with .agents):
+    // an older fx meets codemode_store as an unknown kind. The frame is the
+    // generic frame every kind uses, so only the kind lookup misses; the
+    // reader skips the line and last_seq advances. The real codemode_store
+    // line after it folds for a reader that knows the kind.
+    test "a log with kinds the reader does not know skips them and advances last_seq" {
+        var t: TestEnv = undefined;
+        t.init(.{});
+        defer t.deinit();
+        const s = try newRoot(&t);
+        _ = try s.append(&.{ .turn_started, item, .turn_committed });
+        const id = try gpa.dupe(u8, s.id());
+        defer gpa.free(id);
+        crash(&t, s);
+
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(gpa);
+        try log_mod.appendFramed(gpa, &out, "{\"v\":1,\"seq\":5,\"ts\":0,\"kind\":\"codemode_store_future\",\"data\":{\"set\":{\"old\":1},\"delete\":[]}");
+        try log_mod.appendLine(gpa, &out, 6, 0, .codemode_store, ",\"data\":{\"set\":{\"k\":1},\"delete\":[]}");
+        const dir = try t.env.s.openDir(t.env.root, id);
+        defer t.env.s.closeDir(dir);
+        const file = try t.env.s.openFile(dir, "log.jsonl", .read_write);
+        defer t.env.s.closeFile(file);
+        const end = try t.env.s.length(file);
+        try t.env.s.writeAt(file, out.items, end);
+
+        const r = try resumeRoot(&t, id);
+        var resumed = try r.stateCopy(gpa);
+        defer resumed.deinit(gpa);
+        try testing.expectEqual(@as(u64, 6), resumed.last_seq);
+        try testing.expectEqual(@as(u64, 1), resumed.committed);
+        try testing.expectEqualStrings("{\"k\":1}", resumed.codemode_store.?);
+        try closeAndDestroy(r);
+    }
 };
 
 test {

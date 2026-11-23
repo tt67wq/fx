@@ -13,6 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FX_BIN, runFx } from "../evals/eval-helpers";
+import { sessionDir } from "./saved-sessions";
 import {
   FAKE_GATEWAY_MODEL,
   fakeGatewayFinalText,
@@ -1549,3 +1550,52 @@ describe("codemode script mistake feedback", () => {
   }, 30_000);
 
 });
+
+// T-13 (ISSUE-13): store()/load() keep JSON values across codemode calls.
+// The first script's writes persist as one codemode_store session line; the
+// second script loads them in the same session, and a fresh process loads
+// them again after --resume. Deterministic: the fake gateway scripts both
+// calls, and no nested tool runs.
+test("store/load keep JSON values across codemode calls and a resume", async () => {
+  const root = createIsolatedRoot();
+  const storeScript = 'store("probe", {answer: 42, tags: ["a", "b"]}); text("stored");';
+  const loadScript = 'text("loaded:" + JSON.stringify(load("probe")));';
+  const expected = 'loaded:{"answer":42,"tags":["a","b"]}';
+  const gateway = startGateway([
+    fakeGatewayToolCall("store-1", "codemode", { script: storeScript }),
+    fakeGatewayToolCall("load-1", "codemode", { script: loadScript }),
+    fakeGatewayFinalText("STORE_FINAL"),
+  ]);
+  try {
+    const result = await runFx(
+      ["ask", "--json", "run the store probe"],
+      { cwd: root.workspace, env: gatewayEnv(root, gateway), timeoutMs: TIMEOUT },
+    );
+    expect(result.code, "stderr: " + result.stderr.slice(0, 400)).toBe(0);
+    // The second script sees the first script's writes through the session.
+    const body = toolResultText(gateway.requests[2]!.body, "load-1");
+    expect(body).toContain(expected);
+    const sessionId = (JSON.parse(result.stdout.trim()) as { session_id: string }).session_id;
+    expect(sessionId).not.toBe("");
+    // One codemode_store line holds the successful script's writes.
+    const log = readFileSync(join(sessionDir(root.home, sessionId), "log.jsonl"), "utf8");
+    const storeLines = log.split("\n").filter((line) => line.includes('"kind":"codemode_store"'));
+    expect(storeLines.length).toBe(1);
+    expect(storeLines[0]).toContain('"answer":42');
+    // A fresh process resumes the session and still loads the value.
+    const resumeGateway = startGateway([
+      fakeGatewayToolCall("load-2", "codemode", { script: loadScript }),
+      fakeGatewayFinalText("RESUME_FINAL"),
+    ]);
+    const resumed = await runFx(
+      ["ask", "--json", "--resume", sessionId, "load the probe again"],
+      { cwd: root.workspace, env: gatewayEnv(root, resumeGateway), timeoutMs: TIMEOUT },
+    );
+    expect(resumed.code, "stderr: " + resumed.stderr.slice(0, 400)).toBe(0);
+    const resumedBody = toolResultText(resumeGateway.requests[1]!.body, "load-2");
+    expect(resumedBody).toContain(expected);
+  } finally {
+    rmSync(root.root, { recursive: true, force: true });
+  }
+}, 90000);
+

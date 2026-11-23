@@ -776,6 +776,10 @@ test "codemode description states the nested command budget truthfully" {
     // is cut at 1009, so the whole description must fit; the compressed
     // 1024-byte, 144-word wording also stays below 169 words (C4).
     try std.testing.expect(codemode_description.len <= model_tool_schema.description_max_bytes);
+    // T-13 (ISSUE-13): store/load are model-visible, and the success-only
+    // persistence rule is stated so the model knows failed writes drop.
+    try std.testing.expect(std.mem.find(u8, codemode_description, "store(key, value)/load(key) keep JSON values across calls") != null);
+    try std.testing.expect(std.mem.find(u8, codemode_description, "failed scripts drop their writes") != null);
 }
 
 pub const codemode = ToolSpec{

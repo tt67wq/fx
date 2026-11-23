@@ -740,6 +740,11 @@ test "every kind's fields round trip, raw values byte for byte" {
     const compacted = (try roundTrip(arena, .{ .compacted = .{ .turn = null, .data = "{}" } })).compacted;
     try testing.expectEqual(@as(?u64, null), compacted.turn);
 
+    // T-13: the store body is opaque raw JSON, byte for byte like item data.
+    const store_data = "{ \"set\": {\"k\": 1}, \"delete\": [] }";
+    const store_writes = (try roundTrip(arena, .{ .codemode_store = .{ .data = store_data } })).codemode_store;
+    try testing.expectEqualStrings(store_data, store_writes.data);
+
     const finished = (try roundTrip(arena, .{ .child_finished = .{
         .child = "c",
         .work_id = "w1",

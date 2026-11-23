@@ -488,7 +488,13 @@ fn randomEvent(random: std.Random) Event {
     const values = [_][]const u8{ "\"v1\"", "{\"m\":\"v2\"}", "[1, 2]", "null" };
     const data = [_]?[]const u8{ null, "{\"name\":\"n\"}", "null" };
     const outcomes = [_]schema.Outcome{ .ok, .failed, .cancelled, .interrupted };
-    return switch (random.uintLessThan(u8, 9)) {
+    const store_data = [_][]const u8{
+        "{\"set\":{\"a\":1},\"delete\":[]}",
+        "{\"set\":{\"b\":\"two\"},\"delete\":[\"a\"]}",
+        "{\"set\":{},\"delete\":[\"b\"]}",
+        "{\"set\":{\"a\":{\"n\":[1,2]}},\"delete\":[\"a\"]}",
+    };
+    return switch (random.uintLessThan(u8, 10)) {
         0 => .turn_started,
         1 => .{ .item = .{ .type = "assistant", .data = "{\"text\":\"piece\"}" } },
         2 => .{ .compacted = "{\"summary\":\"s\"}" },
@@ -506,6 +512,7 @@ fn randomEvent(random: std.Random) Event {
             .outcome = outcomes[random.uintLessThan(usize, outcomes.len)],
             .data = data[random.uintLessThan(usize, data.len)],
         } },
+        8 => .{ .codemode_store = store_data[random.uintLessThan(usize, store_data.len)] },
         else => .turn_started,
     };
 }
@@ -515,7 +522,7 @@ fn specValid(open: bool, event: Event) ?bool {
     return switch (event) {
         .turn_started => !open,
         .item, .turn_committed, .turn_interrupted => open,
-        .compacted, .set => true,
+        .compacted, .set, .codemode_store => true,
         .child_spawned, .child_finished => null, // not in TurnLifecycle
     };
 }
@@ -677,6 +684,7 @@ test "snapshot state round trips" {
     state.language = try testing.allocator.dupe(u8, "\"und-Latn\"");
     // The JSON `null` as a value is kept apart from no value.
     state.usage = try testing.allocator.dupe(u8, "null");
+    state.codemode_store = try testing.allocator.dupe(u8, "{\"k\":[1,2]}");
     try state.children.append(testing.allocator, .{
         .id = try testing.allocator.dupe(u8, "c\"1"),
         .work_id = try testing.allocator.dupe(u8, "w"),
@@ -697,5 +705,50 @@ test "snapshot state round trips" {
     defer decoded.deinit(testing.allocator);
     try testing.expect(decoded.eql(&state));
     try testing.expectEqualStrings("null", decoded.usage.?);
+    try testing.expectEqualStrings("{\"k\":[1,2]}", decoded.codemode_store.?);
     try testing.expectEqual(@as(?[]u8, null), decoded.prefs);
+}
+
+test "codemode store folds deletes before sets, and the newest entry wins" {
+    var state: State = .{};
+    defer state.deinit(testing.allocator);
+    const steps = [_][]const u8{
+        "{\"set\":{\"a\":1,\"b\":2},\"delete\":[]}",
+        "{\"set\":{\"a\":3},\"delete\":[\"b\"]}",
+        "{\"set\":{},\"delete\":[\"a\"]}",
+        "{\"set\":{\"c\":4},\"delete\":[\"c\"]}",
+    };
+    const expected = [_][]const u8{
+        "{\"a\":1,\"b\":2}",
+        "{\"a\":3}",
+        "{}",
+        "{\"c\":4}",
+    };
+    for (steps, expected, 0..) |data, want, i| {
+        var out: [1]schema.Body = undefined;
+        try plan(&state, &.{.{ .codemode_store = data }}, &out);
+        try apply(testing.allocator, &state, 0, .{ .seq = i + 1, .offset = 0, .body = out[0] });
+        try testing.expectEqualStrings(want, state.codemode_store.?);
+    }
+}
+
+test "malformed codemode store data is skipped, leaving the store unchanged" {
+    var state: State = .{};
+    defer state.deinit(testing.allocator);
+    var out: [1]schema.Body = undefined;
+    try plan(&state, &.{.{ .codemode_store = "{\"set\":{\"a\":1},\"delete\":[]}" }}, &out);
+    try apply(testing.allocator, &state, 0, .{ .seq = 1, .offset = 0, .body = out[0] });
+    const bad = [_][]const u8{
+        "not json",
+        "{}",
+        "{\"set\":1,\"delete\":[]}",
+        "{\"set\":{},\"delete\":\"a\"}",
+        "{\"set\":{},\"delete\":[1]}",
+        "{\"set\":[],\"delete\":[]}",
+    };
+    for (bad, 0..) |data, i| {
+        try plan(&state, &.{.{ .codemode_store = data }}, &out);
+        try apply(testing.allocator, &state, 0, .{ .seq = i + 2, .offset = 0, .body = out[0] });
+        try testing.expectEqualStrings("{\"a\":1}", state.codemode_store.?);
+    }
 }

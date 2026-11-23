@@ -1552,6 +1552,7 @@ test {
     // Pull the sandbox thread model and the tool bridge tests into every
     // test build.
     _ = @import("bindings_tests.zig");
+    _ = @import("store.zig");
     _ = @import("catalog.zig");
     _ = @import("discovery.zig");
     _ = @import("sandbox.zig");
