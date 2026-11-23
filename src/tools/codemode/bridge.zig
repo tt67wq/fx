@@ -638,7 +638,7 @@ const run_script_properties = [_]model_tool_schema.Property{
     .{
         .name = "timeout_ms",
         .json_type = .integer,
-        .description = "Clamped to 1000-120000.",
+        .description = std.fmt.comptimePrint("Clamped to {d}-{d}.", .{ host_mod.min_options_timeout_ms, host_mod.max_options_timeout_ms }),
         .bounds = &run_script_timeout_bounds,
     },
 };
@@ -1359,7 +1359,7 @@ test "run_script clamps timeout_ms into the host options range" {
         null,
     );
     try std.testing.expectEqualStrings(
-        "{\"action\":\"run\",\"command\":\"true\",\"timeout_ms\":120000}",
+        "{\"action\":\"run\",\"command\":\"true\",\"timeout_ms\":300000}",
         high.arguments_json,
     );
     // A non-integer timeout is a malformed argument, not a default.

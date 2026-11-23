@@ -28,8 +28,8 @@ pub const default_capture_buffer_bytes: usize = 1024 * 1024;
 
 /// Lower bound for a script-declared @options timeout.
 pub const min_options_timeout_ms: u64 = 1_000;
-/// Hard cap for a script-declared @options timeout: 2 minutes.
-pub const max_options_timeout_ms: u64 = 120_000;
+/// Hard cap for a script-declared @options timeout: 5 minutes.
+pub const max_options_timeout_ms: u64 = 300_000;
 pub const drain_grace_ms: i64 = 500;
 /// Hard cap for script-declared max_output_tokens: 1MiB / 4 bytes per token,
 /// matching the default capture buffer so a declared budget can reach it.
