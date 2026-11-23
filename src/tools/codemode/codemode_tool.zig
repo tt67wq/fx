@@ -334,6 +334,15 @@ pub fn call(ctx: tool_dispatch.DispatchContext, erased: tool_dispatch.ToolInput)
     sandbox.host.setToolFace(face);
     sandbox.host.setToolSchemas(tool_schemas);
 
+    // T-13: the session's folded store seeds the script. Without a session
+    // capability the store starts empty and its writes drop (pi :428).
+    const initial_store = if (ctx.session_child_capability) |cap|
+        cap.codemodeStore(ctx.allocator) catch return error.OutOfMemory
+    else
+        null;
+    defer if (initial_store) |bytes| ctx.allocator.free(bytes);
+    sandbox.host.store_initial = initial_store;
+
     // Gate one (structure): only the derived surface can enter the
     // budget path, so the shipped four-tool face stays byte-identical.
     // Gate three (config): an off limit disables selection. Gate two
@@ -389,6 +398,18 @@ pub fn call(ctx: tool_dispatch.DispatchContext, erased: tool_dispatch.ToolInput)
     defer result.deinit();
 
     if (state.cancelled()) return error.Cancelled;
+
+    // T-13: only a successful script's writes reach the session, as one
+    // codemode_store line through the capability's log hook. A failed
+    // append is a tool failure, so the model knows the state was not kept.
+    if (ctx.session_child_capability) |cap| {
+        if (try sandbox.host.storeWritesJson(ctx.allocator)) |writes| {
+            defer ctx.allocator.free(writes);
+            cap.appendCodemodeStore(writes) catch |err| {
+                return .{ .failure = try ctx.allocator.print("codemode store append failed: {s}", .{@errorName(err)}) };
+            };
+        }
+    }
 
     // ISSUE-11: the nested call summary rides at the head of the success
     // body so result-store externalization keeps it model-visible.
@@ -1474,8 +1495,10 @@ test "the next call loads the previous call's persisted writes" {
     defer first.deinit(allocator);
     try std.testing.expect(first == .success);
     try std.testing.expectEqual(@as(usize, 1), probe.appended.items.len);
-    // The session folds the appended entry; the next call reads it back.
-    probe.initial = probe.appended.items[0];
+    // The session folds the appended entry into its map (the fold tests pin
+    // the merge); the next call reads that map back.
+    try std.testing.expectEqualStrings("{\"set\":{\"k\":{\"v\":42}},\"delete\":[]}", probe.appended.items[0]);
+    probe.initial = "{\"k\":{\"v\":42}}";
     const second = try runStoreCall(allocator, &rt, &capability,
         \\text(JSON.stringify(load("k")));
     );
@@ -1504,4 +1527,3 @@ test "a store append failure surfaces as a tool failure" {
     try std.testing.expect(std.mem.find(u8, result.failure, "store") != null);
     try std.testing.expectEqual(@as(usize, 0), probe.appended.items.len);
 }
-

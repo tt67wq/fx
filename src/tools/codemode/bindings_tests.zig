@@ -981,17 +981,17 @@ test "codemode store enforces pi's value and total caps" {
     defer result.deinit();
     try std.testing.expectEqualStrings("RangeError|true", result.value);
     var full = try host.eval(
-        \\const v = "x".repeat(256 * 1024 - 2);
-        \\store("k0", v); store("k1", v); store("k2", v);
-        \\try { store("k3", v); "no throw"; }
+        \\const w = "x".repeat(256 * 1024 - 2);
+        \\store("k0", w); store("k1", w); store("k2", w);
+        \\try { store("k3", w); "no throw"; }
         \\catch (e) { e.name + "|" + (e.message.indexOf("store is full") === 0); }
     );
     defer full.deinit();
     try std.testing.expectEqualStrings("RangeError|true", full.value);
     // Deleting a key frees its quota, as pi's storedChars accounting does.
     var freed = try host.eval(
-        \\const v = "x".repeat(256 * 1024 - 2);
-        \\store("k0", undefined); store("k3", v); typeof load("k3")
+        \\const u = "x".repeat(256 * 1024 - 2);
+        \\store("k0", undefined); store("k3", u); typeof load("k3")
     );
     defer freed.deinit();
     try std.testing.expectEqualStrings("string", freed.value);
@@ -1029,4 +1029,3 @@ test "codemode store writes keep the last write per key" {
     defer if (writes) |w| std.testing.allocator.free(w);
     try std.testing.expectEqualStrings("{\"set\":{\"x\":2},\"delete\":[\"y\",\"z\"]}", writes.?);
 }
-

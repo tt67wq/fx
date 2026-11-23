@@ -26,6 +26,9 @@ pub const Kind = enum {
     child_finished,
     snapshot,
     closed,
+    /// One successful codemode script's store() writes (T-13). Older fx
+    /// skips the kind as unknown; the body stays opaque raw JSON here.
+    codemode_store,
 };
 
 pub const Header = struct {
@@ -126,6 +129,7 @@ pub const Body = union(Kind) {
     child_finished: Finished,
     snapshot: Snapshot,
     closed: void,
+    codemode_store: StoreWrites,
 
     pub const Created = struct {
         id: []const u8,
@@ -167,6 +171,9 @@ pub const Body = union(Kind) {
     pub const WorkItem = struct { child: []const u8, work_id: []const u8, data: ?[]const u8 = null };
     pub const Finished = struct { child: []const u8, work_id: []const u8, outcome: Outcome, data: ?[]const u8 = null };
     pub const Snapshot = struct { covers_seq: u64, state: []const u8, compaction_offset: ?u64 };
+    /// fx's raw JSON {"set":{key:value,...},"delete":[key,...]}, stored and
+    /// returned byte for byte; the fold applies it (T-13).
+    pub const StoreWrites = struct { data: []const u8 };
 };
 
 /// Appends the fields of `body`. Strings must be valid UTF-8 and raw values
@@ -224,6 +231,7 @@ pub fn appendBody(gpa: std.mem.Allocator, out: *std.ArrayList(u8), body: Body) e
             if (s.compaction_offset) |offset| try w.number("compaction_offset", offset);
         },
         .closed => {},
+        .codemode_store => |sw| try w.raw("data", sw.data),
     }
 }
 
@@ -288,6 +296,7 @@ fn bodyOf(kind: Kind, f: Fields) BodyError!Body {
             .compaction_offset = try f.opt(u64, "compaction_offset"),
         } },
         .closed => .closed,
+        .codemode_store => .{ .codemode_store = .{ .data = try f.rawReq("data") } },
     };
 }
 

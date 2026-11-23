@@ -76,6 +76,10 @@ pub const State = struct {
     moved_files: ?[]u8 = null,
     compaction_records: ?[]u8 = null,
     v1_source: ?[]u8 = null,
+    /// The folded codemode store: one JSON object of key to raw JSON value,
+    /// every codemode_store line applied in order (T-13). Null until the
+    /// first such line; snapshots carry it like a setting.
+    codemode_store: ?[]u8 = null,
     /// Every child spawned in this session, in first-spawn order (D22).
     children: std.ArrayList(Child) = .empty,
     last_compaction_seq: ?u64 = null,
@@ -95,6 +99,7 @@ pub const State = struct {
         inline for (setting_fields) |name| {
             if (@field(state, name)) |value| gpa.free(value);
         }
+        if (state.codemode_store) |value| gpa.free(value);
         for (state.children.items) |child| child.deinit(gpa);
         state.children.deinit(gpa);
         state.* = undefined;
@@ -110,11 +115,13 @@ pub const State = struct {
     pub fn clone(state: *const State, gpa: std.mem.Allocator) error{OutOfMemory}!State {
         var copy: State = state.*;
         copy.children = .empty;
+        copy.codemode_store = null;
         inline for (setting_fields) |name| @field(copy, name) = null;
         errdefer copy.deinit(gpa);
         inline for (setting_fields) |name| {
             if (@field(state, name)) |value| @field(copy, name) = try gpa.dupe(u8, value);
         }
+        copy.codemode_store = try dupeOptional(gpa, state.codemode_store);
         try copy.children.ensureTotalCapacity(gpa, state.children.items.len);
         for (state.children.items) |child| copy.children.appendAssumeCapacity(try child.clone(gpa));
         return copy;
@@ -187,6 +194,7 @@ pub const State = struct {
         inline for (setting_fields) |name| {
             if (!optionalEql(@field(a, name), @field(b, name))) return false;
         }
+        if (!optionalEql(a.codemode_store, b.codemode_store)) return false;
         if (a.children.items.len != b.children.items.len) return false;
         for (a.children.items, b.children.items) |x, y| {
             if (!x.eql(y)) return false;
@@ -250,6 +258,15 @@ pub fn apply(gpa: std.mem.Allocator, state: *State, fork_seq: u64, line: Line) e
         },
         .child_spawned => |c| if (line.seq > fork_seq) try state.spawnChild(gpa, line.seq, c),
         .child_finished => |c| if (line.seq > fork_seq) try state.finishChild(gpa, line.seq, c),
+        // A fork inherits its source's store at the fork point: the copied
+        // prefix holds those lines, and later source lines never reach this
+        // log, so no fork_seq gate applies (T-13).
+        .codemode_store => |w| {
+            if (try mergeStoreWrites(gpa, state.codemode_store, w.data)) |merged| {
+                if (state.codemode_store) |old| gpa.free(old);
+                state.codemode_store = merged;
+            }
+        },
     }
     state.last_seq = line.seq;
     state.clean_exit = line.body == .closed;
@@ -269,6 +286,9 @@ pub const Event = union(enum) {
     set: schema.Body.Setting,
     child_spawned: schema.Body.WorkItem,
     child_finished: schema.Body.Finished,
+    /// One successful codemode script's store() writes, as raw JSON
+    /// {"set":{...},"delete":[...]} (T-13). Allowed outside a turn, like set.
+    codemode_store: []const u8,
 };
 
 /// One completed piece of a turn: fx's data, and the blobs it refers to.
@@ -314,6 +334,7 @@ pub fn plan(state: *const State, events: []const Event, out: []schema.Body) Tran
                 break :blk .{ .turn_interrupted = .{ .turn = turn, .reason = reason } };
             },
             .set => |s| .{ .set = s },
+            .codemode_store => |data| .{ .codemode_store = .{ .data = data } },
             // One unfinished work item per child (`tests/tla/session_manager/Subagents.tla`
             // OneOpenWork); a finish names exactly that one.
             .child_spawned => |c| blk: {
@@ -364,6 +385,7 @@ pub fn encodeState(gpa: std.mem.Allocator, out: *std.ArrayList(u8), state: *cons
     inline for (setting_fields) |name| {
         if (@field(state, name)) |value| try appendRawField(gpa, out, name, value);
     }
+    if (state.codemode_store) |value| try appendRawField(gpa, out, "codemode_store", value);
     try out.appendSlice(gpa, ",\"children\":[");
     for (state.children.items, 0..) |child, i| {
         if (i > 0) try out.append(gpa, ',');
@@ -410,6 +432,7 @@ pub fn decodeState(gpa: std.mem.Allocator, arena: std.mem.Allocator, raw: []cons
     inline for (setting_fields) |name| {
         if (f.raw(name)) |value| @field(state, name) = try gpa.dupe(u8, value);
     }
+    if (f.raw("codemode_store")) |value| state.codemode_store = try gpa.dupe(u8, value);
     for (try schema.rawElements(arena, try f.rawReq("children"))) |raw_child| {
         const c = try schema.Fields.parseObject(arena, raw_child);
         const id = try gpa.dupe(u8, try c.req([]const u8, "id"));
@@ -431,6 +454,66 @@ pub fn decodeState(gpa: std.mem.Allocator, arena: std.mem.Allocator, raw: []cons
         });
     }
     return state;
+}
+
+/// Applies one codemode_store body to the folded map: every delete first,
+/// then every set, as pi's readCodemodeStore replays entries. Malformed data
+/// is skipped (null), like pi's isStoreEntryData guard; the folded map is
+/// canonical, so a malformed one starts over. The result is owned through gpa.
+fn mergeStoreWrites(gpa: std.mem.Allocator, current: ?[]const u8, data: []const u8) error{OutOfMemory}!?[]u8 {
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const f = schema.Fields.parseObject(arena, data) catch |err| return if (err == error.OutOfMemory) error.OutOfMemory else null;
+    const set_raw = f.raw("set") orelse return null;
+    const delete_raw = f.raw("delete") orelse return null;
+    const set = schema.Fields.parseObject(arena, set_raw) catch |err| return if (err == error.OutOfMemory) error.OutOfMemory else null;
+    const delete_elems = schema.rawElements(arena, delete_raw) catch |err| return if (err == error.OutOfMemory) error.OutOfMemory else null;
+    var names: std.ArrayList([]const u8) = .empty;
+    var values: std.ArrayList([]const u8) = .empty;
+    if (current) |cur| {
+        if (schema.Fields.parseObject(arena, cur)) |cf| {
+            try names.appendSlice(arena, cf.names);
+            try values.appendSlice(arena, cf.values);
+        } else |err| {
+            if (err == error.OutOfMemory) return error.OutOfMemory;
+        }
+    }
+    for (delete_elems) |elem| {
+        const key = std.json.parseFromSliceLeaky([]const u8, arena, elem, .{}) catch |err| return if (err == error.OutOfMemory) error.OutOfMemory else null;
+        for (names.items, 0..) |name, i| {
+            if (std.mem.eql(u8, name, key)) {
+                _ = names.orderedRemove(i);
+                _ = values.orderedRemove(i);
+                break;
+            }
+        }
+    }
+    for (set.names, set.values) |name, value| {
+        var replaced = false;
+        for (names.items, 0..) |known, i| {
+            if (std.mem.eql(u8, known, name)) {
+                values.items[i] = value;
+                replaced = true;
+                break;
+            }
+        }
+        if (!replaced) {
+            try names.append(arena, name);
+            try values.append(arena, value);
+        }
+    }
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+    try out.append(gpa, '{');
+    for (names.items, values.items, 0..) |name, value, i| {
+        if (i > 0) try out.append(gpa, ',');
+        try schema.appendJsonString(gpa, &out, name);
+        try out.append(gpa, ':');
+        try out.appendSlice(gpa, value);
+    }
+    try out.append(gpa, '}');
+    return try out.toOwnedSlice(gpa);
 }
 
 // ---------------------------------------------------------------------------

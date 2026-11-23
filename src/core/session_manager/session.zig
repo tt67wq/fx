@@ -415,7 +415,7 @@ pub const Session = struct {
     /// Before the first turn, a batch without `turn_started` may only hold
     /// settings; they wait in memory, already framed (seq 2 onward).
     fn hold(session: *Session, bodies: []const schema.Body, ts: u64) AppendError!void {
-        for (bodies) |body| if (body != .set) return error.InvalidTransition;
+        for (bodies) |body| if (body != .set and body != .codemode_store) return error.InvalidTransition;
         const gpa = session.env.gpa;
         const start = session.held.items.len;
         errdefer session.held.shrinkRetainingCapacity(start);

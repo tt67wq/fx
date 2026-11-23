@@ -744,7 +744,7 @@ pub const read_tool_result = ToolSpec{
 pub const codemode_description =
     "JavaScript sandbox for multi-step work in one call. Call tools as await tools.read_file({...}) or tools.call(\"name\", {args}); arguments are objects: tools.call(\"run_command\", {command: \"...\"}). Confirm names via searchTools, never from memory. No Node.js API: no import/require of fs or process, no top-level tool functions. tools.list() may be a budgeted subset; searchTools(query) searches the full surface; describeTool(name) returns one full schema. Defaults: 30s wall clock, 1MiB capture cap; over it, text and console keep head and tail with omitted byte count; read_tool_result reads the full output. First non-empty line `// @options: {\"timeout_ms\": N, \"max_output_tokens\": N}` raises the budget (timeout " ++
     std.fmt.comptimePrint("{d}..{d}", .{ codemode_host.min_options_timeout_ms, codemode_host.max_options_timeout_ms }) ++
-    " ms hard-capped, output 4 bytes per token clamped at 1MiB); a declared budget is the script's wall clock; a nested run_command gets min(requested, remaining budget) from its own start. Finish with text(your short summary); top-level return is invalid. Wrapping one call is slower than a direct call.";
+    " ms hard-capped, output 4 bytes per token clamped at 1MiB); a nested run_command gets min(requested, remaining budget) from its own start. Finish with text(your short summary); top-level return is invalid. store(key, value)/load(key) keep JSON values across calls; failed scripts drop their writes.";
 
 // ISSUE-23b: the description must state the nested command budget
 // truthfully (review C4 note 1) and must not grow (net word count).

@@ -1,6 +1,7 @@
 const std = @import("std");
 const io_mod = @import("../../core/shared/io.zig");
 const bindings = @import("bindings.zig");
+const store_mod = @import("store.zig");
 const discovery = @import("discovery.zig");
 const catalog = @import("catalog.zig");
 const context_limits = @import("../../core/config/context_limits.zig");
@@ -138,6 +139,13 @@ pub const Host = struct {
     /// the injected schemas. The host owns the index memory; strings in
     /// it are borrowed from the schemas and live as long as they do.
     discovery_index: ?*discovery.Index = null,
+    /// The session's folded codemode store as raw JSON, injected by the
+    /// caller before start(); borrowed for the call's lifetime. Null starts
+    /// the store empty (T-13).
+    store_initial: ?[]const u8 = null,
+    /// This eval's store: the injected map plus the script's buffered
+    /// writes, which reach the session only after the script succeeds.
+    store: store_mod.Store,
     text_buf: std.ArrayList(u8) = .empty,
     console_buf: std.ArrayList(u8) = .empty,
     /// Bytes the capture cap dropped from each stream during the current
@@ -147,7 +155,7 @@ pub const Host = struct {
     console_dropped_bytes: usize = 0,
 
     pub fn init(allocator: Allocator, options: Options) Host {
-        return .{ .allocator = allocator, .options = options };
+        return .{ .allocator = allocator, .options = options, .store = store_mod.Store.init(allocator) };
     }
 
     pub fn deinit(self: *Host) void {
@@ -160,6 +168,7 @@ pub const Host = struct {
             c.JS_FreeRuntime(rt);
             self.runtime = null;
         }
+        self.store.deinit();
         self.text_buf.deinit(self.allocator);
         self.console_buf.deinit(self.allocator);
         if (self.last_script_error) |message| self.allocator.free(message);
@@ -232,10 +241,19 @@ pub const Host = struct {
         return flag.load(.seq_cst);
     }
 
+    /// This eval's buffered store writes as one codemode_store body, or
+    /// null when the script wrote nothing. The caller owns the result; a
+    /// failed eval's writes are never flushed (T-13).
+    pub fn storeWritesJson(self: *Host, allocator: Allocator) error{OutOfMemory}!?[]u8 {
+        // The allocating writer's WriteFailed is always an allocation failure.
+        return self.store.writesJson(allocator) catch return error.OutOfMemory;
+    }
+
     pub fn eval(self: *Host, script: []const u8) (EvalError || Allocator.Error)!Result {
         try self.ensureRuntime();
         const ctx = self.context.?;
 
+        try self.store.reset(self.store_initial);
         self.text_buf.clearRetainingCapacity();
         self.console_buf.clearRetainingCapacity();
         self.text_dropped_bytes = 0;
@@ -402,6 +420,15 @@ pub const Host = struct {
         const text_fn = c.JS_NewCFunction(ctx, textCallback, "text", 1);
         if (c.JS_IsException(text_fn)) return error.BindingFailed;
         if (c.JS_SetPropertyStr(ctx, global, "text", text_fn) < 0) return error.BindingFailed;
+
+        // store/load are unconditional globals like text: the store is
+        // session state, not a tool, so no face or admission applies (T-13).
+        const store_fn = c.JS_NewCFunction(ctx, storeCallback, "store", 2);
+        if (c.JS_IsException(store_fn)) return error.BindingFailed;
+        if (c.JS_SetPropertyStr(ctx, global, "store", store_fn) < 0) return error.BindingFailed;
+        const load_fn = c.JS_NewCFunction(ctx, loadCallback, "load", 1);
+        if (c.JS_IsException(load_fn)) return error.BindingFailed;
+        if (c.JS_SetPropertyStr(ctx, global, "load", load_fn) < 0) return error.BindingFailed;
 
         const console_obj = c.JS_NewObject(ctx);
         if (c.JS_IsException(console_obj)) return error.BindingFailed;
@@ -703,6 +730,104 @@ fn textCallback(ctx: ?*c.JSContext, _: c.JSValue, argc: c_int, argv: [*c]c.JSVal
         }
     }
     return js_undefined;
+}
+
+/// pi's store hint, without image() which fx's sandbox does not inject.
+const store_hint = "store() is for small state such as IDs or summaries. Keep large data in variables, or write it to a file with a tool.";
+
+/// store(key, value) with pi's prelude semantics: the key must be a string,
+/// undefined deletes, a value that is not JSON-serializable throws
+/// TypeError, and the per-value and total caps throw RangeError. Writes
+/// buffer in the host; the caller flushes them only after success (T-13).
+fn storeCallback(ctx: ?*c.JSContext, _: c.JSValue, argc: c_int, argv: [*c]c.JSValue) callconv(.c) c.JSValue {
+    const context = ctx orelse return js_exception;
+    const host: *Host = @ptrCast(@alignCast(c.JS_GetContextOpaque(context) orelse return js_exception));
+    if (argc < 1 or !c.JS_IsString(argv[0])) return c.JS_ThrowTypeError(context, "store() key must be a string");
+    var key_len: usize = 0;
+    const key_ptr = c.JS_ToCStringLen(context, &key_len, argv[0]) orelse return js_exception;
+    defer c.JS_FreeCString(context, key_ptr);
+    const key = key_ptr[0..key_len];
+    const value = if (argc > 1) argv[1] else js_undefined;
+    if (c.JS_IsUndefined(value)) {
+        host.store.set(key, null) catch |err| return throwStoreError(context, argv[0], 0, err);
+        return js_undefined;
+    }
+    // JS_JSONStringify is the real JSON implementation, so a script cannot
+    // shadow it; circular references and BigInt throw, functions and symbols
+    // stringify to undefined, exactly as pi's guarded stringify does.
+    const json = c.JS_JSONStringify(context, value, js_undefined, js_undefined);
+    if (c.JS_IsException(json)) {
+        const pending = c.JS_GetException(context);
+        defer c.JS_FreeValue(context, pending);
+        if (isOutOfMemory(host, context, pending)) return c.JS_ThrowOutOfMemory(context);
+        return throwNotSerializable(context, argv[0], pending);
+    }
+    defer c.JS_FreeValue(context, json);
+    if (c.JS_IsUndefined(json)) return throwNotSerializable(context, argv[0], null);
+    var json_len: usize = 0;
+    const json_ptr = c.JS_ToCStringLen(context, &json_len, json) orelse return js_exception;
+    defer c.JS_FreeCString(context, json_ptr);
+    host.store.set(key, json_ptr[0..json_len]) catch |err| return throwStoreError(context, argv[0], json_len, err);
+    return js_undefined;
+}
+
+/// load(key): the stored JSON parsed fresh, or undefined for a missing key.
+fn loadCallback(ctx: ?*c.JSContext, _: c.JSValue, argc: c_int, argv: [*c]c.JSValue) callconv(.c) c.JSValue {
+    const context = ctx orelse return js_exception;
+    const host: *Host = @ptrCast(@alignCast(c.JS_GetContextOpaque(context) orelse return js_exception));
+    if (argc < 1 or !c.JS_IsString(argv[0])) return c.JS_ThrowTypeError(context, "load() key must be a string");
+    var key_len: usize = 0;
+    const key_ptr = c.JS_ToCStringLen(context, &key_len, argv[0]) orelse return js_exception;
+    defer c.JS_FreeCString(context, key_ptr);
+    const json = host.store.get(key_ptr[0..key_len]) orelse return js_undefined;
+    // JS_ParseJSON requires a NUL-terminated buffer (see bridge.schemas).
+    const terminated = host.allocator.dupeSentinel(u8, json, 0) catch return c.JS_ThrowOutOfMemory(context);
+    defer host.allocator.free(terminated);
+    return c.JS_ParseJSON(context, terminated.ptr, terminated.len, "<codemode store>");
+}
+
+/// pi's TypeError for a value JSON cannot carry, with the quoted key and,
+/// when stringify threw, the engine's own reason.
+fn throwNotSerializable(context: *c.JSContext, key_value: c.JSValue, exception: ?c.JSValue) c.JSValue {
+    const quoted = c.JS_JSONStringify(context, key_value, js_undefined, js_undefined);
+    if (c.JS_IsException(quoted)) return js_exception;
+    defer c.JS_FreeValue(context, quoted);
+    var quoted_len: usize = 0;
+    const quoted_ptr = c.JS_ToCStringLen(context, &quoted_len, quoted) orelse return js_exception;
+    defer c.JS_FreeCString(context, quoted_ptr);
+    if (exception) |exc| {
+        var msg_len: usize = 0;
+        const msg_ptr = c.JS_ToCStringLen(context, &msg_len, exc) orelse return js_exception;
+        defer c.JS_FreeCString(context, msg_ptr);
+        return c.JS_ThrowTypeError(context, "store(%s) value is not JSON-serializable: %s", quoted_ptr, msg_ptr);
+    }
+    return c.JS_ThrowTypeError(context, "store(%s) value is not JSON-serializable", quoted_ptr);
+}
+
+/// pi's RangeErrors for the two caps, and the engine OOM unchanged so the
+/// MemoryLimit classification survives.
+fn throwStoreError(context: *c.JSContext, key_value: c.JSValue, json_len: usize, err: store_mod.Store.SetError) c.JSValue {
+    if (err == error.OutOfMemory) return c.JS_ThrowOutOfMemory(context);
+    const quoted = c.JS_JSONStringify(context, key_value, js_undefined, js_undefined);
+    if (c.JS_IsException(quoted)) return js_exception;
+    defer c.JS_FreeValue(context, quoted);
+    var quoted_len: usize = 0;
+    const quoted_ptr = c.JS_ToCStringLen(context, &quoted_len, quoted) orelse return js_exception;
+    defer c.JS_FreeCString(context, quoted_ptr);
+    if (err == error.ValueTooLarge) {
+        return c.JS_ThrowRangeError(
+            context,
+            "store(%s) value has %d characters of JSON, more than the limit of %d. " ++ store_hint,
+            quoted_ptr,
+            @as(c_int, @intCast(json_len)),
+            @as(c_int, store_mod.Store.max_value_chars),
+        );
+    }
+    return c.JS_ThrowRangeError(
+        context,
+        "store is full: stored values would exceed %d characters of JSON. Delete keys with store(key, undefined). " ++ store_hint,
+        @as(c_int, store_mod.Store.max_total_chars),
+    );
 }
 
 fn consoleLogCallback(ctx: ?*c.JSContext, _: c.JSValue, argc: c_int, argv: [*c]c.JSValue) callconv(.c) c.JSValue {
