@@ -458,8 +458,8 @@ test "failure body without output or calls matches the plain one-liner" {
 /// moment, so a Cancelled race only costs precision, never a crash.
 fn timeoutHeadline(alloc: Allocator, elapsed_ms: i64, budget_ms: usize, from_options: bool) Allocator.Error![]u8 {
     return alloc.print(
-        "codemode script failed: Timeout after {d}ms (budget {d}ms, from {s}); raise it with // @options: {{\"timeout_ms\": N}} on the first script line, max 120000; for a wait or a long command, end the script and poll in a later call (shell interact on the running session) instead of sleeping in a loop",
-        .{ @max(elapsed_ms, 0), budget_ms, if (from_options) "@options" else "default" },
+        "codemode script failed: Timeout after {d}ms (budget {d}ms, from {s}); raise it with // @options: {{\"timeout_ms\": N}} on the first script line, max {d}; for a wait or a long command, end the script and poll in a later call (shell interact on the running session) instead of sleeping in a loop",
+        .{ @max(elapsed_ms, 0), budget_ms, if (from_options) "@options" else "default", host_mod.max_options_timeout_ms },
     );
 }
 
@@ -920,7 +920,7 @@ fn parseScriptOptions(
 
 /// Parses the JSON payload after the `// @options:` prefix. Malformed JSON,
 /// an empty payload, or a non-integer field value rejects the script;
-/// timeout_ms outside [1000, 120000] and max_output_tokens of 0 do too.
+/// timeout_ms outside [1000, 300000] and max_output_tokens of 0 do too.
 /// Unknown fields are ignored; missing fields stay null.
 fn parseOptionsHeader(
     json_text_in: []const u8,
