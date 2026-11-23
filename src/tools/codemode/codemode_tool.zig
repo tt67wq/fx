@@ -471,7 +471,7 @@ test "timeout headline names elapsed, budget, source, the cap, and the poll fix 
     defer std.testing.allocator.free(headline);
     try std.testing.expectEqualStrings(
         "codemode script failed: Timeout after 30123ms (budget 30000ms, from default); " ++
-            "raise it with // @options: {\"timeout_ms\": N} on the first script line, max 120000; " ++
+            "raise it with // @options: {\"timeout_ms\": N} on the first script line, max 300000; " ++
             "for a wait or a long command, end the script and poll in a later call " ++
             "(shell interact on the running session) instead of sleeping in a loop",
         headline,
@@ -483,7 +483,7 @@ test "timeout headline pins the @options source verbatim" {
     defer std.testing.allocator.free(headline);
     try std.testing.expectEqualStrings(
         "codemode script failed: Timeout after 5012ms (budget 5000ms, from @options); " ++
-            "raise it with // @options: {\"timeout_ms\": N} on the first script line, max 120000; " ++
+            "raise it with // @options: {\"timeout_ms\": N} on the first script line, max 300000; " ++
             "for a wait or a long command, end the script and poll in a later call " ++
             "(shell interact on the running session) instead of sleeping in a loop",
         headline,
@@ -552,11 +552,11 @@ test "failure body shows the last nested output right after the headline" {
     excerpt.duration_ms = 31496;
     const text = try std.testing.allocator.dupe(u8, "found 3 files");
     defer std.testing.allocator.free(text);
-    const body = try formatFailureBody(std.testing.allocator, "codemode script failed: Timeout after 31496ms (budget 30000ms, from default); raise it with // @options: {\"timeout_ms\": N} on the first script line, max 120000; for a wait or a long command, end the script and poll in a later call (shell interact on the running session) instead of sleeping in a loop", .{ .text = text, .console = "" }, &.{}, false, excerpt);
+    const body = try formatFailureBody(std.testing.allocator, "codemode script failed: Timeout after 31496ms (budget 30000ms, from default); raise it with // @options: {\"timeout_ms\": N} on the first script line, max 300000; for a wait or a long command, end the script and poll in a later call (shell interact on the running session) instead of sleeping in a loop", .{ .text = text, .console = "" }, &.{}, false, excerpt);
     defer std.testing.allocator.free(body);
     try std.testing.expectEqualStrings(
         "codemode script failed: Timeout after 31496ms (budget 30000ms, from default); " ++
-            "raise it with // @options: {\"timeout_ms\": N} on the first script line, max 120000; " ++
+            "raise it with // @options: {\"timeout_ms\": N} on the first script line, max 300000; " ++
             "for a wait or a long command, end the script and poll in a later call " ++
             "(shell interact on the running session) instead of sleeping in a loop\n" ++
             "\n" ++
@@ -1076,7 +1076,7 @@ test "parseScriptOptions rejects malformed json and out-of-range values" {
     try std.testing.expectError(error.Malformed, parseScriptOptions("// @options: {oops}", null));
     try std.testing.expectError(error.Malformed, parseScriptOptions("// @options:", null));
     try std.testing.expectError(error.OutOfRange, parseScriptOptions("// @options: {\"timeout_ms\": 999}\ntext(\"hi\");", null));
-    try std.testing.expectError(error.OutOfRange, parseScriptOptions("// @options: {\"timeout_ms\": 120001}\ntext(\"hi\");", null));
+    try std.testing.expectError(error.OutOfRange, parseScriptOptions("// @options: {\"timeout_ms\": 300001}\ntext(\"hi\");", null));
     try std.testing.expectError(error.OutOfRange, parseScriptOptions("// @options: {\"max_output_tokens\": 0}\ntext(\"hi\");", null));
     try std.testing.expectError(error.Malformed, parseScriptOptions("// @options: {\"timeout_ms\": \"60000\"}\ntext(\"hi\");", null));
 }
@@ -1084,8 +1084,11 @@ test "parseScriptOptions rejects malformed json and out-of-range values" {
 test "parseScriptOptions accepts the bounds" {
     const low = try parseScriptOptions("// @options: {\"timeout_ms\": 1000}\ntext(\"hi\");", null);
     try std.testing.expectEqual(@as(?u64, 1000), low.timeout_ms);
-    const high = try parseScriptOptions("// @options: {\"timeout_ms\": 120000}\ntext(\"hi\");", null);
-    try std.testing.expectEqual(@as(?u64, 120000), high.timeout_ms);
+    const high = try parseScriptOptions("// @options: {\"timeout_ms\": 300000}\ntext(\"hi\");", null);
+    try std.testing.expectEqual(@as(?u64, 300000), high.timeout_ms);
+    // T-33c: the previous cap stays legal inside the raised range.
+    const mid = try parseScriptOptions("// @options: {\"timeout_ms\": 120000}\ntext(\"hi\");", null);
+    try std.testing.expectEqual(@as(?u64, 120000), mid.timeout_ms);
 }
 
 test "effectiveScriptOptions clamps timeout and saturates tokens" {
@@ -1180,9 +1183,9 @@ test "@options violations echo the value the script declared" {
     const message = try optionsOutOfRangeMessage(std.testing.allocator, &violation);
     defer std.testing.allocator.free(message);
     try std.testing.expectEqualStrings(
-        "codemode @options out of range. timeout_ms must be 1000..120000 " ++
+        "codemode @options out of range. timeout_ms must be 1000..300000 " ++
             "and max_output_tokens must be greater than 0. (received timeout_ms: 999). " ++
-            "A valid header line is: // @options: {\"timeout_ms\": 120000}",
+            "A valid header line is: // @options: {\"timeout_ms\": 300000}",
         message,
     );
 
@@ -1195,7 +1198,7 @@ test "@options violations echo the value the script declared" {
     const tokens_message = try optionsOutOfRangeMessage(std.testing.allocator, &tokens);
     defer std.testing.allocator.free(tokens_message);
     try std.testing.expectEqualStrings(
-        "codemode @options out of range. timeout_ms must be 1000..120000 " ++
+        "codemode @options out of range. timeout_ms must be 1000..300000 " ++
             "and max_output_tokens must be greater than 0. (received max_output_tokens: 0). " ++
             "A valid header line is: // @options: {\"max_output_tokens\": 262144}",
         tokens_message,

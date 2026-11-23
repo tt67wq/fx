@@ -263,7 +263,7 @@ test("nested run_command is killed when the codemode script budget expires", asy
     expect(output.value).toContain("Timeout after ");
     expect(output.value).toContain("(budget 30000ms, from default)");
     expect(output.value).toContain(
-      'raise it with // @options: {"timeout_ms": N} on the first script line, max 120000;',
+      'raise it with // @options: {"timeout_ms": N} on the first script line, max 300000;',
     );
     expect(output.value).toContain(
       "for a wait or a long command, end the script and poll in a later call",

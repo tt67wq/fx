@@ -1359,7 +1359,7 @@ test "run_script clamps timeout_ms into the host options range" {
         null,
     );
     try std.testing.expectEqualStrings(
-        "{\"action\":\"run\",\"command\":\"true\",\"timeout_ms\":120000}",
+        "{\"action\":\"run\",\"command\":\"true\",\"timeout_ms\":300000}",
         high.arguments_json,
     );
     // A non-integer timeout is a malformed argument, not a default.
