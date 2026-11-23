@@ -737,6 +737,9 @@ fn checkEvents(gpa: std.mem.Allocator, events: []const Event, import: bool) Appe
             if (c.outcome == .lost and !import) return error.InvalidArgument;
             if (c.data) |data| try checkChildData(gpa, data);
         },
+        // T-13: the body stays opaque; the fold applies set/delete and
+        // skips a malformed shape, as pi's replay does.
+        .codemode_store => |data| try checkJson(gpa, data),
     };
 }
 

@@ -222,9 +222,22 @@ pub const ManagedFile = struct {
     }
 };
 
+/// The session log's codemode store (T-13): read the folded map, append one
+/// successful script's writes. The adapter wires it over its v2 session; a
+/// capability without it drops writes silently, as pi does without a
+/// session context. The functions are the adapter's, under its own mutex.
+pub const StoreLog = struct {
+    ctx: *anyopaque,
+    readFn: *const fn (ctx: *anyopaque, alloc: Allocator) anyerror!?[]u8,
+    appendFn: *const fn (ctx: *anyopaque, data: []const u8) anyerror!void,
+};
+
 const CapabilityImpl = struct {
     alloc: Allocator,
     mode: Mode,
+    /// The owning session's store log, when the capability came from a v2
+    /// adapter session; null for blob-only and side-folder capabilities.
+    store_log: ?StoreLog = null,
     /// Null for a v2 session's capability, which holds its bodies as blobs
     /// and has no side folder (D48).
     session_dir: ?io_mod.VerifiedDir,
@@ -825,6 +838,28 @@ pub const SessionChildCapability = struct {
     pub fn recordNames(self: *SessionChildCapability, arena: Allocator) BlobError![]const []const u8 {
         const blobs = self.impl.blobs orelse return error.BlobStoreFailed;
         return blobs.vtable.record_names(blobs.ctx, arena);
+    }
+
+    /// Wires the owning session's store log; the adapter calls this once on
+    /// the capability it caches (T-13).
+    pub fn setStoreLog(self: *SessionChildCapability, log: StoreLog) void {
+        self.impl.store_log = log;
+    }
+
+    /// The session's folded codemode store as raw JSON, or null when there
+    /// is none. The caller owns the result through alloc. Without a store
+    /// log: null (T-13).
+    pub fn codemodeStore(self: *const SessionChildCapability, alloc: Allocator) !?[]u8 {
+        const log = self.impl.store_log orelse return null;
+        return log.readFn(log.ctx, alloc);
+    }
+
+    /// Appends one successful script's store writes to the session log.
+    /// Without a store log the writes drop silently, as pi does without a
+    /// session context (T-13).
+    pub fn appendCodemodeStore(self: *const SessionChildCapability, data: []const u8) !void {
+        const log = self.impl.store_log orelse return;
+        return log.appendFn(log.ctx, data);
     }
 
     /// The body a handle of `kind` refers to, at most `max_bytes` and

@@ -912,3 +912,120 @@ test "codemode legal escaped string literal compiles without an escape hint" {
     try std.testing.expectEqualStrings("a\"b", result.text);
     try std.testing.expect(host.lastExceptionMessage() == null);
 }
+
+// T-13 (ISSUE-13): store()/load() keep JSON values across codemode calls,
+// with pi 1.5.1 semantics (pi-codemode prelude-source.js store/load,
+// execute.js readCodemodeStore and the ok-only appendEntry).
+
+test "codemode store/load keep JSON values within one eval" {
+    var host = Host.init(std.testing.allocator, .{});
+    defer host.deinit();
+    var result = try host.eval(
+        \\store("s", "text"); store("n", 42); store("b", true); store("nil", null);
+        \\store("obj", {a: [1, 2, {x: "y"}]});
+        \\JSON.stringify([load("s"), load("n"), load("b"), load("nil"), load("obj"), load("missing")])
+    );
+    defer result.deinit();
+    try std.testing.expectEqualStrings("[\"text\",42,true,null,{\"a\":[1,2,{\"x\":\"y\"}]},null]", result.value);
+}
+
+test "codemode store(key, undefined) deletes the key" {
+    var host = Host.init(std.testing.allocator, .{});
+    defer host.deinit();
+    var result = try host.eval(
+        \\store("k", 1); store("k", undefined); typeof load("k")
+    );
+    defer result.deinit();
+    try std.testing.expectEqualStrings("undefined", result.value);
+}
+
+test "codemode store/load reject non-string keys like pi" {
+    var host = Host.init(std.testing.allocator, .{});
+    defer host.deinit();
+    var result = try host.eval(
+        \\try { store(1, 2); "no throw"; } catch (e) { e.name + ": " + e.message; }
+    );
+    defer result.deinit();
+    try std.testing.expectEqualStrings("TypeError: store() key must be a string", result.value);
+    var loaded = try host.eval(
+        \\try { load(1); "no throw"; } catch (e) { e.name + ": " + e.message; }
+    );
+    defer loaded.deinit();
+    try std.testing.expectEqualStrings("TypeError: load() key must be a string", loaded.value);
+}
+
+test "codemode store rejects non-JSON values like pi" {
+    var host = Host.init(std.testing.allocator, .{});
+    defer host.deinit();
+    var result = try host.eval(
+        \\const a = {}; a.self = a;
+        \\const out = [];
+        \\for (const v of [a, function () {}, Symbol("s"), 1n]) {
+        \\    try { store("k", v); out.push("no throw"); }
+        \\    catch (e) { out.push(e.name + "|" + (e.message.indexOf("not JSON-serializable") !== -1)); }
+        \\}
+        \\out.join(",")
+    );
+    defer result.deinit();
+    try std.testing.expectEqualStrings("TypeError|true,TypeError|true,TypeError|true,TypeError|true", result.value);
+}
+
+test "codemode store enforces pi's value and total caps" {
+    var host = Host.init(std.testing.allocator, .{});
+    defer host.deinit();
+    var result = try host.eval(
+        \\const v = "x".repeat(256 * 1024 - 2);
+        \\try { store("big", v + "xx"); "no throw"; }
+        \\catch (e) { e.name + "|" + (e.message.indexOf("more than the limit of 262144") !== -1); }
+    );
+    defer result.deinit();
+    try std.testing.expectEqualStrings("RangeError|true", result.value);
+    var full = try host.eval(
+        \\const w = "x".repeat(256 * 1024 - 2);
+        \\store("k0", w); store("k1", w); store("k2", w);
+        \\try { store("k3", w); "no throw"; }
+        \\catch (e) { e.name + "|" + (e.message.indexOf("store is full") === 0); }
+    );
+    defer full.deinit();
+    try std.testing.expectEqualStrings("RangeError|true", full.value);
+    // Deleting a key frees its quota, as pi's storedChars accounting does.
+    var freed = try host.eval(
+        \\const u = "x".repeat(256 * 1024 - 2);
+        \\store("k0", undefined); store("k3", u); typeof load("k3")
+    );
+    defer freed.deinit();
+    try std.testing.expectEqualStrings("string", freed.value);
+}
+
+test "codemode store starts from the injected session map and buffers writes" {
+    var host = Host.init(std.testing.allocator, .{});
+    defer host.deinit();
+    host.store_initial = "{\"a\":1}";
+    var result = try host.eval(
+        \\store("b", 2); load("a")
+    );
+    defer result.deinit();
+    try std.testing.expectEqualStrings("1", result.value);
+    const writes = try host.storeWritesJson(std.testing.allocator);
+    defer if (writes) |w| std.testing.allocator.free(w);
+    try std.testing.expectEqualStrings("{\"set\":{\"b\":2},\"delete\":[]}", writes.?);
+    // A fresh eval starts again from the injected map: the previous eval's
+    // buffered writes are gone, and an eval without writes reports none.
+    var second = try host.eval("typeof load(\"b\")");
+    defer second.deinit();
+    try std.testing.expectEqualStrings("undefined", second.value);
+    const none = try host.storeWritesJson(std.testing.allocator);
+    try std.testing.expect(none == null);
+}
+
+test "codemode store writes keep the last write per key" {
+    var host = Host.init(std.testing.allocator, .{});
+    defer host.deinit();
+    var result = try host.eval(
+        \\store("x", 1); store("x", 2); store("y", 3); store("y", undefined); store("z", undefined); 0
+    );
+    defer result.deinit();
+    const writes = try host.storeWritesJson(std.testing.allocator);
+    defer if (writes) |w| std.testing.allocator.free(w);
+    try std.testing.expectEqualStrings("{\"set\":{\"x\":2},\"delete\":[\"y\",\"z\"]}", writes.?);
+}

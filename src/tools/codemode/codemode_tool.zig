@@ -334,6 +334,15 @@ pub fn call(ctx: tool_dispatch.DispatchContext, erased: tool_dispatch.ToolInput)
     sandbox.host.setToolFace(face);
     sandbox.host.setToolSchemas(tool_schemas);
 
+    // T-13: the session's folded store seeds the script. Without a session
+    // capability the store starts empty and its writes drop (pi :428).
+    const initial_store = if (ctx.session_child_capability) |cap|
+        cap.codemodeStore(ctx.allocator) catch return error.OutOfMemory
+    else
+        null;
+    defer if (initial_store) |bytes| ctx.allocator.free(bytes);
+    sandbox.host.store_initial = initial_store;
+
     // Gate one (structure): only the derived surface can enter the
     // budget path, so the shipped four-tool face stays byte-identical.
     // Gate three (config): an off limit disables selection. Gate two
@@ -389,6 +398,18 @@ pub fn call(ctx: tool_dispatch.DispatchContext, erased: tool_dispatch.ToolInput)
     defer result.deinit();
 
     if (state.cancelled()) return error.Cancelled;
+
+    // T-13: only a successful script's writes reach the session, as one
+    // codemode_store line through the capability's log hook. A failed
+    // append is a tool failure, so the model knows the state was not kept.
+    if (ctx.session_child_capability) |cap| {
+        if (try sandbox.host.storeWritesJson(ctx.allocator)) |writes| {
+            defer ctx.allocator.free(writes);
+            cap.appendCodemodeStore(writes) catch |err| {
+                return .{ .failure = try ctx.allocator.print("codemode store append failed: {s}", .{@errorName(err)}) };
+            };
+        }
+    }
 
     // ISSUE-11: the nested call summary rides at the head of the success
     // body so result-store externalization keeps it model-visible.
@@ -1210,4 +1231,299 @@ test "@options violations echo the value the script declared" {
         parseScriptOptions("// @options: {\"timeout_ms\": -5}\ntext(\"hi\");", &negative),
     );
     try std.testing.expectEqualStrings("timeout_ms: -5", negative.text);
+}
+
+// T-13 (ISSUE-13): the store flush. A successful script's buffered writes
+// append one codemode_store entry through the session capability; failed,
+// timed-out and cancelled scripts append nothing, and without a session
+// capability writes drop silently (pi execute.js :428, :546-549).
+
+const store_test_worker_runtime = @import("../../core/agent/worker_runtime.zig");
+const store_test_session_runtime = @import("../../core/session/session.zig");
+const store_test_context_contract = @import("../../core/workspace/context_contract.zig");
+const store_test_command_contract = @import("../../core/execution/command_contract.zig");
+const store_test_types = @import("../../core/shared/types.zig");
+
+fn storeTestGatherContext(_: Allocator, _: store_test_context_contract.InitialContextInput) store_test_context_contract.ProviderError!store_test_context_contract.ProviderContext {
+    return .{};
+}
+
+fn storeTestAppendStatic(_: store_test_context_contract.StaticContextInput, _: Allocator, _: *std.ArrayList(store_test_types.ChatMessage)) store_test_context_contract.ProviderError!void {}
+
+fn storeTestAppendTransient(_: store_test_context_contract.TransientContextInput, _: Allocator, _: *std.ArrayList(store_test_types.ChatMessage)) store_test_context_contract.ProviderError!void {}
+
+fn storeTestOutputChunk(_: *anyopaque, _: ?store_test_types.ToolLifecycleId, _: store_test_command_contract.CommandOutputStream, _: []const u8) anyerror!void {}
+
+/// Minimal runtime fixture for the store flush tests, shaped like the
+/// bridge's TestCodemodeRuntime: the scripts here call no nested tools.
+const StoreTestRuntime = struct {
+    worker: store_test_worker_runtime.WorkerRuntime = .{},
+    session: store_test_session_runtime.SessionRuntime = .{ .max_history_turns = 8 },
+
+    fn deinit(self: *StoreTestRuntime, alloc: Allocator) void {
+        self.worker.deinit(alloc);
+        self.session.deinit(alloc);
+    }
+
+    fn context(self: *StoreTestRuntime) tool_runtime.Context {
+        return .{
+            .workspace_root = "/tmp",
+            .ignored_list_entries = &.{},
+            .max_list_entries = 100,
+            .max_read_file_bytes = 64 * 1024,
+            .max_read_file_lines = 400,
+            .max_read_file_line_len = 2000,
+            .max_command_output_bytes = 64 * 1024,
+            .api_key = "",
+            .model = "",
+            .gateway_retry_count = 0,
+            .gateway_chat_url = "",
+            .agent_step_limit = 0,
+            .permission_mode = .ask,
+            .permission_grants = &.{},
+            .permission_rules = .{},
+            .worker = &self.worker,
+            .session = &self.session,
+            .context_registry = .{ .default_provider = .{
+                .id = "test.codemode_store_context",
+                .gather_project_context_fn = storeTestGatherContext,
+                .select_applicable_project_context_fn = store_test_context_contract.selectNoApplicableProjectContext,
+                .append_static_fn = storeTestAppendStatic,
+                .append_transient_fn = storeTestAppendTransient,
+            } },
+            .output_chunk_ctx = undefined,
+            .on_output_chunk = storeTestOutputChunk,
+        };
+    }
+};
+
+/// A session log probe standing in for the adapter's store hook: it records
+/// every append and serves the injected map as the folded store.
+const StoreLogProbe = struct {
+    alloc: Allocator,
+    initial: ?[]const u8 = null,
+    appended: std.ArrayList([]u8) = .empty,
+    fail_append: bool = false,
+
+    fn deinit(self: *StoreLogProbe) void {
+        for (self.appended.items) |data| self.alloc.free(data);
+        self.appended.deinit(self.alloc);
+    }
+
+    fn hook(self: *StoreLogProbe) session_child_store.StoreLog {
+        return .{ .ctx = self, .readFn = read, .appendFn = append };
+    }
+
+    fn read(ctx: *anyopaque, alloc: Allocator) anyerror!?[]u8 {
+        const self: *StoreLogProbe = @ptrCast(@alignCast(ctx));
+        return if (self.initial) |value| try alloc.dupe(u8, value) else null;
+    }
+
+    fn append(ctx: *anyopaque, data: []const u8) anyerror!void {
+        const self: *StoreLogProbe = @ptrCast(@alignCast(ctx));
+        if (self.fail_append) return error.Io;
+        try self.appended.append(self.alloc, try self.alloc.dupe(u8, data));
+    }
+};
+
+fn runStoreCall(
+    allocator: Allocator,
+    rt: *StoreTestRuntime,
+    capability: ?*session_child_store.SessionChildCapability,
+    script: []const u8,
+) !tool_dispatch.ToolResult {
+    var state = tool_runtime.CodemodeHostState{
+        .runtime = rt.context(),
+        .script_call = .{ .id = "codemode-store-call", .name = "codemode", .arguments_json = "{}" },
+    };
+    const ctx: tool_dispatch.DispatchContext = .{
+        .allocator = allocator,
+        .codemode_host = &state,
+        .session_child_capability = capability,
+    };
+    var args: std.Io.Writer.Allocating = .init(allocator);
+    defer args.deinit();
+    try args.writer.writeAll("{\"script\":");
+    try std.json.Stringify.value(script, .{}, &args.writer);
+    try args.writer.writeByte('}');
+    const decoded = try decode(ctx, args.written());
+    const input = switch (decoded) {
+        .input => |input| input,
+        .failure => |body| {
+            allocator.free(body);
+            return error.TestUnexpectedResult;
+        },
+    };
+    defer input.deinit(allocator);
+    return call(ctx, input);
+}
+
+fn storeTestCapability(
+    allocator: Allocator,
+    memory: *session_child_store.MemoryBlobsForTesting,
+    probe: *StoreLogProbe,
+) !session_child_store.SessionChildCapability {
+    var capability = try session_child_store.SessionChildCapability.initBlobs(allocator, memory.blobs(), "", .writable);
+    errdefer capability.deinit();
+    capability.setStoreLog(probe.hook());
+    return capability;
+}
+
+test "a successful script appends its store writes as one codemode_store entry" {
+    const allocator = std.testing.allocator;
+    var rt = StoreTestRuntime{};
+    defer rt.deinit(allocator);
+    var probe = StoreLogProbe{ .alloc = allocator };
+    defer probe.deinit();
+    var memory = session_child_store.MemoryBlobsForTesting.init(allocator);
+    defer memory.deinit();
+    var capability = try storeTestCapability(allocator, &memory, &probe);
+    defer capability.deinit();
+
+    const result = try runStoreCall(allocator, &rt, &capability,
+        \\store("k", {v: 1}); store("gone", undefined); text("ok");
+    );
+    defer result.deinit(allocator);
+    try std.testing.expect(result == .success);
+    try std.testing.expectEqual(@as(usize, 1), probe.appended.items.len);
+    try std.testing.expectEqualStrings("{\"set\":{\"k\":{\"v\":1}},\"delete\":[\"gone\"]}", probe.appended.items[0]);
+}
+
+test "a successful script with no store writes appends nothing" {
+    const allocator = std.testing.allocator;
+    var rt = StoreTestRuntime{};
+    defer rt.deinit(allocator);
+    var probe = StoreLogProbe{ .alloc = allocator };
+    defer probe.deinit();
+    var memory = session_child_store.MemoryBlobsForTesting.init(allocator);
+    defer memory.deinit();
+    var capability = try storeTestCapability(allocator, &memory, &probe);
+    defer capability.deinit();
+
+    const result = try runStoreCall(allocator, &rt, &capability, "text(\"ok\");");
+    defer result.deinit(allocator);
+    try std.testing.expect(result == .success);
+    try std.testing.expectEqual(@as(usize, 0), probe.appended.items.len);
+}
+
+test "a script error never appends its store writes" {
+    const allocator = std.testing.allocator;
+    var rt = StoreTestRuntime{};
+    defer rt.deinit(allocator);
+    var probe = StoreLogProbe{ .alloc = allocator };
+    defer probe.deinit();
+    var memory = session_child_store.MemoryBlobsForTesting.init(allocator);
+    defer memory.deinit();
+    var capability = try storeTestCapability(allocator, &memory, &probe);
+    defer capability.deinit();
+
+    const result = try runStoreCall(allocator, &rt, &capability,
+        \\store("k", 1); throw new Error("boom");
+    );
+    defer result.deinit(allocator);
+    try std.testing.expect(result == .failure);
+    try std.testing.expectEqual(@as(usize, 0), probe.appended.items.len);
+}
+
+test "a timed-out script never appends its store writes" {
+    const allocator = std.testing.allocator;
+    var rt = StoreTestRuntime{};
+    defer rt.deinit(allocator);
+    var probe = StoreLogProbe{ .alloc = allocator };
+    defer probe.deinit();
+    var memory = session_child_store.MemoryBlobsForTesting.init(allocator);
+    defer memory.deinit();
+    var capability = try storeTestCapability(allocator, &memory, &probe);
+    defer capability.deinit();
+
+    const result = try runStoreCall(allocator, &rt, &capability,
+        \\// @options: {"timeout_ms": 1000}
+        \\store("k", 1); while (true) {}
+    );
+    defer result.deinit(allocator);
+    try std.testing.expect(result == .failure);
+    try std.testing.expect(std.mem.find(u8, result.failure, "Timeout") != null);
+    try std.testing.expectEqual(@as(usize, 0), probe.appended.items.len);
+}
+
+test "a cancelled script never appends its store writes" {
+    const allocator = std.testing.allocator;
+    var rt = StoreTestRuntime{};
+    defer rt.deinit(allocator);
+    rt.worker.worker_cancel_requested.store(true, .seq_cst);
+    var probe = StoreLogProbe{ .alloc = allocator };
+    defer probe.deinit();
+    var memory = session_child_store.MemoryBlobsForTesting.init(allocator);
+    defer memory.deinit();
+    var capability = try storeTestCapability(allocator, &memory, &probe);
+    defer capability.deinit();
+
+    const result = runStoreCall(allocator, &rt, &capability,
+        \\store("k", 1); text("ok");
+    );
+    try std.testing.expectError(error.Cancelled, result);
+    try std.testing.expectEqual(@as(usize, 0), probe.appended.items.len);
+}
+
+test "without a session capability store starts empty and writes drop" {
+    const allocator = std.testing.allocator;
+    var rt = StoreTestRuntime{};
+    defer rt.deinit(allocator);
+
+    const result = try runStoreCall(allocator, &rt, null,
+        \\store("k", 7); text(String(load("k")));
+    );
+    defer result.deinit(allocator);
+    try std.testing.expect(result == .success);
+    try std.testing.expect(std.mem.find(u8, result.success, "7") != null);
+}
+
+test "the next call loads the previous call's persisted writes" {
+    const allocator = std.testing.allocator;
+    var rt = StoreTestRuntime{};
+    defer rt.deinit(allocator);
+    var probe = StoreLogProbe{ .alloc = allocator };
+    defer probe.deinit();
+    var memory = session_child_store.MemoryBlobsForTesting.init(allocator);
+    defer memory.deinit();
+    var capability = try storeTestCapability(allocator, &memory, &probe);
+    defer capability.deinit();
+
+    const first = try runStoreCall(allocator, &rt, &capability,
+        \\store("k", {v: 42}); text("stored");
+    );
+    defer first.deinit(allocator);
+    try std.testing.expect(first == .success);
+    try std.testing.expectEqual(@as(usize, 1), probe.appended.items.len);
+    // The session folds the appended entry into its map (the fold tests pin
+    // the merge); the next call reads that map back.
+    try std.testing.expectEqualStrings("{\"set\":{\"k\":{\"v\":42}},\"delete\":[]}", probe.appended.items[0]);
+    probe.initial = "{\"k\":{\"v\":42}}";
+    const second = try runStoreCall(allocator, &rt, &capability,
+        \\text(JSON.stringify(load("k")));
+    );
+    defer second.deinit(allocator);
+    try std.testing.expect(second == .success);
+    try std.testing.expect(std.mem.find(u8, second.success, "{\"v\":42}") != null);
+    try std.testing.expectEqual(@as(usize, 1), probe.appended.items.len);
+}
+
+test "a store append failure surfaces as a tool failure" {
+    const allocator = std.testing.allocator;
+    var rt = StoreTestRuntime{};
+    defer rt.deinit(allocator);
+    var probe = StoreLogProbe{ .alloc = allocator, .fail_append = true };
+    defer probe.deinit();
+    var memory = session_child_store.MemoryBlobsForTesting.init(allocator);
+    defer memory.deinit();
+    var capability = try storeTestCapability(allocator, &memory, &probe);
+    defer capability.deinit();
+
+    const result = try runStoreCall(allocator, &rt, &capability,
+        \\store("k", 1); text("ok");
+    );
+    defer result.deinit(allocator);
+    try std.testing.expect(result == .failure);
+    try std.testing.expect(std.mem.find(u8, result.failure, "store") != null);
+    try std.testing.expectEqual(@as(usize, 0), probe.appended.items.len);
 }

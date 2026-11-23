@@ -1626,7 +1626,30 @@ pub const Session = struct {
         const terminal_path = try profile_paths.rootPath(self.alloc, self.store.home, &.{ terminal_dir_name, self.id() });
         defer self.alloc.free(terminal_path);
         self.capability = try session_child_store.SessionChildCapability.initBlobs(self.alloc, self.host.blobs(), terminal_path, .writable);
+        // The codemode store rides the session's own log (T-13): the same
+        // write path every other line uses, under this adapter's mutex.
+        self.capability.?.setStoreLog(.{ .ctx = self, .readFn = codemodeStoreRead, .appendFn = codemodeStoreAppend });
         return &self.capability.?;
+    }
+
+    /// The folded codemode store, copied for the caller (T-13).
+    fn codemodeStoreRead(ctx: *anyopaque, alloc: Allocator) anyerror!?[]u8 {
+        const self: *Session = @ptrCast(@alignCast(ctx));
+        self.mutex.lockUncancelable(io_mod.getIo());
+        defer self.mutex.unlock(io_mod.getIo());
+        var state = try self.handle.state(alloc);
+        defer state.deinit(alloc);
+        const raw = state.codemode_store orelse return null;
+        return try alloc.dupe(u8, raw);
+    }
+
+    /// Appends one successful script's store writes (T-13). A held session
+    /// keeps the line in memory until its first turn, like a setting.
+    fn codemodeStoreAppend(ctx: *anyopaque, data: []const u8) anyerror!void {
+        const self: *Session = @ptrCast(@alignCast(ctx));
+        self.mutex.lockUncancelable(io_mod.getIo());
+        defer self.mutex.unlock(io_mod.getIo());
+        _ = try self.write(&.{.{ .codemode_store = data }});
     }
 
     // -- turns ---------------------------------------------------------------
@@ -4691,7 +4714,7 @@ noinline fn replay(
                     try sink.turn(try presentStoredResults(src, alloc, turn), ended.turn);
                 },
                 .compacted => |line| try sink.summary(line.data),
-                .session_created, .turn_committed, .set, .child_spawned, .child_finished, .snapshot, .closed => {},
+                .session_created, .turn_committed, .set, .child_spawned, .child_finished, .snapshot, .closed, .codemode_store => {},
             }
         }
         // Only a replay that reads past the last good line loses lines: one
