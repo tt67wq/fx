@@ -1,6 +1,6 @@
 # ISSUE-27 — 模型自主的上下文压缩：nudge 提示 + 模型可调用的 compress 工具（参考 billion-context 原理）
 
-- **状态**: open（P0/P1 已落地，P2/P3 待开）
+- **状态**: open（P0/P1 已落地，P3 论证关单，P2 待决策）
 - **发现时间**: 2026-11-18
 - **来源**: 调研 https://github.com/ranxianglei/billion-context 后评估移植可行性，与 fx 现有 compactor 逐点对照
 - **工作量**: P0 小 / P1 中 / P2 大 / P3 待论证（见分阶段计划）
@@ -82,7 +82,7 @@ src/builtins/tools.zig 的 read_tool_result（实现 src/tools/session/read_tool
   - 权限：新工具必须接入 src/core/permissions/permissions.zig；压缩是会话状态变更，是否 requires_approval 需要产品判断（决策点 3）。
 - 验收：模型在长会话中自主压缩且 lint 通过；auto 阈值兜底仍工作；压缩后 read_tool_result 可找回。
 
-### P3 · 前缀缓存亲和 / 增量小步折叠（待论证）
+### P3 · 前缀缓存亲和 / 增量小步折叠（已论证关单，2026-11-23）
 
 - 先做真实数据论证（决策点 4）：fx 有无月级单 session 场景？provider cache TTL 下收益多少？论证不过就关单不做。
 
@@ -116,3 +116,9 @@ T-30-impl：红 166f39534 → 绿 b79e2f7b7，review approve c3f3ec21c。用户�
 ## P1 落地备注（2026-11-21）
 
 T-31-impl：红 02c4a912d → 绿 f1d8e72d3，review approve 872fa85c7。核查结论：默认面可达性已成立（registry 16 工具）、search 提示原描述已有、系统提示无缺口不动；真缺口为 M/T/L 句柄词汇，新描述 42 词持平补齐（T12 saved tool call / M12 turn / L1 whole earlier compaction / search 无 handle 跨全部记录）。全链测试两次自动压缩后真实 read_tool_result 四支（T1/search/L1/M1）各钉早期细节哨兵；byte-exact 契约哈希双平台重钉（linux 值临时强确实测后还原干净，评审独立复算一致）。模型自主性属 eval 领域未建（诚实边界）。整合于 integrate-issue29（HEAD 5f4856177），PR tt67wq/fx#6。合并树首跑 command_runner 超时 flake 一次，复跑全绿（既有已知 flake 家族）。
+
+## P3 关单备注（2026-11-23，T-27p3 数据论证）
+
+P3 关单（T-27p3 数据论证，2026-11-23）：130 个真实 session（2026-11-06 至 11-23）中无月级会话，最长跨度 2.71 天，最长连续活跃段 2.36 天仅 1 例。按 5min 保守 TTL 切分，98.6% 的 input 重付量（375.6M / 381.0M token）落在缓存暖窗内，冷重付仅 70 次调用 5.33M token（1.4%），前缀缓存亲和的增量收益上界约总输入开销 1.3%。显式缓存断点、稳定前缀跨 worktree 复用与 Claude 缓存保暖 ping 均已落地（PromptCache.tla / CacheWarming.tla）；auto 阈值压缩加 P0/P1 已覆盖实际上下文压力（130 session 仅 3 次压缩）。增量小步折叠在暖档缓存读价下收益边际，且引入摘要成本与信息丢失风险。论证报告与可复跑脚本见 fx-pi1 工作树 .agents/tasks/T-27p3/（本地）。重开条件：出现 >7 天活跃段且冷重付占比 >10% 的样本，或确证主力模型上游无 prompt cache。
+
+conductor 复核：analyze.py 只读复跑 exit 0，结论字段全稳定（月级 0、>7d 0、冷重付 70 次/1.4% 不变；暖窗量随 live store 漂移属预期）；零产品代码改动，git 干净。数据边界：观测窗 17 天，结论限定为现有用法无月级需求证据，非全称否定；缓存命中无实测（上游不回传 cache_read/write），暖冷为 TTL 理论切分。
