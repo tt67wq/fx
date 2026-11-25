@@ -37,6 +37,25 @@ test "auto compaction percent accepts only the supported range" {
     try std.testing.expectEqual(@as(?u8, null), parsePercent(""));
 }
 
+test "auto compact tokens parses a whole token count, zero and junk mean unset" {
+    try std.testing.expectEqual(@as(?usize, 300_000), parseTokens("300000"));
+    try std.testing.expectEqual(@as(?usize, 300_000), parseTokens(" 300000\n"));
+    try std.testing.expectEqual(@as(?usize, null), parseTokens("0"));
+    try std.testing.expectEqual(@as(?usize, null), parseTokens("-5"));
+    try std.testing.expectEqual(@as(?usize, null), parseTokens("many"));
+    try std.testing.expectEqual(@as(?usize, null), parseTokens(""));
+    try std.testing.expectEqual(@as(?usize, null), parseTokens(null));
+    try std.testing.expectEqual(@as(?usize, null), parseTokens("99999999999999999999999999"));
+}
+
+test "auto compact tokens resolves override, then setting, then unset" {
+    try std.testing.expectEqual(@as(?usize, null), resolveTokens(null, null));
+    try std.testing.expectEqual(@as(?usize, 400_000), resolveTokens(400_000, null));
+    try std.testing.expectEqual(@as(?usize, 250_000), resolveTokens(400_000, "250000"));
+    try std.testing.expectEqual(@as(?usize, 400_000), resolveTokens(400_000, "junk"));
+    try std.testing.expectEqual(@as(?usize, null), resolveTokens(400_000, "0"));
+}
+
 test "auto compaction percent resolves override, then setting, then default" {
     try std.testing.expectEqual(default_percent, resolvePercent(null, null));
     try std.testing.expectEqual(@as(u8, 40), resolvePercent(40, null));

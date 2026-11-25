@@ -5059,6 +5059,22 @@ fn expectSettingForTest(layer: SettingsLayer, name: []const u8, value_json: []co
     try std.testing.expectEqual(accepted, try settingsTextAcceptedForTest(layer, json));
 }
 
+test "auto_compact_tokens parses as a profile integer, zero and negatives behave" {
+    const alloc = std.testing.allocator;
+    var ok_set = try parseSettingsJson(alloc, "{\"auto_compact_tokens\":300000}");
+    defer ok_set.deinit(alloc);
+    try std.testing.expectEqual(@as(?usize, 300_000), ok_set.auto_compact_tokens);
+    var zero = try parseSettingsJson(alloc, "{\"auto_compact_tokens\":0}");
+    defer zero.deinit(alloc);
+    try std.testing.expectEqual(@as(?usize, null), zero.auto_compact_tokens);
+    try std.testing.expectError(error.InvalidAutoCompactTokensType, parseSettingsJson(alloc, "{\"auto_compact_tokens\":\"many\"}"));
+    try std.testing.expectError(error.InvalidAutoCompactTokensValue, parseSettingsJson(alloc, "{\"auto_compact_tokens\":-5}"));
+    // Profile-only: a project file that sets it is ignored.
+    var project = try parseSettingsJsonForLayer(alloc, "{\"auto_compact_tokens\":300000}", .project);
+    defer project.deinit(alloc);
+    try std.testing.expectEqual(@as(?usize, null), project.auto_compact_tokens);
+}
+
 test "the settings list gives the types, values, and bounds the settings parser accepts" {
     const alloc = std.testing.allocator;
     for (settings_keys.keys) |key| {

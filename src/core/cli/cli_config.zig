@@ -756,6 +756,17 @@ test "config set turns each value into the patch the save path writes" {
     try std.testing.expect(removed.value == null);
 }
 
+test "config set writes auto_compact_tokens and rejects junk" {
+    var problem: WriteProblem = .none;
+    const tokens = try changeForTest(&.{ "set", "auto_compact_tokens", "300000" }, &problem);
+    try std.testing.expectEqual(@as(?usize, 300_000), tokens.patch.auto_compact_tokens);
+    try std.testing.expectEqual(@as(i64, 300_000), tokens.value.?.integer);
+    const zero = try changeForTest(&.{ "set", "auto_compact_tokens", "0" }, &problem);
+    try std.testing.expectEqual(@as(i64, 0), zero.value.?.integer);
+    const options = try parseForTest(&.{ "set", "auto_compact_tokens", "many" });
+    try std.testing.expectError(error.InvalidConfigValue, change(options, &problem));
+}
+
 test "config set explains a bad value or a key it doesn't change" {
     const alloc = std.testing.allocator;
     const cases = [_]struct { args: []const [:0]const u8, err: anyerror, message: []const u8 }{

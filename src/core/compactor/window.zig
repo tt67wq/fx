@@ -457,6 +457,22 @@ test "automatic compaction starts at the configured share of usable input" {
     try testing.expectEqual(@as(?usize, null), compactAtTokens(.{}, 80));
 }
 
+test "an absolute token cap lowers the compaction point but never raises it" {
+    const capabilities = model_capabilities.Capabilities{ .context_window = 1_000_000, .max_output_tokens = 128_000 };
+    // percent point 697_600; a lower cap wins, a higher cap loses, null/0 keep today's behavior.
+    try std.testing.expectEqual(@as(?usize, 300_000), compactAtTokens(capabilities, 80, 300_000));
+    try std.testing.expectEqual(@as(?usize, 697_600), compactAtTokens(capabilities, 80, 900_000));
+    try std.testing.expectEqual(@as(?usize, 697_600), compactAtTokens(capabilities, 80, null));
+    try std.testing.expectEqual(@as(?usize, 697_600), compactAtTokens(capabilities, 80, 0));
+    // Unknown window stays unknown even with a cap: due() needs usable room too.
+    try std.testing.expectEqual(@as(?usize, null), compactAtTokens(.{}, 80, 300_000));
+    // Size.of carries the cap into compact_at_tokens.
+    const capped = Size.of(capabilities, 80, 300_000);
+    try std.testing.expectEqual(@as(?usize, 300_000), capped.compact_at_tokens);
+    const uncapped = Size.of(capabilities, 80, null);
+    try std.testing.expectEqual(@as(?usize, 697_600), uncapped.compact_at_tokens);
+}
+
 test "the compacted text may use half the compaction point, less the fixed part and the kept turns" {
     const size: Size = .{ .compact_at_tokens = 100_000, .usable_tokens = 125_000, .fixed_tokens = 10_000 };
     try testing.expectEqual(@as(usize, 35_000), size.compactedTokens(5_000));
