@@ -9,3 +9,4 @@
 - [2026-11-21] 规范: .agents/ 内容一律不入库（gitignore 已覆盖，禁止 git add -f）；任务契约/报告/评审产物只留本地磁盘，commit 仅含产品代码与测试 — 来源 用户指令
 - [2026-11-21] 踩坑: 红证据必须来自 zig build test 全量调用，单文件 zig 直跑会产 import-of-file-outside-module-path 编译错误墙（T-33a worker 存错证据，评审独立复现才坐实红） — 来源 T-33a-review
 - [2026-11-21] 踩坑: 验收新行为测试须证其真进入新代码路径（base 上红/插桩命中），vacuous 测试在 base 也绿会骗过门检查；T-33b 七测试全空转被评审探针抓出 — 来源 T-33b-review
+- [2026-11-25] 选型: ISSUE-27 P2 双 worker 论证后缓做：范围语法永久出局（句柄压缩时才生成、checkpoint 连续前缀格式），最小形仅无参数 compress()；前置=锚点 issue + evals 观测，重开条件 manual≥5 session / overflow≥1 / search 使用率≥1% — 来源 T-37a/T-37b

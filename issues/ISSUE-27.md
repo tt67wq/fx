@@ -122,3 +122,22 @@ T-31-impl：红 02c4a912d → 绿 f1d8e72d3，review approve 872fa85c7。核查�
 P3 关单（T-27p3 数据论证，2026-11-23）：130 个真实 session（2026-11-06 至 11-23）中无月级会话，最长跨度 2.71 天，最长连续活跃段 2.36 天仅 1 例。按 5min 保守 TTL 切分，98.6% 的 input 重付量（375.6M / 381.0M token）落在缓存暖窗内，冷重付仅 70 次调用 5.33M token（1.4%），前缀缓存亲和的增量收益上界约总输入开销 1.3%。显式缓存断点、稳定前缀跨 worktree 复用与 Claude 缓存保暖 ping 均已落地（PromptCache.tla / CacheWarming.tla）；auto 阈值压缩加 P0/P1 已覆盖实际上下文压力（130 session 仅 3 次压缩）。增量小步折叠在暖档缓存读价下收益边际，且引入摘要成本与信息丢失风险。论证报告与可复跑脚本见 本仓库 .agents/tasks/T-27p3/（本地，不入库）。重开条件：出现 >7 天活跃段且冷重付占比 >10% 的样本，或确证主力模型上游无 prompt cache。
 
 conductor 复核：analyze.py 只读复跑 exit 0，结论字段全稳定（月级 0、>7d 0、冷重付 70 次/1.4% 不变；暖窗量随 live store 漂移属预期）；零产品代码改动，git 干净。数据边界：观测窗 17 天，结论限定为现有用法无月级需求证据，非全称否定；缓存命中无实测（上游不回传 cache_read/write），暖冷为 TTL 理论切分。
+
+## P2 双 worker 讨论备注（2026-11-25，T-37a/T-37b）
+
+conductor 派发正反两方独立论证（fx-pi1 正方 / fx-pi2 反方），产物与复跑脚本在 .agents/tasks/T-37a|b/（本地不入库）。conductor 已核对双方代码锚点并只读复跑反方数据脚本（scan/thr/comp/mix.py 全 exit 0）。
+
+**双方收敛点（P2 设计共识）**：
+1. 范围语法（M3-M15 句柄区间）不做。硬事实：M/T 句柄压缩时才生成（summarize.zig:419），压缩前可寻址空间为空；checkpoint 是连续前缀替换格式（checkpoint.zig:195 replacesPriorContext），带洞区间要 checkpoint v2 + records/lint/codec/undo/TLA 全套连带。正方缓做、反方删除，实质一致：第一版不进设计稿。
+2. 若做，唯一最小形是无参数 compress()（可选 reason 仅进展示），语义 = 模型替用户按一次 /compact，window.zig 继续选段，边界保护免费继承。
+3. 权限不确认（/compact 与 auto 今天都不确认，records 留原文可逆）；单独给模型加确认制造不一致且杀死自主性卖点。
+4. guardrails 复用 P0 武装周期（每周期一次、成功 re-arm），可加增量 token 下限 no_op；防懒不需要机制，auto 兜底不动。
+
+**分歧与裁决**：正方主张现在就做最小版；反方用数据主张缓做——143 session/17 天：auto 阈值命中 0、nudge 命中 1、4 次压缩全是用户手动（峰值仅达阈值 14%-65%）、overflow 0、read_tool_result 使用率 4/4761 且 search 0 次。真正坏的是阈值锚点（窗口百分比在 1M 窗口上过高），不是缺工具。conductor 采反方优先级：**P2 维持 open 不立项开工**，先走两步前置——
+1. 另开 issue 论证 auto/nudge 锚点改绝对 token/成本上界（反方数据可直接复用）——已建 ISSUE-37（proposed，2026-11-25）；
+2. 补 evals 场景量测「模型有 compress 时会怎么用」（正方也承认此为论证空洞，P1 备注已记 eval 未建）。
+两步都指向「模型自主提前压缩优于修锚点」才做无参数版。
+
+**新增设计债（无参数版也要解）**：compress 的 tool call/result 本身落在 fold 边界上（auto 发生在两请求之间，无此问题）；[check:] 标记不得构成模型重压理由。
+
+**重开条件（照 P3 格式）**：≥5 个 session 出现 manual 压缩，或 ≥1 次 provider_overflow，或 read_tool_result search 使用率 ≥1%。当前实测 3、0、0。
