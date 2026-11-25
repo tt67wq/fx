@@ -1,6 +1,6 @@
 # ISSUE-37 — auto/nudge 压缩阈值锚在窗口百分比上，1M 窗口下永不触发；论证改绝对上界（待立项）
 
-- **状态**: proposed（等待立项）
+- **状态**: closed（2026-11-25 实现合入 main，merge 227e6a297；方案 A：auto_compact_tokens + FX_AUTO_COMPACT_TOKENS，三签齐：impl 4876c312d / review approve e4e9baee5 / test PASS a5129882d。遗留：fx.sh 手册页与 schema 副本同步）
 - **发现时间**: 2026-11-25
 - **来源**: ISSUE-27 P2 双 worker 论证（T-37b 反方数据，conductor 只读复跑核实）；P2 裁决的前置一
 - **关联模块**: src/core/compactor/settings.zig、window.zig（compactAtTokens/due）、src/core/agent/runtime/orchestrator.zig（nudge）、src/core/config/model_capabilities.zig
