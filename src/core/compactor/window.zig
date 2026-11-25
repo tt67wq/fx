@@ -489,7 +489,9 @@ test "a cap below the floor clamps to the floor, keeping the retention budget sa
     try std.testing.expectEqual(@as(?usize, 50_000), compactAtTokens(capabilities, 80, 1));
     try std.testing.expectEqual(@as(?usize, 50_000), compactAtTokens(capabilities, 80, 49_999));
     try std.testing.expectEqual(@as(?usize, 50_000), compactAtTokens(capabilities, 80, 50_000));
-    // The retention budget anchored on the point stays usable.
+    // The retention budget anchored on the point stays usable on a large
+    // window (afterTokens >= 25_000); a small window is capped by
+    // usable * 20% instead.
     const tiny = Size.of(capabilities, 80, 1_000);
     try std.testing.expectEqual(@as(usize, 25_000), tiny.afterTokens());
 }

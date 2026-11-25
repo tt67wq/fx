@@ -35,24 +35,26 @@ pub fn resolvePercent(configured: ?u8, process_override: ?[]const u8) u8 {
 }
 
 /// The absolute token cap: where automatic compaction starts regardless of
-/// the window percentage. Invalid or overflowing values are ignored; 0 means
-/// unset.
+/// the window percentage. Out-of-range values are ignored, like parsePercent
+/// ignores them; 0 means unset.
 pub fn parseTokens(raw: ?[]const u8) ?usize {
     const trimmed = std.mem.trim(u8, raw orelse return null, " \t\r\n");
     if (trimmed.len == 0) return null;
     const value = std.fmt.parseUnsigned(usize, trimmed, 10) catch return null;
-    return if (value == 0) null else value;
+    return if (value == 0) null else if (isValidTokens(value)) value else null;
 }
 
-/// The cap resolves like the percent does, except a parsed 0 unsets instead
-/// of falling through and there is no default.
+/// The cap resolves like the percent does, except an override of 0 unsets
+/// instead of falling through and there is no default. A below-floor override
+/// is ignored, not adopted: parseTokens returns null for it and the configured
+/// cap survives, while a literal 0 still unsets.
 pub fn resolveTokens(configured: ?usize, process_override: ?[]const u8) ?usize {
     const raw = process_override orelse return configured;
-    if (std.fmt.parseUnsigned(usize, std.mem.trim(u8, raw, " \t\r\n"), 10)) |value| {
-        return if (value == 0) null else value;
-    } else |_| {
-        return configured;
-    }
+    const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+    // A literal 0 unsets; empty or a below-floor value leaves the setting.
+    if (trimmed.len == 0) return configured;
+    if (std.mem.eql(u8, trimmed, "0")) return null;
+    return parseTokens(raw) orelse configured;
 }
 
 test "auto compaction percent accepts only the supported range" {

@@ -215,10 +215,11 @@ pub fn change(options: Options, problem: *WriteProblem) error{ RefusedConfigSett
             return .{ .patch = patch, .value = .{ .integer = percent } };
         },
         .auto_compact_tokens => {
+            const tokens_help = "a whole number of tokens; 0 means use the percentage, or at least " ++ std.fmt.comptimePrint("{d}", .{compactor.min_tokens});
             const tokens = std.fmt.parseUnsigned(usize, raw, 10) catch
-                return invalid(problem, "a whole number of tokens; 0 means use the percentage, or at least 50000");
+                return invalid(problem, tokens_help);
             if (tokens > std.math.maxInt(i64) or (tokens > 0 and !compactor.isValidTokens(tokens)))
-                return invalid(problem, "a whole number of tokens; 0 means use the percentage, or at least 50000");
+                return invalid(problem, tokens_help);
             patch.auto_compact_tokens = tokens;
             return .{ .patch = patch, .value = .{ .integer = @intCast(tokens) } };
         },
