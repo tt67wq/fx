@@ -50,10 +50,8 @@ pub fn parseTokens(raw: ?[]const u8) ?usize {
 /// cap survives, while a literal 0 still unsets.
 pub fn resolveTokens(configured: ?usize, process_override: ?[]const u8) ?usize {
     const raw = process_override orelse return configured;
-    const trimmed = std.mem.trim(u8, raw, " \t\r\n");
     // A literal 0 unsets; empty or a below-floor value leaves the setting.
-    if (trimmed.len == 0) return configured;
-    if (std.mem.eql(u8, trimmed, "0")) return null;
+    if (std.mem.eql(u8, std.mem.trim(u8, raw, " \t\r\n"), "0")) return null;
     return parseTokens(raw) orelse configured;
 }
 
