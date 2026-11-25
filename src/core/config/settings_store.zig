@@ -1006,6 +1006,7 @@ fn validateUserPatch(patch: UserSettingsPatch) !void {
     }
     if (patch.auto_compact_tokens) |tokens| {
         if (tokens > std.math.maxInt(i64)) return error.InvalidSettingsFormat;
+        if (tokens > 0 and !compactor.isValidTokens(tokens)) return error.InvalidSettingsFormat;
     }
     if (patch.remove) |path| {
         if (!removablePath(path)) return error.InvalidSettingsFormat;
@@ -2253,6 +2254,11 @@ fn validateKnownSettingsObject(
         if (value != .integer or value.integer < 0 or !compactor.isValidPercent(@intCast(value.integer))) {
             return error.InvalidSettingsFormat;
         }
+    }
+    if (object.get("auto_compact_tokens")) |value| {
+        // 0 is the unset sentinel and passes; a set cap must reach the floor.
+        if (value != .integer or value.integer < 0) return error.InvalidSettingsFormat;
+        if (value.integer > 0 and !compactor.isValidTokens(@intCast(value.integer))) return error.InvalidSettingsFormat;
     }
     if (object.get("skill_match_fuzzy")) |value| {
         if (value != .bool) return error.InvalidSettingsFormat;

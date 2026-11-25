@@ -7689,7 +7689,7 @@ fn processQueuedPromptLoop(
                     wants_compaction,
                     step_ctx,
                     .decision,
-                    "decision={s} overflow={} request_bytes={d} estimated_tokens={d} text_tokens={d} has_images={} image_baseline={} prior_input_tokens={any} usable_tokens={any} compact_at_tokens={any} compact_at_percent={d} max_output_tokens={any}",
+                    "decision={s} overflow={} request_bytes={d} estimated_tokens={d} text_tokens={d} has_images={} image_baseline={} prior_input_tokens={any} usable_tokens={any} compact_at_tokens={any} compact_at_cap={any} compact_at_percent={d} max_output_tokens={any}",
                     .{
                         if (wants_compaction) "compact" else "no_op",
                         overflow_pending,
@@ -7701,6 +7701,7 @@ fn processQueuedPromptLoop(
                         if (applicable_calibration) |calibration| calibration.exact_input_tokens else null,
                         usable_tokens,
                         compact_at_tokens,
+                        config.auto_compact_tokens,
                         config.auto_compact_percent,
                         request_data.max_output_tokens,
                     },

@@ -216,8 +216,9 @@ pub fn change(options: Options, problem: *WriteProblem) error{ RefusedConfigSett
         },
         .auto_compact_tokens => {
             const tokens = std.fmt.parseUnsigned(usize, raw, 10) catch
-                return invalid(problem, "a whole number of tokens; 0 means use the percentage");
-            if (tokens > std.math.maxInt(i64)) return invalid(problem, "a whole number of tokens; 0 means use the percentage");
+                return invalid(problem, "a whole number of tokens; 0 means use the percentage, or at least 50000");
+            if (tokens > std.math.maxInt(i64) or (tokens > 0 and !compactor.isValidTokens(tokens)))
+                return invalid(problem, "a whole number of tokens; 0 means use the percentage, or at least 50000");
             patch.auto_compact_tokens = tokens;
             return .{ .patch = patch, .value = .{ .integer = @intCast(tokens) } };
         },

@@ -9,6 +9,15 @@ pub const default_percent: u8 = 80;
 pub const min_percent: u8 = 10;
 pub const max_percent: u8 = 80;
 
+/// The smallest absolute token cap a user may set: anything lower would
+/// starve the budget a summary keeps for retained context. 0 stays the unset
+/// sentinel and never reaches this check.
+pub const min_tokens: usize = 50_000;
+
+pub fn isValidTokens(value: usize) bool {
+    return value >= min_tokens;
+}
+
 pub fn isValidPercent(value: u64) bool {
     return value >= min_percent and value <= max_percent;
 }

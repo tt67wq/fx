@@ -66,6 +66,8 @@ pub const parsePercent = settings.parsePercent;
 // The `auto_compact_tokens` setting.
 pub const parseTokens = settings.parseTokens;
 pub const resolveTokens = settings.resolveTokens;
+pub const isValidTokens = settings.isValidTokens;
+pub const min_tokens = settings.min_tokens;
 
 // Saved checkpoints, read back when a session is loaded or shown.
 pub const modelText = checkpoint.modelText;

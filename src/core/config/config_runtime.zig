@@ -1735,7 +1735,7 @@ fn parseProfileOnlyFields(
     }
     if (root.object.get("auto_compact_tokens")) |value| {
         if (value != .integer) return error.InvalidAutoCompactTokensType;
-        if (value.integer < 0) return error.InvalidAutoCompactTokensValue;
+        if (value.integer < 0 or (value.integer > 0 and value.integer < compactor.min_tokens)) return error.InvalidAutoCompactTokensValue;
         settings.auto_compact_tokens = if (value.integer == 0) null else @intCast(value.integer);
     }
     if (root.object.get("model")) |model_value| {

@@ -140,12 +140,15 @@ pub const Size = struct {
 };
 
 /// Request size, in tokens, at which automatic compaction starts: `percent`
-/// of the model's usable input.
+/// of the model's usable input. An absolute `tokens` cap lowers that point
+/// when it is lower; null or 0 keeps the percentage alone. A cap below
+/// settings.min_tokens clamps up to the floor, like percent clamps to
+/// min_percent, so the retention budget a summary needs stays usable.
 fn compactAtTokens(capabilities: model_capabilities.Capabilities, percent: u8, tokens: ?usize) ?usize {
     const usable = usableInputTokens(capabilities) orelse return null;
     const percent_point = percentOf(usable, @min(settings.max_percent, @max(settings.min_percent, percent)));
     if (tokens) |cap| {
-        if (cap > 0) return @min(percent_point, cap);
+        if (cap > 0) return @min(percent_point, @max(settings.min_tokens, cap));
     }
     return percent_point;
 }
