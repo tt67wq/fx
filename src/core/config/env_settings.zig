@@ -112,6 +112,14 @@ pub fn collect(arena: Allocator, provider: model_provider.ProviderId) ![]Overrid
     if (compactor.parsePercent(getenv("FX_AUTO_COMPACT_PERCENT"))) |percent| {
         try list.append(arena, .{ .variable = "FX_AUTO_COMPACT_PERCENT", .key = "auto_compact_percent", .value = .{ .integer = percent } });
     }
+    if (compactor.parseTokens(getenv("FX_AUTO_COMPACT_TOKENS"))) |tokens| {
+        // fx accepts any usize, which can exceed a JSON integer.
+        const value: std.json.Value = if (std.math.cast(i64, tokens)) |fits|
+            .{ .integer = fits }
+        else
+            .{ .number_string = try std.fmt.allocPrint(arena, "{d}", .{tokens}) };
+        try list.append(arena, .{ .variable = "FX_AUTO_COMPACT_TOKENS", .key = "auto_compact_tokens", .value = value });
+    }
     if (getenv("FX_THEME")) |raw| {
         if (raw.len > 0) try list.append(arena, .{ .variable = "FX_THEME", .key = "theme", .value = .{ .string = raw } });
     }

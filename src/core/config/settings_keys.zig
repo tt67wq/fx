@@ -110,6 +110,7 @@ pub const keys = [_]Key{
     .{ .name = "$schema", .where = .editor, .kind = .string, .top_level_only = true, .description = "The JSON Schema editors use to check this file" },
     .{ .name = "additional_directories", .where = .profile, .kind = .strings, .workspace_only = true, .description = "Directories added to this workspace; manage them with fx workspace" },
     .{ .name = "auto_compact_percent", .where = .profile, .kind = .integer, .minimum = 10, .maximum = 80, .description = "Start automatic compaction at this percentage of usable input capacity" },
+    .{ .name = "auto_compact_tokens", .where = .profile, .kind = .integer, .minimum = 0, .description = "Start automatic compaction at this many input tokens; 0 uses the percentage, and fx uses the lower of the two" },
     .{ .name = "auto_upgrade", .where = .profile, .kind = .boolean, .description = "Download and install updates in the background" },
     .{ .name = "cache_warming", .where = .profile, .kind = .boolean, .description = "Keep a waiting Claude conversation's prompt cache alive for up to 30 minutes" },
     .{ .name = "codex_model", .where = .retired, .kind = .any, .description = retired_description },

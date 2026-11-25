@@ -25,6 +25,27 @@ pub fn resolvePercent(configured: ?u8, process_override: ?[]const u8) u8 {
     return parsePercent(process_override) orelse configured orelse default_percent;
 }
 
+/// The absolute token cap: where automatic compaction starts regardless of
+/// the window percentage. Invalid or overflowing values are ignored; 0 means
+/// unset.
+pub fn parseTokens(raw: ?[]const u8) ?usize {
+    const trimmed = std.mem.trim(u8, raw orelse return null, " \t\r\n");
+    if (trimmed.len == 0) return null;
+    const value = std.fmt.parseUnsigned(usize, trimmed, 10) catch return null;
+    return if (value == 0) null else value;
+}
+
+/// The cap resolves like the percent does, except a parsed 0 unsets instead
+/// of falling through and there is no default.
+pub fn resolveTokens(configured: ?usize, process_override: ?[]const u8) ?usize {
+    const raw = process_override orelse return configured;
+    if (std.fmt.parseUnsigned(usize, std.mem.trim(u8, raw, " \t\r\n"), 10)) |value| {
+        return if (value == 0) null else value;
+    } else |_| {
+        return configured;
+    }
+}
+
 test "auto compaction percent accepts only the supported range" {
     try std.testing.expect(!isValidPercent(9));
     try std.testing.expect(isValidPercent(10));

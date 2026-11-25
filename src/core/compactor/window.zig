@@ -58,10 +58,11 @@ pub const Size = struct {
     }
 
     /// The sizes for a model, compacting automatically at `percent` of its
-    /// usable input.
-    pub fn of(capabilities: model_capabilities.Capabilities, percent: u8) Size {
+    /// usable input, or at `tokens`, whichever is lower. Null or 0 keeps the
+    /// percentage alone.
+    pub fn of(capabilities: model_capabilities.Capabilities, percent: u8, tokens: ?usize) Size {
         return .{
-            .compact_at_tokens = compactAtTokens(capabilities, percent),
+            .compact_at_tokens = compactAtTokens(capabilities, percent, tokens),
             .usable_tokens = usableInputTokens(capabilities),
         };
     }
@@ -140,9 +141,13 @@ pub const Size = struct {
 
 /// Request size, in tokens, at which automatic compaction starts: `percent`
 /// of the model's usable input.
-fn compactAtTokens(capabilities: model_capabilities.Capabilities, percent: u8) ?usize {
+fn compactAtTokens(capabilities: model_capabilities.Capabilities, percent: u8, tokens: ?usize) ?usize {
     const usable = usableInputTokens(capabilities) orelse return null;
-    return percentOf(usable, @min(settings.max_percent, @max(settings.min_percent, percent)));
+    const percent_point = percentOf(usable, @min(settings.max_percent, @max(settings.min_percent, percent)));
+    if (tokens) |cap| {
+        if (cap > 0) return @min(percent_point, cap);
+    }
+    return percent_point;
 }
 
 fn percentOf(tokens: usize, percent: usize) usize {
@@ -450,11 +455,11 @@ test "retained context keeps at most the requested number of turns" {
 
 test "automatic compaction starts at the configured share of usable input" {
     const capabilities = model_capabilities.Capabilities{ .context_window = 1_000_000, .max_output_tokens = 128_000 };
-    try testing.expectEqual(@as(?usize, 697_600), compactAtTokens(capabilities, 80));
-    try testing.expectEqual(@as(?usize, 87_200), compactAtTokens(capabilities, 10));
-    try testing.expectEqual(@as(?usize, 697_600), compactAtTokens(capabilities, 100));
-    try testing.expectEqual(@as(?usize, 87_200), compactAtTokens(capabilities, 1));
-    try testing.expectEqual(@as(?usize, null), compactAtTokens(.{}, 80));
+    try testing.expectEqual(@as(?usize, 697_600), compactAtTokens(capabilities, 80, null));
+    try testing.expectEqual(@as(?usize, 87_200), compactAtTokens(capabilities, 10, null));
+    try testing.expectEqual(@as(?usize, 697_600), compactAtTokens(capabilities, 100, null));
+    try testing.expectEqual(@as(?usize, 87_200), compactAtTokens(capabilities, 1, null));
+    try testing.expectEqual(@as(?usize, null), compactAtTokens(.{}, 80, null));
 }
 
 test "an absolute token cap lowers the compaction point but never raises it" {
