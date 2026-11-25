@@ -1106,6 +1106,20 @@ test "removing a plain preference clears it and an emptied parent" {
     try std.testing.expect(!(try applyUserPatchToRoot(arena.allocator(), &root, .{ .remove = "theme" })).changed);
 }
 
+test "the candidate validator refuses auto_compact_tokens below its floor, like the percent" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const bad = try std.json.parseFromSliceLeaky(std.json.Value, alloc, "{\"auto_compact_tokens\": -5}", .{});
+    try std.testing.expectError(error.InvalidSettingsFormat, validateKnownSettingsObject(bad.object, false));
+    const tiny = try std.json.parseFromSliceLeaky(std.json.Value, alloc, "{\"auto_compact_tokens\": 1000}", .{});
+    try std.testing.expectError(error.InvalidSettingsFormat, validateKnownSettingsObject(tiny.object, false));
+    const ok_zero = try std.json.parseFromSliceLeaky(std.json.Value, alloc, "{\"auto_compact_tokens\": 0}", .{});
+    try validateKnownSettingsObject(ok_zero.object, false);
+    const ok_cap = try std.json.parseFromSliceLeaky(std.json.Value, alloc, "{\"auto_compact_tokens\": 300000}", .{});
+    try validateKnownSettingsObject(ok_cap.object, false);
+}
+
 test "plain preference patches reject values the parser would refuse" {
     try validateUserPatch(.{ .theme = "light" });
     try validateUserPatch(.{ .theme = "my-theme.v2" });

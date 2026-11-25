@@ -58,6 +58,13 @@ test "auto compaction percent accepts only the supported range" {
     try std.testing.expectEqual(@as(?u8, null), parsePercent(""));
 }
 
+test "auto compact tokens has a floor like the percent does" {
+    try std.testing.expectEqual(@as(usize, 50_000), min_tokens);
+    try std.testing.expect(!isValidTokens(49_999));
+    try std.testing.expect(isValidTokens(50_000));
+    try std.testing.expect(isValidTokens(300_000));
+}
+
 test "auto compact tokens parses a whole token count, zero and junk mean unset" {
     try std.testing.expectEqual(@as(?usize, 300_000), parseTokens("300000"));
     try std.testing.expectEqual(@as(?usize, 300_000), parseTokens(" 300000\n"));

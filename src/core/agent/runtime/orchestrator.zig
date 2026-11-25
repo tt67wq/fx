@@ -6400,6 +6400,21 @@ pub fn compactionSize(agent: *const runtime_agent.Agent, capabilities: model_cap
     return size;
 }
 
+test "compactionSize carries the absolute token cap to the compaction point" {
+    const alloc = std.testing.allocator;
+    var agent: runtime_agent.Agent = .{};
+    defer agent.deinit(alloc);
+    const capabilities = model_capabilities.Capabilities{ .context_window = 1_000_000, .max_output_tokens = 128_000 };
+    // The wiring guard (ISSUE-38 F7): if a caller stops passing the cap, this
+    // fails even though every per-hop unit test stays green.
+    const capped = compactionSize(&agent, capabilities, 80, 300_000, "test-model");
+    try std.testing.expectEqual(@as(?usize, 300_000), capped.compact_at_tokens);
+    const uncapped = compactionSize(&agent, capabilities, 80, null, "test-model");
+    try std.testing.expectEqual(@as(?usize, 697_600), uncapped.compact_at_tokens);
+    const floored = compactionSize(&agent, capabilities, 80, 1_000, "test-model");
+    try std.testing.expectEqual(@as(?usize, 50_000), floored.compact_at_tokens);
+}
+
 /// The one way context gets compacted: manual, automatic and provider-overflow
 /// compaction all come here. fx-compactor turns the raw conversation into a
 /// checkpoint; this saves it and reports progress. Null when there was

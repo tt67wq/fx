@@ -478,6 +478,19 @@ test "an absolute token cap lowers the compaction point but never raises it" {
     try std.testing.expectEqual(@as(?usize, 697_600), uncapped.compact_at_tokens);
 }
 
+test "a cap below the floor clamps to the floor, keeping the retention budget sane" {
+    const capabilities = model_capabilities.Capabilities{ .context_window = 1_000_000, .max_output_tokens = 128_000 };
+    // A tiny cap must not collapse afterTokens/compactedTokens: it clamps to
+    // settings.min_tokens, like percent clamps to min_percent (ISSUE-38).
+    try std.testing.expectEqual(@as(?usize, 50_000), compactAtTokens(capabilities, 80, 1_000));
+    try std.testing.expectEqual(@as(?usize, 50_000), compactAtTokens(capabilities, 80, 1));
+    try std.testing.expectEqual(@as(?usize, 50_000), compactAtTokens(capabilities, 80, 49_999));
+    try std.testing.expectEqual(@as(?usize, 50_000), compactAtTokens(capabilities, 80, 50_000));
+    // The retention budget anchored on the point stays usable.
+    const tiny = Size.of(capabilities, 80, 1_000);
+    try std.testing.expectEqual(@as(usize, 25_000), tiny.afterTokens());
+}
+
 test "the compacted text may use half the compaction point, less the fixed part and the kept turns" {
     const size: Size = .{ .compact_at_tokens = 100_000, .usable_tokens = 125_000, .fixed_tokens = 10_000 };
     try testing.expectEqual(@as(usize, 35_000), size.compactedTokens(5_000));
