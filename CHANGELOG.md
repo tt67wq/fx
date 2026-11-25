@@ -18,6 +18,7 @@
 - Across ten model families, caching scenarios used 41% fewer uncached input tokens than 0.0.15. Requests that broke the cached prompt prefix fell from 80 to 10, an 87.5% reduction.
 - Uncached input tokens fell 79% on Claude Sonnet 5.5, 78% on Claude Haiku 5.5, and 76% on GPT-6.1 in that comparison. Results varied by model, with MiniMax using 3% more.
 - Prompt caching on supported models now reuses shared instructions across workspaces and worktrees.
+- A new `auto_compact_tokens` setting caps where automatic compaction starts, regardless of the model's window size. Set it with `fx config set auto_compact_tokens 300000` or `FX_AUTO_COMPACT_TOKENS`; long sessions on large-window models now compact earlier instead of waiting for 80% of the window. Values below 50000 are refused, and 0 keeps the percentage-based behavior.
 - Changing branches or permissions, reading new folder rules, and resuming a conversation keep the earlier conversation available for prompt caching.
 - Named skills send their full instructions with the turn that invokes them instead of adding them to every later request.
 - Browser apps can bundle only the WebAssembly module they use instead of both the agent and terminal modules.
