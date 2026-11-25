@@ -85,6 +85,19 @@ test "auto compact tokens parses a whole token count, zero and junk mean unset" 
     try std.testing.expectEqual(@as(?usize, null), parseTokens("99999999999999999999999999"));
 }
 
+test "a below-floor token override is ignored, not adopted (ISSUE-38 R1)" {
+    // Like parsePercent ignores out-of-range values: a stale shell export must
+    // not displace the user's configured cap.
+    try std.testing.expectEqual(@as(?usize, null), parseTokens("1000"));
+    try std.testing.expectEqual(@as(?usize, null), parseTokens("49999"));
+    try std.testing.expectEqual(@as(?usize, 50_000), parseTokens("50000"));
+    // An ignored override falls back to the configured cap; 0 still unsets.
+    try std.testing.expectEqual(@as(?usize, 300_000), resolveTokens(300_000, "1000"));
+    try std.testing.expectEqual(@as(?usize, 300_000), resolveTokens(300_000, "junk"));
+    try std.testing.expectEqual(@as(?usize, null), resolveTokens(300_000, "0"));
+    try std.testing.expectEqual(@as(?usize, 250_000), resolveTokens(300_000, "250000"));
+}
+
 test "auto compact tokens resolves override, then setting, then unset" {
     try std.testing.expectEqual(@as(?usize, null), resolveTokens(null, null));
     try std.testing.expectEqual(@as(?usize, 400_000), resolveTokens(400_000, null));
