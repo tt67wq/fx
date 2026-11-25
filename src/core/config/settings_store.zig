@@ -123,6 +123,7 @@ pub const UserSettingsPatch = struct {
     max_agent_steps: ?u32 = null,
     max_tool_result_bytes: ?u32 = null,
     auto_compact_percent: ?u8 = null,
+    auto_compact_tokens: ?usize = null,
     provider_strict: ?bool = null,
     context: ?bool = null,
     /// Removes a plain setting, such as `fast_mode` or `statusLine.context`,
@@ -155,6 +156,7 @@ pub const UserSettingsPatch = struct {
             self.max_agent_steps == null and
             self.max_tool_result_bytes == null and
             self.auto_compact_percent == null and
+            self.auto_compact_tokens == null and
             self.provider_strict == null and
             self.context == null and
             self.remove == null;
@@ -1002,6 +1004,10 @@ fn validateUserPatch(patch: UserSettingsPatch) !void {
     if (patch.auto_compact_percent) |percent| {
         if (!compactor.isValidPercent(percent)) return error.InvalidSettingsFormat;
     }
+    if (patch.auto_compact_tokens) |tokens| {
+        if (tokens > std.math.maxInt(i64)) return error.InvalidSettingsFormat;
+        if (tokens > 0 and !compactor.isValidTokens(tokens)) return error.InvalidSettingsFormat;
+    }
     if (patch.remove) |path| {
         if (!removablePath(path)) return error.InvalidSettingsFormat;
     }
@@ -1099,6 +1105,20 @@ test "removing a plain preference clears it and an emptied parent" {
     try std.testing.expect(root.object.get("notifications").?.object.contains("turn_end"));
 
     try std.testing.expect(!(try applyUserPatchToRoot(arena.allocator(), &root, .{ .remove = "theme" })).changed);
+}
+
+test "the candidate validator refuses auto_compact_tokens below its floor, like the percent" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const bad = try std.json.parseFromSliceLeaky(std.json.Value, alloc, "{\"auto_compact_tokens\": -5}", .{});
+    try std.testing.expectError(error.InvalidSettingsFormat, validateKnownSettingsObject(bad.object, false));
+    const tiny = try std.json.parseFromSliceLeaky(std.json.Value, alloc, "{\"auto_compact_tokens\": 1000}", .{});
+    try std.testing.expectError(error.InvalidSettingsFormat, validateKnownSettingsObject(tiny.object, false));
+    const ok_zero = try std.json.parseFromSliceLeaky(std.json.Value, alloc, "{\"auto_compact_tokens\": 0}", .{});
+    try validateKnownSettingsObject(ok_zero.object, false);
+    const ok_cap = try std.json.parseFromSliceLeaky(std.json.Value, alloc, "{\"auto_compact_tokens\": 300000}", .{});
+    try validateKnownSettingsObject(ok_cap.object, false);
 }
 
 test "plain preference patches reject values the parser would refuse" {
@@ -1299,6 +1319,7 @@ fn applyUserPatchToRoot(
     if (patch.max_agent_steps) |value| application.changed = try putInteger(arena, &root.object, "max_agent_steps", value) or application.changed;
     if (patch.max_tool_result_bytes) |value| application.changed = try putInteger(arena, &root.object, "max_tool_result_bytes", value) or application.changed;
     if (patch.auto_compact_percent) |value| application.changed = try putInteger(arena, &root.object, "auto_compact_percent", value) or application.changed;
+    if (patch.auto_compact_tokens) |value| application.changed = try putIntegerWide(arena, &root.object, "auto_compact_tokens", value) or application.changed;
     if (patch.provider_strict) |value| application.changed = try putBool(arena, &root.object, "provider_strict", value) or application.changed;
     if (patch.context) |value| application.changed = try putBool(arena, &root.object, "context", value) or application.changed;
     if (patch.remove) |path| application.changed = removePath(&root.object, path) or application.changed;
@@ -1473,13 +1494,14 @@ fn cleanupLegacyWorkspacePreferences(
 
 /// The settings paths a patch from `fx config set` or `unset` writes that the
 /// `/settings` cleanup above doesn't already cover.
-fn configWrittenPaths(patch: UserSettingsPatch) [8]?[]const u8 {
+fn configWrittenPaths(patch: UserSettingsPatch) [9]?[]const u8 {
     return .{
         if (patch.theme != null) "theme" else null,
         if (patch.auto_upgrade != null) "auto_upgrade" else null,
         if (patch.max_agent_steps != null) "max_agent_steps" else null,
         if (patch.max_tool_result_bytes != null) "max_tool_result_bytes" else null,
         if (patch.auto_compact_percent != null) "auto_compact_percent" else null,
+        if (patch.auto_compact_tokens != null) "auto_compact_tokens" else null,
         if (patch.provider_strict != null) "provider_strict" else null,
         if (patch.context != null) "context" else null,
         patch.remove,
@@ -1946,6 +1968,16 @@ fn putInteger(arena: Allocator, object: *std.json.ObjectMap, key: []const u8, va
     return true;
 }
 
+/// putInteger for counts wider than u32, such as token caps. The caller has
+/// validated the value fits an i64 JSON integer.
+fn putIntegerWide(arena: Allocator, object: *std.json.ObjectMap, key: []const u8, value: usize) !bool {
+    if (object.get(key)) |existing| {
+        if (existing == .integer and existing.integer == value) return false;
+    }
+    try object.put(arena, key, .{ .integer = @intCast(value) });
+    return true;
+}
+
 fn putBool(arena: Allocator, object: *std.json.ObjectMap, key: []const u8, value: bool) !bool {
     if (object.get(key)) |existing| {
         if (existing == .bool and existing.bool == value) return false;
@@ -2222,6 +2254,11 @@ fn validateKnownSettingsObject(
         if (value != .integer or value.integer < 0 or !compactor.isValidPercent(@intCast(value.integer))) {
             return error.InvalidSettingsFormat;
         }
+    }
+    if (object.get("auto_compact_tokens")) |value| {
+        // 0 is the unset sentinel and passes; a set cap must reach the floor.
+        if (value != .integer or value.integer < 0) return error.InvalidSettingsFormat;
+        if (value.integer > 0 and !compactor.isValidTokens(@intCast(value.integer))) return error.InvalidSettingsFormat;
     }
     if (object.get("skill_match_fuzzy")) |value| {
         if (value != .bool) return error.InvalidSettingsFormat;

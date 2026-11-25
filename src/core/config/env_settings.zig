@@ -112,6 +112,14 @@ pub fn collect(arena: Allocator, provider: model_provider.ProviderId) ![]Overrid
     if (compactor.parsePercent(getenv("FX_AUTO_COMPACT_PERCENT"))) |percent| {
         try list.append(arena, .{ .variable = "FX_AUTO_COMPACT_PERCENT", .key = "auto_compact_percent", .value = .{ .integer = percent } });
     }
+    if (compactor.parseTokens(getenv("FX_AUTO_COMPACT_TOKENS"))) |tokens| {
+        // fx accepts any usize, which can exceed a JSON integer.
+        const value: std.json.Value = if (std.math.cast(i64, tokens)) |fits|
+            .{ .integer = fits }
+        else
+            .{ .number_string = try std.fmt.allocPrint(arena, "{d}", .{tokens}) };
+        try list.append(arena, .{ .variable = "FX_AUTO_COMPACT_TOKENS", .key = "auto_compact_tokens", .value = value });
+    }
     if (getenv("FX_THEME")) |raw| {
         if (raw.len > 0) try list.append(arena, .{ .variable = "FX_THEME", .key = "theme", .value = .{ .string = raw } });
     }
@@ -151,6 +159,27 @@ pub fn emptyTestEnviron() !*const std.process.Environ.Map {
     map.* = .init(std.heap.page_allocator);
     test_empty_environ = map;
     return map;
+}
+
+test "collect reports FX_AUTO_COMPACT_TOKENS as auto_compact_tokens" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const restore = io_mod.environMap() orelse try emptyTestEnviron();
+    var env: std.process.Environ.Map = .init(std.testing.allocator);
+    defer env.deinit();
+    try env.put("FX_AUTO_COMPACT_TOKENS", "300000");
+    io_mod.setEnvironMap(&env);
+    defer io_mod.setEnvironMap(restore);
+    const found = try collect(arena.allocator(), .gateway);
+    var seen = false;
+    for (found) |entry| {
+        if (std.mem.eql(u8, entry.variable, "FX_AUTO_COMPACT_TOKENS")) {
+            seen = true;
+            try std.testing.expectEqualStrings("auto_compact_tokens", entry.key);
+            try std.testing.expectEqual(@as(i64, 300_000), entry.value.integer);
+        }
+    }
+    try std.testing.expect(seen);
 }
 
 test "collect shows each set override as the setting fx uses, and skips ignored values" {

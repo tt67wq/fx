@@ -838,6 +838,7 @@ describe("cli: status", () => {
         expect(schema.properties.fast_mode).toEqual({ description: "Use faster inference when the model supports it", type: "boolean" });
         expect(schema.properties.permission_mode.enum).toEqual(["ask", "auto", "full-access", "yolo"]);
         expect(schema.properties.auto_compact_percent).toMatchObject({ type: "integer", minimum: 10, maximum: 80 });
+        expect(schema.properties.auto_compact_tokens).toMatchObject({ type: "integer", minimum: 0 });
         expect(schema.properties.statusLine.deprecated).toBe(true);
         expect(schema.properties.workspaces.additionalProperties).toEqual({ $ref: "#/$defs/workspace" });
         expect(schema.properties.additional_directories).toBeUndefined();
@@ -991,6 +992,14 @@ describe("cli: status", () => {
         expect(settings()).toEqual({ fast_mode: true, max_agent_steps: 40 });
         const get = await runFx(["config", "get", "max_agent_steps"], { cwd, env });
         expect([get.code, get.stdout]).toEqual([0, "40\n"]);
+
+        const tokens = await runFx(["config", "set", "auto_compact_tokens", "300000"], { cwd, env });
+        expect([tokens.code, tokens.stdout, tokens.stderr]).toEqual([0, "auto_compact_tokens set to 300000 in ~/.fx/settings.json.\n", ""]);
+        const tokensGet = await runFx(["config", "get", "auto_compact_tokens"], { cwd, env });
+        expect([tokensGet.code, tokensGet.stdout]).toEqual([0, "300000\n"]);
+        const tokensUnset = await runFx(["config", "unset", "auto_compact_tokens"], { cwd, env });
+        expect([tokensUnset.code, tokensUnset.stdout]).toEqual([0, "auto_compact_tokens removed from ~/.fx/settings.json.\n"]);
+        expect(settings()).toEqual({ fast_mode: true, max_agent_steps: 40 });
 
         const before = readFileSync(settingsPath, "utf8");
         const refusals: Array<[string[], string]> = [

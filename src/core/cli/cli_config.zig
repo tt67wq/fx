@@ -124,6 +124,7 @@ pub fn parseArgs(
 /// permissions or swap the model behind permission reviews.
 const Writable = enum {
     auto_compact_percent,
+    auto_compact_tokens,
     auto_upgrade,
     collapse_tool_calls,
     context,
@@ -213,6 +214,15 @@ pub fn change(options: Options, problem: *WriteProblem) error{ RefusedConfigSett
             patch.auto_compact_percent = percent;
             return .{ .patch = patch, .value = .{ .integer = percent } };
         },
+        .auto_compact_tokens => {
+            const tokens_help = "a whole number of tokens; 0 means use the percentage, or at least " ++ std.fmt.comptimePrint("{d}", .{compactor.min_tokens});
+            const tokens = std.fmt.parseUnsigned(usize, raw, 10) catch
+                return invalid(problem, tokens_help);
+            if (tokens > std.math.maxInt(i64) or (tokens > 0 and !compactor.isValidTokens(tokens)))
+                return invalid(problem, tokens_help);
+            patch.auto_compact_tokens = tokens;
+            return .{ .patch = patch, .value = .{ .integer = @intCast(tokens) } };
+        },
         else => {},
     }
 
@@ -234,7 +244,7 @@ pub fn change(options: Options, problem: *WriteProblem) error{ RefusedConfigSett
         .@"status_line.session" => patch.statusline_item = .{ .item = .session, .enabled = enabled },
         .@"status_line.workspace" => patch.statusline_item = .{ .item = .workspace, .enabled = enabled },
         .ultrafast_mode => patch.ultrafast_mode = enabled,
-        .effort, .update_channel, .theme, .max_agent_steps, .max_tool_result_bytes, .auto_compact_percent => unreachable,
+        .effort, .update_channel, .theme, .max_agent_steps, .max_tool_result_bytes, .auto_compact_percent, .auto_compact_tokens => unreachable,
     }
     return .{ .patch = patch, .value = .{ .bool = enabled } };
 }
@@ -438,16 +448,16 @@ pub const Effective = union(enum) {
 /// The keys `fx config` reads from the resolved state instead of the files.
 /// A test checks that each plain key is here or in `files_only_keys`.
 pub const resolved_keys = [_][]const u8{
-    "auto_compact_percent",     "auto_upgrade",           "cache_warming",
-    "collapse_tool_calls",      "context",                "effort",
-    "fast_mode",                "first_call_tool_choice", "max_agent_steps",
-    "max_tool_result_bytes",    "permission_mode",        "prompt_history.enabled",
-    "provider",                 "provider_order",         "provider_strict",
-    "review_model",             "session_titles",         "slash_menu_categories",
-    "sound.attention_required", "sound.max",              "sound.turn_end",
-    "startup_scrollback",       "status_line.context",    "status_line.session",
-    "status_line.workspace",    "theme",                  "ultrafast_mode",
-    "update_channel",
+    "auto_compact_percent",   "auto_compact_tokens",      "auto_upgrade",
+    "cache_warming",          "collapse_tool_calls",      "context",
+    "effort",                 "fast_mode",                "first_call_tool_choice",
+    "max_agent_steps",        "max_tool_result_bytes",    "permission_mode",
+    "prompt_history.enabled", "provider",                 "provider_order",
+    "provider_strict",        "review_model",             "session_titles",
+    "slash_menu_categories",  "sound.attention_required", "sound.max",
+    "sound.turn_end",         "startup_scrollback",       "status_line.context",
+    "status_line.session",    "status_line.workspace",    "theme",
+    "ultrafast_mode",         "update_channel",
 };
 
 /// Keys `fx config` shows as the files set them: objects fx checks with its
@@ -474,6 +484,7 @@ pub fn effectiveValue(
 ) Allocator.Error!Effective {
     const eql = std.mem.eql;
     if (eql(u8, key, "auto_compact_percent")) return integer(arena, state.auto_compact_percent);
+    if (eql(u8, key, "auto_compact_tokens")) return if (state.auto_compact_tokens) |tokens| integer(arena, tokens) else .none;
     if (eql(u8, key, "auto_upgrade")) return boolean(state.auto_upgrade);
     if (eql(u8, key, "collapse_tool_calls")) return boolean(state.collapse_tool_calls);
     if (eql(u8, key, "context")) return boolean(state.context_enabled);
@@ -754,6 +765,17 @@ test "config set turns each value into the patch the save path writes" {
     const removed = try changeForTest(&.{ "unset", "notifications.max" }, &problem);
     try std.testing.expectEqualStrings("sound.max", removed.patch.remove.?);
     try std.testing.expect(removed.value == null);
+}
+
+test "config set writes auto_compact_tokens and rejects junk" {
+    var problem: WriteProblem = .none;
+    const tokens = try changeForTest(&.{ "set", "auto_compact_tokens", "300000" }, &problem);
+    try std.testing.expectEqual(@as(?usize, 300_000), tokens.patch.auto_compact_tokens);
+    try std.testing.expectEqual(@as(i64, 300_000), tokens.value.?.integer);
+    const zero = try changeForTest(&.{ "set", "auto_compact_tokens", "0" }, &problem);
+    try std.testing.expectEqual(@as(i64, 0), zero.value.?.integer);
+    const options = try parseForTest(&.{ "set", "auto_compact_tokens", "many" });
+    try std.testing.expectError(error.InvalidConfigValue, change(options, &problem));
 }
 
 test "config set explains a bad value or a key it doesn't change" {

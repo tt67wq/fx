@@ -51,6 +51,9 @@ pub const Settings = struct {
     /// Share of usable input, 10 to 80 percent, at which automatic
     /// compaction starts. Profile-only.
     auto_compact_percent: ?u8 = null,
+    /// Absolute input token count at which automatic compaction starts,
+    /// whichever is lower wins with the percentage. Profile-only.
+    auto_compact_tokens: ?usize = null,
     context_limits: context_limits.Overrides = .{},
     first_call_tool_choice: ?types.ToolChoice = null,
     context: ?bool = null,
@@ -1730,6 +1733,11 @@ fn parseProfileOnlyFields(
         if (value.integer < 0 or !compactor.isValidPercent(@intCast(value.integer))) return error.InvalidAutoCompactPercentValue;
         settings.auto_compact_percent = @intCast(value.integer);
     }
+    if (root.object.get("auto_compact_tokens")) |value| {
+        if (value != .integer) return error.InvalidAutoCompactTokensType;
+        if (value.integer < 0 or (value.integer > 0 and !compactor.isValidTokens(@intCast(value.integer)))) return error.InvalidAutoCompactTokensValue;
+        settings.auto_compact_tokens = if (value.integer == 0) null else @intCast(value.integer);
+    }
     if (root.object.get("model")) |model_value| {
         const value = model_value;
         if (value != .string) return error.InvalidModelType;
@@ -2090,6 +2098,7 @@ fn mergeSettings(target: *Settings, incoming: *Settings, alloc: Allocator) !void
     if (incoming.max_agent_steps) |value| target.max_agent_steps = value;
     if (incoming.max_tool_result_bytes) |value| target.max_tool_result_bytes = value;
     if (incoming.auto_compact_percent) |value| target.auto_compact_percent = value;
+    if (incoming.auto_compact_tokens) |value| target.auto_compact_tokens = value;
     target.context_limits.merge(incoming.context_limits);
     if (incoming.first_call_tool_choice) |value| target.first_call_tool_choice = value;
     if (incoming.context) |value| target.context = value;
@@ -5057,6 +5066,22 @@ fn expectSettingForTest(layer: SettingsLayer, name: []const u8, value_json: []co
     defer std.testing.allocator.free(json);
     errdefer std.debug.print("settings {s} in layer {t}\n", .{ json, layer });
     try std.testing.expectEqual(accepted, try settingsTextAcceptedForTest(layer, json));
+}
+
+test "auto_compact_tokens parses as a profile integer, zero and negatives behave" {
+    const alloc = std.testing.allocator;
+    var ok_set = try parseSettingsJson(alloc, "{\"auto_compact_tokens\":300000}");
+    defer ok_set.deinit(alloc);
+    try std.testing.expectEqual(@as(?usize, 300_000), ok_set.auto_compact_tokens);
+    var zero = try parseSettingsJson(alloc, "{\"auto_compact_tokens\":0}");
+    defer zero.deinit(alloc);
+    try std.testing.expectEqual(@as(?usize, null), zero.auto_compact_tokens);
+    try std.testing.expectError(error.InvalidAutoCompactTokensType, parseSettingsJson(alloc, "{\"auto_compact_tokens\":\"many\"}"));
+    try std.testing.expectError(error.InvalidAutoCompactTokensValue, parseSettingsJson(alloc, "{\"auto_compact_tokens\":-5}"));
+    // Profile-only: a project file that sets it is ignored.
+    var project = try parseSettingsJsonForLayer(alloc, "{\"auto_compact_tokens\":300000}", .project);
+    defer project.deinit(alloc);
+    try std.testing.expectEqual(@as(?usize, null), project.auto_compact_tokens);
 }
 
 test "the settings list gives the types, values, and bounds the settings parser accepts" {

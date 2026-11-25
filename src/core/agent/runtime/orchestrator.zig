@@ -6388,8 +6388,8 @@ fn maybeNudgeContextPressure(
 /// The sizes compaction works with for `model`, including what `agent`
 /// measured of its recent requests: their fixed part, and how far fx's token
 /// estimate ran from the provider's count.
-pub fn compactionSize(agent: *const runtime_agent.Agent, capabilities: model_capabilities.Capabilities, percent: u8, model: []const u8) compactor.Size {
-    var size = compactor.Size.of(capabilities, percent);
+pub fn compactionSize(agent: *const runtime_agent.Agent, capabilities: model_capabilities.Capabilities, percent: u8, tokens: ?usize, model: []const u8) compactor.Size {
+    var size = compactor.Size.of(capabilities, percent, tokens);
     size.fixed_tokens = agent.request_fixed_tokens;
     if (agent.request_token_calibration) |*calibration| {
         const cost = calibration.cost;
@@ -6398,6 +6398,21 @@ pub fn compactionSize(agent: *const runtime_agent.Agent, capabilities: model_cap
         }
     }
     return size;
+}
+
+test "compactionSize carries the absolute token cap to the compaction point" {
+    const alloc = std.testing.allocator;
+    var agent: runtime_agent.Agent = .{};
+    defer agent.deinit(alloc);
+    const capabilities = model_capabilities.Capabilities{ .context_window = 1_000_000, .max_output_tokens = 128_000 };
+    // The wiring guard (ISSUE-38 F7): if a caller stops passing the cap, this
+    // fails even though every per-hop unit test stays green.
+    const capped = compactionSize(&agent, capabilities, 80, 300_000, "test-model");
+    try std.testing.expectEqual(@as(?usize, 300_000), capped.compact_at_tokens);
+    const uncapped = compactionSize(&agent, capabilities, 80, null, "test-model");
+    try std.testing.expectEqual(@as(?usize, 697_600), uncapped.compact_at_tokens);
+    const floored = compactionSize(&agent, capabilities, 80, 1_000, "test-model");
+    try std.testing.expectEqual(@as(?usize, 50_000), floored.compact_at_tokens);
 }
 
 /// The one way context gets compacted: manual, automatic and provider-overflow
@@ -7662,7 +7677,7 @@ fn processQueuedPromptLoop(
                     const fixed = if (applicable_calibration) |calibration| runtime_prompt_context.calibrateProviderRequest(measured, calibration) else measured;
                     break :fixed fixed.estimated_input_tokens;
                 } else null;
-                var size = compactionSize(agent, request_capabilities, config.auto_compact_percent, gateway_model);
+                var size = compactionSize(agent, request_capabilities, config.auto_compact_percent, config.auto_compact_tokens, gateway_model);
                 size.request_tokens = request_cost.estimated_input_tokens;
                 size.overflow = overflow_pending;
                 if (just_rebuilt_request) compactor.traceLog(false, "request after compaction estimated_tokens={d} fixed_tokens={any} usable_tokens={any} after_tokens={d}", .{ request_cost.estimated_input_tokens, size.fixed_tokens, size.usable_tokens, size.afterTokens() });
@@ -7674,7 +7689,7 @@ fn processQueuedPromptLoop(
                     wants_compaction,
                     step_ctx,
                     .decision,
-                    "decision={s} overflow={} request_bytes={d} estimated_tokens={d} text_tokens={d} has_images={} image_baseline={} prior_input_tokens={any} usable_tokens={any} compact_at_tokens={any} compact_at_percent={d} max_output_tokens={any}",
+                    "decision={s} overflow={} request_bytes={d} estimated_tokens={d} text_tokens={d} has_images={} image_baseline={} prior_input_tokens={any} usable_tokens={any} compact_at_tokens={any} compact_at_cap={any} compact_at_percent={d} max_output_tokens={any}",
                     .{
                         if (wants_compaction) "compact" else "no_op",
                         overflow_pending,
@@ -7686,6 +7701,7 @@ fn processQueuedPromptLoop(
                         if (applicable_calibration) |calibration| calibration.exact_input_tokens else null,
                         usable_tokens,
                         compact_at_tokens,
+                        config.auto_compact_tokens,
                         config.auto_compact_percent,
                         request_data.max_output_tokens,
                     },
