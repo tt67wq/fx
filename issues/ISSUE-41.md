@@ -36,3 +36,7 @@ InvalidToolArguments: run_command field "action" must be "run"; received "intera
 - [ ] 决策 A/B（倾向 A）
 - [ ] 文案改动 + 钉死测试更新
 - [ ] 观察指标：下轮 session 分析嵌套 interact 被拒次数是否归零
+
+## 性价比排名（2026-11-26）
+
+第 2 / 6。15 次被拒 / 9 个 session；A 方案一行文案 + 钉死测试，零风险。仅次于 ISSUE-40。

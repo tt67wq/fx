@@ -37,3 +37,7 @@ ScriptError: SyntaxError: expected '}' after template expression
 
 - [ ] 两类检测 + 定向提示单测（各一个红→绿样本，语料进 tests/fuzz/corpus/codemode_script/ 如适用）
 - [ ] 观察指标：下轮 session 分析 SyntaxError 次数是否显著下降（目标 <10）
+
+## 性价比排名（2026-11-26）
+
+第 5 / 6。SyntaxError 残 40 次 / 约 20 个 session，量大但根因分散，检测只能覆盖模板串子集；中等成本，排在前三批小改之后。

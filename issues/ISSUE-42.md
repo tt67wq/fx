@@ -34,3 +34,7 @@ bridge.zig:59 的 applyAmbientBudget 已经把权限等待从**命令**预算里
 - [ ] 落地 + 单测：模拟慢 ask_user_question 后脚本仍能 text() 收尾（红→绿）
 - [ ] tests/tla 若有 recovery 相关模型需核对是否覆盖此语义
 - [ ] 观察指标：下轮 session 分析 "overshoot: user-wait/permission-wait" 是否归零
+
+## 性价比排名（2026-11-26）
+
+第 6 / 6。12 次 / 约 8 个 session，频率最低但单次伤害最重（用户答案被扔）。deadline 语义评审 + TLA 核对成本高，单独排期，不建议砍掉。

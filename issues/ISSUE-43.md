@@ -34,3 +34,7 @@ TypeError: not a function. if the callee was a tool, use tools.call("name", args
 - [ ] 报错定向提示 + 单测（tools.searchTools 场景红→绿）
 - [ ] 描述/补充块一句话（与 ISSUE-39 合并施工）
 - [ ] 观察指标：下轮 session 分析 globals misnamespaced 次数是否归零
+
+## 性价比排名（2026-11-26）
+
+第 4 / 6。12 次误前缀；单独做收益一般，与 ISSUE-39 合并施工摊薄描述帽成本后性价比高，搭车落地。

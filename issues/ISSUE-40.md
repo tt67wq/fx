@@ -36,3 +36,7 @@ codemode 描述也写 "read_tool_result reads the full output"。但在 codemode
 - [ ] 决策 A/B（倾向 A）
 - [ ] 落地 + face/schema 哨兵测试更新
 - [ ] 观察指标：下轮 session 分析 unknown codemode tool: read_tool_result 是否归零
+
+## 性价比排名（2026-11-26）
+
+第 1 / 6。25 次失败散布 24 个 session，波及面最广；A 方案是 spec 一个 flag 级改动，只读工具风险低。建议最先施工。

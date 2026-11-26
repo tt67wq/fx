@@ -39,3 +39,7 @@ Last nested output before failure (run_command, ok, 204ms): {"state":"completed"
 - [ ] 决策 A/B（倾向 B 先行，A 视兼容评估另议）
 - [ ] 落地 + 定向报错的单测（红→绿）
 - [ ] 观察指标：下轮 session 分析本类失败次数与防御性 parse 占比是否下降
+
+## 性价比排名（2026-11-26）
+
+第 3 / 6。74 次失败但集中在 2 个 session，普遍性低于 ISSUE-40；B 方案成本小、零兼容风险。与 ISSUE-43 共享描述帽预算，合并施工。
