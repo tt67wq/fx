@@ -12,3 +12,5 @@
 - [2026-11-25] 选型: ISSUE-27 P2 双 worker 论证后缓做：范围语法永久出局（句柄压缩时才生成、checkpoint 连续前缀格式），最小形仅无参数 compress()；前置=锚点 issue + evals 观测，重开条件 manual≥5 session / overflow≥1 / search 使用率≥1% — 来源 T-37a/T-37b
 - [2026-11-25] 落地: ISSUE-37/38 closed，auto_compact_tokens（0=百分比，地板 50K clamp，env FX_AUTO_COMPACT_TOKENS 越界忽略）合入 main 227e6a297；教训：compact_at_tokens 同时锚触发点与保留预算，改它须两面看；四条写入通道（文件/set/写盘校验/env）要同步拦 — 来源 T-38 三轮评审
 - [2026-11-25] 踩坑: codemode 里等后台构建别循环空转轮询（用户点名 loop）；结果落日志文件后一次读取即可，worker 回报驱动下一步 — 来源 用户纠正
+- [2026-11-26] 落地: response_language profile 布尔（默认 true）关闭回复语言守卫，合入 main 308304432 双远端已推；评审两轮：fmt 排版门 + vacuous 测试（Config 直构绕过接线），接线保护须打 resolveSettings 层 — 来源 T-39-review/re-review
+- [2026-11-26] 踩坑: codemode run_command 嵌套只收 action=run（interact 被拒）、yield 上限 30s；长构建用 perl setsid detach 落日志 + watcher 完成后 rex send 回报，勿 sleep 轮询 — 来源 T-39-fix
