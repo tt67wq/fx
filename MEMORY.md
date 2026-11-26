@@ -14,3 +14,4 @@
 - [2026-11-25] 踩坑: codemode 里等后台构建别循环空转轮询（用户点名 loop）；结果落日志文件后一次读取即可，worker 回报驱动下一步 — 来源 用户纠正
 - [2026-11-26] 落地: response_language profile 布尔（默认 true）关闭回复语言守卫，合入 main 308304432 双远端已推；评审两轮：fmt 排版门 + vacuous 测试（Config 直构绕过接线），接线保护须打 resolveSettings 层 — 来源 T-39-review/re-review
 - [2026-11-26] 踩坑: codemode run_command 嵌套只收 action=run（interact 被拒）、yield 上限 30s；长构建用 perl setsid detach 落日志 + watcher 完成后 rex send 回报，勿 sleep 轮询 — 来源 T-39-fix
+- [2026-11-26] 立项: 全量 session 复盘产出 ISSUE-39~44（结果字符串形状/read_tool_result 沙箱不可达/interact 提示矛盾/交互等待计时/tools.X 误前缀/模板串互踩），commit 5fd6cc8f7 已推双远端。统计口径：11-19 修复批次后 224 次 codemode 失败；74 次形状陷阱集中在单 session 连犯。
