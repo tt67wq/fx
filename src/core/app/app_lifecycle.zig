@@ -1924,6 +1924,28 @@ test "agent step limit loader distinguishes missing and explicit zero" {
     try std.testing.expectEqual(@as(usize, 50), loadAgentStepLimit(agent_steps.default_max_agent_steps, 50));
 }
 
+test "resolveSettings carries response_language into the startup state" {
+    const alloc = std.testing.allocator;
+    var env = try TestEnv.install(alloc, &.{});
+    defer env.deinit();
+
+    var detailed: config_runtime.DetailedSettings = .{ .settings = .{} };
+    defer detailed.deinit(alloc);
+    var state: StartupState = .{ .agent_step_limit = agent_steps.default_max_agent_steps };
+    defer state.deinit(alloc);
+
+    try resolveSettings(alloc, &state, &detailed);
+    try std.testing.expect(state.enforce_response_language);
+
+    detailed.settings.response_language = false;
+    try resolveSettings(alloc, &state, &detailed);
+    try std.testing.expect(!state.enforce_response_language);
+
+    detailed.settings.response_language = true;
+    try resolveSettings(alloc, &state, &detailed);
+    try std.testing.expect(state.enforce_response_language);
+}
+
 fn minimalLayout() types.Layout {
     return .{
         .rows = 1,

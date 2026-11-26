@@ -450,17 +450,16 @@ pub const Effective = union(enum) {
 /// The keys `fx config` reads from the resolved state instead of the files.
 /// A test checks that each plain key is here or in `files_only_keys`.
 pub const resolved_keys = [_][]const u8{
-    "auto_compact_percent",   "auto_compact_tokens",      "auto_upgrade",
-    "cache_warming",          "collapse_tool_calls",      "context",
-    "effort",                 "fast_mode",                "first_call_tool_choice",
-    "max_agent_steps",        "max_tool_result_bytes",    "permission_mode",
-    "prompt_history.enabled", "provider",                 "provider_order",
-    "provider_strict",        "response_language",        "review_model",
-    "session_titles",
-    "slash_menu_categories",  "sound.attention_required", "sound.max",
-    "sound.turn_end",         "startup_scrollback",       "status_line.context",
-    "status_line.session",    "status_line.workspace",    "theme",
-    "ultrafast_mode",         "update_channel",
+    "auto_compact_percent",   "auto_compact_tokens",   "auto_upgrade",
+    "cache_warming",          "collapse_tool_calls",   "context",
+    "effort",                 "fast_mode",             "first_call_tool_choice",
+    "max_agent_steps",        "max_tool_result_bytes", "permission_mode",
+    "prompt_history.enabled", "provider",              "provider_order",
+    "provider_strict",        "response_language",     "review_model",
+    "session_titles",         "slash_menu_categories", "sound.attention_required",
+    "sound.max",              "sound.turn_end",        "startup_scrollback",
+    "status_line.context",    "status_line.session",   "status_line.workspace",
+    "theme",                  "ultrafast_mode",        "update_channel",
 };
 
 /// Keys `fx config` shows as the files set them: objects fx checks with its
