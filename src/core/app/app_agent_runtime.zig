@@ -1640,6 +1640,7 @@ pub fn Runtime(comptime App: type) type {
                 .session_child_capability = session_child_capability,
                 .context_limits = if (comptime @hasField(App, "context_limits")) app.context_limits else .{},
                 .origin = if (parent_run != null) .subagent else .root,
+                .enforce_response_language = if (comptime @hasField(App, "enforce_response_language")) app.enforce_response_language else true,
                 .root_user_intent_context = if (parent_run) |run| run.root_user_intent_context else "",
                 .root_user_messages = if (parent_run) |run| run.root_user_messages else &.{},
                 .root_user_evidence_complete = if (parent_run) |run| run.root_user_evidence_complete else false,

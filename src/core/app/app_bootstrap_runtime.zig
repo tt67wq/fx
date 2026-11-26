@@ -593,6 +593,9 @@ pub fn Runtime(comptime App: type) type {
                 app.session_title_generation = startup.session_title_generation;
                 if (comptime @hasField(App, "cache_warming")) app.cache_warming = startup.cache_warming;
             }
+            if (comptime @hasField(App, "enforce_response_language")) {
+                app.enforce_response_language = startup.enforce_response_language;
+            }
             if (comptime @hasField(App, "workspace_identity")) {
                 app.workspace_identity.enabled = startup.statusline_workspace;
             }

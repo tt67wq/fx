@@ -1952,6 +1952,7 @@ fn runPromptInternal(alloc: Allocator, prompt: []const u8, permission_override: 
         .first_call_tool_choice = ctx.first_call_tool_choice,
         .workspace_root = ctx.workspace_root,
         .access_scope = ctx.workspace_access.scope(ctx.workspace_root),
+        .enforce_response_language = startup.enforce_response_language,
         .context_limits = ctx.context_limits,
         .session_child_capability = session_child_capability,
         .ephemeral_command_replay = if (session_child_capability == null)

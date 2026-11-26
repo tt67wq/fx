@@ -587,6 +587,9 @@ const App = struct {
     /// Resolved `session_titles` preference: generate a model-written session
     /// title from the first prompt of a fresh session.
     session_title_generation: bool = true,
+    /// Resolved `response_language` preference: accept a root turn's reply
+    /// only in the prompt's language.
+    enforce_response_language: bool = true,
     /// Resolved `cache_warming` preference: ping a waiting Claude
     /// conversation's prompt cache so it stays alive.
     cache_warming: bool = true,

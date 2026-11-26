@@ -114,6 +114,7 @@ pub const UserSettingsPatch = struct {
     prompt_history_enabled: ?bool = null,
     statusline_item: ?StatuslineItemPatch = null,
     session_titles: ?bool = null,
+    response_language: ?bool = null,
     notification_turn_end: ?bool = null,
     notification_attention_required: ?bool = null,
     notification_max: ?bool = null,
@@ -148,6 +149,7 @@ pub const UserSettingsPatch = struct {
             self.prompt_history_enabled == null and
             self.statusline_item == null and
             self.session_titles == null and
+            self.response_language == null and
             self.notification_turn_end == null and
             self.notification_attention_required == null and
             self.notification_max == null and
@@ -1282,6 +1284,7 @@ fn applyUserPatchToRoot(
     if (patch.update_channel) |value| application.changed = try putString(arena, &root.object, "update_channel", value.label()) or application.changed;
     if (patch.startup_scrollback) |value| application.changed = try putBool(arena, &root.object, "startup_scrollback", value) or application.changed;
     if (patch.session_titles) |value| application.changed = try putBool(arena, &root.object, "session_titles", value) or application.changed;
+    if (patch.response_language) |value| application.changed = try putBool(arena, &root.object, "response_language", value) or application.changed;
 
     if (patch.prompt_history_enabled) |enabled| {
         var prompt_history = if (root.object.getPtr("prompt_history")) |value| blk: {
@@ -1494,7 +1497,7 @@ fn cleanupLegacyWorkspacePreferences(
 
 /// The settings paths a patch from `fx config set` or `unset` writes that the
 /// `/settings` cleanup above doesn't already cover.
-fn configWrittenPaths(patch: UserSettingsPatch) [9]?[]const u8 {
+fn configWrittenPaths(patch: UserSettingsPatch) [10]?[]const u8 {
     return .{
         if (patch.theme != null) "theme" else null,
         if (patch.auto_upgrade != null) "auto_upgrade" else null,
@@ -1504,6 +1507,7 @@ fn configWrittenPaths(patch: UserSettingsPatch) [9]?[]const u8 {
         if (patch.auto_compact_tokens != null) "auto_compact_tokens" else null,
         if (patch.provider_strict != null) "provider_strict" else null,
         if (patch.context != null) "context" else null,
+        if (patch.response_language != null) "response_language" else null,
         patch.remove,
     };
 }

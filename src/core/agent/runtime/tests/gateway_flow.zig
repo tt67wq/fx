@@ -5950,6 +5950,29 @@ test "processQueuedPrompt fails a second clear language mismatch without assista
     ) != null);
 }
 
+test "processQueuedPrompt accepts a mismatched reply when response_language is off" {
+    const alloc = std.testing.allocator;
+    const chunks = [_][]const u8{"我会先检查锁文件和依赖清单。"};
+    const completions = [_]FakeCompletion{.{ .chunks = &chunks, .content = chunks[0] }};
+    var gateway = FakeGateway.init(alloc, &completions);
+    defer gateway.deinit();
+    var hooks = FakeAgentRuntimeDeps.init(alloc);
+    defer hooks.deinit();
+    var fixture = PromptFixture{};
+    var config = fixture.config();
+    config.enforce_response_language = false;
+    var job = fixture.job();
+    job.prompt = @constCast("The lockfile is broken again.");
+
+    try runFakePrompt(&gateway, &hooks, config, job);
+
+    try std.testing.expectEqual(@as(usize, 1), gateway.request_bodies.items.len);
+    try expectGatewayPromptTextCount(&gateway, 0, "response_language_control", 0);
+    try std.testing.expectEqual(@as(usize, 1), hooks.assistant_sources.items.len);
+    try std.testing.expectEqualStrings(chunks[0], hooks.assistant_sources.items[0]);
+    try std.testing.expectEqualStrings(chunks[0], hooks.history_turns.items[0].assistant.assistant);
+}
+
 test "processQueuedPrompt preserves explicit language switches without runtime correction" {
     const alloc = std.testing.allocator;
     const chunks = [_][]const u8{"次にロックファイルを確認します。"};

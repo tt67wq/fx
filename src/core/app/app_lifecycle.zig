@@ -235,6 +235,9 @@ pub const StartupState = struct {
     statusline_session: bool = false,
     statusline_workspace: bool = false,
     session_title_generation: bool = true,
+    /// Resolved `response_language` preference: accept a root turn's reply
+    /// only in the prompt's language.
+    enforce_response_language: bool = true,
     /// Resolved `cache_warming` preference.
     cache_warming: bool = true,
     notification_turn_end: bool = false,
@@ -884,6 +887,7 @@ pub fn resolveSettings(alloc: Allocator, state: *StartupState, detailed: *const 
     state.statusline_session = settings.statusline_session orelse false;
     state.statusline_workspace = settings.statusline_workspace orelse false;
     state.session_title_generation = settings.session_titles orelse true;
+    state.enforce_response_language = settings.response_language orelse true;
     state.cache_warming = settings.cache_warming orelse true;
     const sound_override = soundEnvOverride();
     const sound_on_override: ?bool = if (sound_override) |level| level != .off else null;

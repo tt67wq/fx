@@ -134,6 +134,7 @@ const Writable = enum {
     max_tool_result_bytes,
     @"prompt_history.enabled",
     provider_strict,
+    response_language,
     session_titles,
     slash_menu_categories,
     @"sound.attention_required",
@@ -234,6 +235,7 @@ pub fn change(options: Options, problem: *WriteProblem) error{ RefusedConfigSett
         .fast_mode => patch.fast_mode = enabled,
         .@"prompt_history.enabled" => patch.prompt_history_enabled = enabled,
         .provider_strict => patch.provider_strict = enabled,
+        .response_language => patch.response_language = enabled,
         .session_titles => patch.session_titles = enabled,
         .slash_menu_categories => patch.slash_menu_categories = enabled,
         .@"sound.attention_required" => patch.notification_attention_required = enabled,
@@ -453,7 +455,8 @@ pub const resolved_keys = [_][]const u8{
     "effort",                 "fast_mode",                "first_call_tool_choice",
     "max_agent_steps",        "max_tool_result_bytes",    "permission_mode",
     "prompt_history.enabled", "provider",                 "provider_order",
-    "provider_strict",        "review_model",             "session_titles",
+    "provider_strict",        "response_language",        "review_model",
+    "session_titles",
     "slash_menu_categories",  "sound.attention_required", "sound.max",
     "sound.turn_end",         "startup_scrollback",       "status_line.context",
     "status_line.session",    "status_line.workspace",    "theme",
@@ -503,6 +506,7 @@ pub fn effectiveValue(
         return .{ .value = .{ .array = array } };
     }
     if (eql(u8, key, "provider_strict")) return boolean(state.provider_strict);
+    if (eql(u8, key, "response_language")) return boolean(state.enforce_response_language);
     if (eql(u8, key, "review_model")) return if (state.review_model.len == 0) .none else string(state.review_model);
     if (eql(u8, key, "session_titles")) return boolean(state.session_title_generation);
     if (eql(u8, key, "cache_warming")) return boolean(state.cache_warming);
