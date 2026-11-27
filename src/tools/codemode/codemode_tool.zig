@@ -479,7 +479,7 @@ test "failure body without output or calls matches the plain one-liner" {
 /// moment, so a Cancelled race only costs precision, never a crash.
 fn timeoutHeadline(alloc: Allocator, elapsed_ms: i64, budget_ms: usize, from_options: bool) Allocator.Error![]u8 {
     return alloc.print(
-        "codemode script failed: Timeout after {d}ms (budget {d}ms, from {s}); raise it with // @options: {{\"timeout_ms\": N}} on the first script line, max {d}; for a wait or a long command, end the script and poll in a later call (shell interact on the running session) instead of sleeping in a loop",
+        "codemode script failed: Timeout after {d}ms (budget {d}ms, from {s}); raise it with // @options: {{\"timeout_ms\": N}} on the first script line, max {d}; for a wait or a long command, end this script; in your next turn call the top-level shell tool with action=interact on the running session (interact is not available inside codemode) instead of sleeping in a loop",
         .{ @max(elapsed_ms, 0), budget_ms, if (from_options) "@options" else "default", host_mod.max_options_timeout_ms },
     );
 }
@@ -493,8 +493,8 @@ test "timeout headline names elapsed, budget, source, the cap, and the poll fix 
     try std.testing.expectEqualStrings(
         "codemode script failed: Timeout after 30123ms (budget 30000ms, from default); " ++
             "raise it with // @options: {\"timeout_ms\": N} on the first script line, max 300000; " ++
-            "for a wait or a long command, end the script and poll in a later call " ++
-            "(shell interact on the running session) instead of sleeping in a loop",
+            "for a wait or a long command, end this script; in your next turn call the top-level shell tool " ++
+            "with action=interact on the running session (interact is not available inside codemode) instead of sleeping in a loop",
         headline,
     );
 }
@@ -505,8 +505,8 @@ test "timeout headline pins the @options source verbatim" {
     try std.testing.expectEqualStrings(
         "codemode script failed: Timeout after 5012ms (budget 5000ms, from @options); " ++
             "raise it with // @options: {\"timeout_ms\": N} on the first script line, max 300000; " ++
-            "for a wait or a long command, end the script and poll in a later call " ++
-            "(shell interact on the running session) instead of sleeping in a loop",
+            "for a wait or a long command, end this script; in your next turn call the top-level shell tool " ++
+            "with action=interact on the running session (interact is not available inside codemode) instead of sleeping in a loop",
         headline,
     );
 }
@@ -573,13 +573,13 @@ test "failure body shows the last nested output right after the headline" {
     excerpt.duration_ms = 31496;
     const text = try std.testing.allocator.dupe(u8, "found 3 files");
     defer std.testing.allocator.free(text);
-    const body = try formatFailureBody(std.testing.allocator, "codemode script failed: Timeout after 31496ms (budget 30000ms, from default); raise it with // @options: {\"timeout_ms\": N} on the first script line, max 300000; for a wait or a long command, end the script and poll in a later call (shell interact on the running session) instead of sleeping in a loop", .{ .text = text, .console = "" }, &.{}, false, excerpt);
+    const body = try formatFailureBody(std.testing.allocator, "codemode script failed: Timeout after 31496ms (budget 30000ms, from default); raise it with // @options: {\"timeout_ms\": N} on the first script line, max 300000; for a wait or a long command, end this script; in your next turn call the top-level shell tool with action=interact on the running session (interact is not available inside codemode) instead of sleeping in a loop", .{ .text = text, .console = "" }, &.{}, false, excerpt);
     defer std.testing.allocator.free(body);
     try std.testing.expectEqualStrings(
         "codemode script failed: Timeout after 31496ms (budget 30000ms, from default); " ++
             "raise it with // @options: {\"timeout_ms\": N} on the first script line, max 300000; " ++
-            "for a wait or a long command, end the script and poll in a later call " ++
-            "(shell interact on the running session) instead of sleeping in a loop\n" ++
+            "for a wait or a long command, end this script; in your next turn call the top-level shell tool " ++
+            "with action=interact on the running session (interact is not available inside codemode) instead of sleeping in a loop\n" ++
             "\n" ++
             "Last nested output before failure (run_command, ok, 31496ms):\n" ++
             "{\"state\":\"running\",\"session_id\":\"shell-abc\",\"output_delta\":\"probe one\\n\"}\n" ++

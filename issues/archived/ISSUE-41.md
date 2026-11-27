@@ -1,6 +1,6 @@
 # ISSUE-41 — 超时提示推荐 shell interact 轮询，但嵌套 run_command 只收 action=run，指引一条被堵死的路
 
-- **状态**: open（待立项）
+- **状态**: closed（已修复，main 待提交哈希见 git log）
 - **发现时间**: 2026-11-26
 - **来源**: 全量 169 个 session 日志分析（该提示出现 32 次 / 17 个 session；随后嵌套 interact 被拒 15 次 / 9 个 session，最新 2026-11-26）
 - **关联模块**: src/tools/codemode/codemode_tool.zig:482,497,509（超时文案）、src/tools/codemode/bridge.zig:671（canonicalRunCommand 拒绝非 run action）
@@ -33,8 +33,8 @@ InvalidToolArguments: run_command field "action" must be "run"; received "intera
 
 ## 处置
 
-- [ ] 决策 A/B（倾向 A）
-- [ ] 文案改动 + 钉死测试更新
+- [x] 决策 A/B：裁决 A 改文案；B（放开嵌套 interact）与 ISSUE-42 等待语义一起另行评审
+- [x] 文案改动 + 钉死测试更新：codemode_tool.zig 生成点+4 golden、admission 2 前缀+2 负断言；TDD 红绿+独立复核 approve（.agents/tasks/T-41-impl/report.md、T-41-review/review.md）
 - [ ] 观察指标：下轮 session 分析嵌套 interact 被拒次数是否归零
 
 ## 性价比排名（2026-11-26）

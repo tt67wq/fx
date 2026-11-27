@@ -267,8 +267,10 @@ test("nested run_command is killed when the codemode script budget expires", asy
       'raise it with // @options: {"timeout_ms": N} on the first script line, max 300000;',
     );
     expect(output.value).toContain(
-      "for a wait or a long command, end the script and poll in a later call",
+      "for a wait or a long command, end this script; in your next turn call the top-level shell tool",
     );
+    // ISSUE-41: the hint must rule interact out inside the script.
+    expect(output.value).toContain("interact is not available inside codemode");
   } finally {
     rmSync(root.workspace, { recursive: true, force: true });
   }
@@ -304,7 +306,8 @@ test("a script timeout with a raised @options budget names the source", async ()
     expect(output.type).toBe("error-text");
     expect(output.value).toContain("Timeout after ");
     expect(output.value).toContain("(budget 5000ms, from @options)");
-    expect(output.value).toContain("for a wait or a long command, end the script and poll in a later call");
+    expect(output.value).toContain("for a wait or a long command, end this script; in your next turn call the top-level shell tool");
+    expect(output.value).toContain("interact is not available inside codemode");
     // The killed sleep is the last returned nested call: its snapshot rides
     // in the excerpt slot under the headline (coverage matrix row 3, empty
     // delta because sleep produces no output).
