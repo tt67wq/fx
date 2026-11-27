@@ -1,6 +1,6 @@
 # ISSUE-40 — read_tool_result 被截断提示和 codemode 描述推荐，但沙箱内不可达，25 次失败 / 24 个 session
 
-- **状态**: open（待立项）
+- **状态**: closed（2026-11-27，A 方案落地：sandbox_reachable=true + shipped face 4→5）
 - **发现时间**: 2026-11-26
 - **来源**: 全量 169 个 session 日志分析（11-19 后本类 25 次失败 / 24 个 session，最新 2026-11-26；本轮分析自身也实犯一次）
 - **关联模块**: src/builtins/tools.zig:717-719（read_tool_result spec，internal=true 且无 sandbox_reachable）、src/tools/codemode/bridge.zig:1440（derivedFace 只放行 sandbox_reachable）、src/core/session/result_store.zig:463（截断提示文案）、src/builtins/tools.zig:745（codemode_description "read_tool_result reads the full output"）
@@ -32,9 +32,9 @@ codemode 描述也写 "read_tool_result reads the full output"。但在 codemode
 
 ## 处置
 
-- [ ] 确认 internal 与 sandbox_reachable 的关系
-- [ ] 决策 A/B（倾向 A）
-- [ ] 落地 + face/schema 哨兵测试更新
+- [x] 确认 internal 与 sandbox_reachable 的关系（正交：internal 只挡模型默认工具面，sandbox_reachable 只控沙箱转发；两 worker proposal 独立核实）
+- [x] 决策 A/B（conductor 裁决 A + shipped face 4→5，见 .agents/tasks/T-40-ruling.md；B 的重定向兜底不可行——result store session-private）
+- [x] 落地 + face/schema 哨兵测试更新（8 文件 +147/-13；TDD 红→绿；独立复核含 flag-revert 红测真实性抽查 3 fail/EXIT=1，恢复后全绿；实机 MID_SENTINEL 沙箱内续读成功。复核记录 .agents/tasks/T-40-review/review.md）
 - [ ] 观察指标：下轮 session 分析 unknown codemode tool: read_tool_result 是否归零
 
 ## 性价比排名（2026-11-26）

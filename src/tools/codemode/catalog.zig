@@ -220,7 +220,7 @@ test "notice floor covers the rendered hint and six omitted entries" {
     try std.testing.expect(catalog_notice_floor_bytes >= 10 + rendered_hint_len + 13 + 6 * 70);
 }
 
-test "catalog keeps the real ten-item derived face whole under the default budget" {
+test "catalog keeps the real eleven-item derived face whole under the default budget" {
     // F4: the sentinel reads the shipped default from context_limits, so a
     // future default change moves the guard with it instead of pinning the
     // old number here.
@@ -232,9 +232,9 @@ test "catalog keeps the real ten-item derived face whole under the default budge
     const registry = builtin_tools.registry;
     const face = bridge.sandboxFace(registry, true);
     const schemas = try bridge.schemas(arena, registry, face);
-    try std.testing.expectEqual(@as(usize, 10), schemas.len);
+    try std.testing.expectEqual(@as(usize, 11), schemas.len);
     // run_script rides the derived face with its own static schema; the
-    // ten-schema face must still weigh under the default catalog budget.
+    // eleven-schema face must still weigh under the default catalog budget.
 
     // Size sentinel: the whole face must weigh under the default budget.
     // When a fatter description pushes this over, raising the budget is a
@@ -245,7 +245,7 @@ test "catalog keeps the real ten-item derived face whole under the default budge
 
     const selection = try select(arena, schemas, default_budget);
     try std.testing.expectEqual(false, selection.triggered);
-    try std.testing.expectEqual(@as(usize, 10), selection.indexes.len);
+    try std.testing.expectEqual(@as(usize, 11), selection.indexes.len);
     try std.testing.expectEqual(@as(usize, 0), selection.omitted.len);
 }
 

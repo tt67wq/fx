@@ -999,7 +999,7 @@ test("run_script is hidden while the derived gate is closed", async () => {
       toolResultText(gateway.requests[1]!.body, "gate-closed-1"),
     );
     const report = JSON.parse(body) as { names: string; callErr: string };
-    expect(report.names).toBe("glob_files,grep_files,read_file,run_command");
+    expect(report.names).toBe("glob_files,grep_files,read_file,read_tool_result,run_command");
     expect(report.callErr).toContain("unknown codemode tool: run_script");
   } finally {
     rmSync(root.workspace, { recursive: true, force: true });
@@ -1073,7 +1073,7 @@ test("tools.list exposes parsed schema objects inside scripts", async () => {
     const report = JSON.parse(
       toolResultText(gateway.requests[1]!.body, "schema-probe"),
     );
-    expect(report.names).toBe("glob_files,grep_files,read_file,run_command");
+    expect(report.names).toBe("glob_files,grep_files,read_file,read_tool_result,run_command");
     expect(report.kind).toBe("object");
     expect(report.pattern).toBe("string");
     expect(report.required).toBe("pattern");

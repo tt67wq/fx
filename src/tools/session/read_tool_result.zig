@@ -493,6 +493,38 @@ test "unknown read_tool_result handle returns failure for legacy and managed sto
     }
 }
 
+test "read_tool_result rejects traversal and slash handles with InvalidHandle" {
+    const alloc = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDir(
+        io_mod.getIo(),
+        "legacy",
+        std.Io.File.Permissions.fromMode(0o700),
+    );
+    const dir = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "legacy");
+    defer alloc.free(dir);
+    // Handles are flat store names: neither a path escape nor a separator
+    // may reach the result directory through this tool.
+    for ([_][]const u8{ "../escape", "sub/secret.txt" }) |bad_handle| {
+        const args = try alloc.print("{{\"handle\":\"{s}\",\"start_byte\":1,\"byte_count\":16}}", .{bad_handle});
+        defer alloc.free(args);
+        const decoded = try decode(.{ .allocator = alloc }, args);
+        const input = switch (decoded) {
+            .input => |value| value,
+            .failure => return error.TestUnexpectedDecodeFailure,
+        };
+        defer input.deinit(alloc);
+        const result = try call(.{ .allocator = alloc, .tool_result_dir = dir }, input);
+        defer result.deinit(alloc);
+        switch (result) {
+            .rich => return error.TestUnexpectedRichResult,
+            .success => return error.TestExpectedFailure,
+            .failure => |body| try std.testing.expect(std.mem.find(u8, body, "InvalidHandle") != null),
+        }
+    }
+}
+
 test "read_tool_result pages and searches saved command replay handles" {
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});

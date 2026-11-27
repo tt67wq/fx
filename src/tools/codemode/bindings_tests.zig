@@ -7,22 +7,23 @@ const builtin_tools = @import("../../builtins/tools.zig");
 
 const Host = host_mod.Host;
 
-test "codemode tool registry holds three read-only tools plus run_command" {
-    try std.testing.expectEqual(@as(usize, 4), bindings.tools.len);
+test "codemode tool registry holds four read-only tools plus run_command" {
+    try std.testing.expectEqual(@as(usize, 5), bindings.tools.len);
     try std.testing.expect(bindings.find("glob_files") != null);
     try std.testing.expect(bindings.find("grep_files") != null);
     try std.testing.expect(bindings.find("read_file") != null);
+    try std.testing.expect(bindings.find("read_tool_result") != null);
     try std.testing.expect(bindings.find("run_command") != null);
     try std.testing.expect(bindings.find("write_file") == null);
 }
 
-test "sandbox face locks the shipped four names and the ten-name derived face" {
+test "sandbox face locks the shipped five names and the eleven-name derived face" {
     const registry = builtin_tools.registry;
     // The shipped face is what a fresh profile gets; the default-face
     // lookups below are about that face, not the gate-open one.
     const closed = bridge.sandboxFace(registry, false);
-    try std.testing.expectEqual(@as(usize, 4), closed.len);
-    const closed_names = [_][]const u8{ "glob_files", "grep_files", "read_file", "run_command" };
+    try std.testing.expectEqual(@as(usize, 5), closed.len);
+    const closed_names = [_][]const u8{ "glob_files", "grep_files", "read_file", "read_tool_result", "run_command" };
     for (closed_names, closed) |expected, tool| {
         try std.testing.expectEqualStrings(expected, tool.name);
     }
@@ -44,6 +45,7 @@ test "sandbox face locks the shipped four names and the ten-name derived face" {
         "web_fetch",
         "ask_user_question",
         "vision",
+        "read_tool_result",
         "run_command",
         "run_script",
     };
@@ -54,11 +56,40 @@ test "sandbox face locks the shipped four names and the ten-name derived face" {
     try std.testing.expectEqual(true, builtin_tools.registry.lookup("write_file").?.sandbox_reachable);
     try std.testing.expectEqual(true, builtin_tools.registry.lookup("edit_file").?.sandbox_reachable);
     try std.testing.expectEqual(true, builtin_tools.registry.lookup("read_file").?.sandbox_reachable);
+    try std.testing.expectEqual(true, builtin_tools.registry.lookup("read_tool_result").?.sandbox_reachable);
     try std.testing.expectEqual(false, builtin_tools.registry.lookup("shell").?.sandbox_reachable);
     try std.testing.expectEqual(false, builtin_tools.registry.lookup("subagent").?.sandbox_reachable);
     // codemode itself is not in the builtin registry (the tool set adds it),
     // so reachability for it cannot be asserted here.
     try std.testing.expect(builtin_tools.registry.lookup("codemode") == null);
+}
+
+fn faceIndexOf(face: []const bindings.Tool, name: []const u8) ?usize {
+    for (face, 0..) |tool, index| {
+        if (std.mem.eql(u8, tool.name, name)) return index;
+    }
+    return null;
+}
+
+test "read_tool_result joins the shipped and derived sandbox faces" {
+    const registry = builtin_tools.registry;
+    try std.testing.expectEqual(true, registry.lookup("read_tool_result").?.sandbox_reachable);
+    // Shipped face: read_tool_result sits between read_file and run_command
+    // so a script can read a truncated nested result back in the same eval.
+    const closed = bridge.sandboxFace(registry, false);
+    const closed_pos = faceIndexOf(closed, "read_tool_result").?;
+    const closed_read_file = faceIndexOf(closed, "read_file").?;
+    const closed_run_command = faceIndexOf(closed, "run_command").?;
+    try std.testing.expect(closed_read_file < closed_pos);
+    try std.testing.expect(closed_pos < closed_run_command);
+    // Derived face: registry order, so read_tool_result lands after vision
+    // and before the appended script-facing names.
+    const open = bridge.sandboxFace(registry, true);
+    const open_pos = faceIndexOf(open, "read_tool_result").?;
+    const open_vision = faceIndexOf(open, "vision").?;
+    const open_run_command = faceIndexOf(open, "run_command").?;
+    try std.testing.expect(open_vision < open_pos);
+    try std.testing.expect(open_pos < open_run_command);
 }
 
 const FakeBackend = struct {

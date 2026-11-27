@@ -150,6 +150,75 @@ test("a large text capture shows head and tail and reads the middle back", async
   }
 }, 90000);
 
+test("a nested codemode script reads the stored middle back through read_tool_result", async () => {
+  const root = createIsolatedRoot();
+  const script =
+    'text(' + JSON.stringify(HEAD_SENTINEL) + ' + "a".repeat(' + FILL + ') + ' +
+    JSON.stringify(MID_SENTINEL) + ' + "b".repeat(' + FILL + ') + ' +
+    JSON.stringify(TAIL_SENTINEL) + ');\n1;';
+  const midStart = HEAD_SENTINEL.length + FILL + 1;
+  const midCount = MID_SENTINEL.length + 16;
+  let step = 0;
+  let canonicalHandle = "";
+  const gateway = startDynamicFakeGateway((body: string) => {
+    switch (step++) {
+      case 0:
+        return fakeGatewayToolCall("big-n1", "codemode", { script });
+      case 1: {
+        const output = toolResultOutput(body, "big-n1");
+        expect(output).toContain("<tool_result_handle>");
+        expect(output).toContain("Full result is stored outside session JSON. Use read_tool_result");
+        const match = output.match(
+          /<tool_result_handle>([^<]+)<\/tool_result_handle>/,
+        );
+        canonicalHandle = match?.[1] ?? "";
+        expect(canonicalHandle.endsWith(".txt")).toBe(true);
+        expect(output).not.toContain(MID_SENTINEL);
+        // The follow-up stays inside the sandbox: the script itself calls
+        // read_tool_result with the handle from the truncated output.
+        const nested =
+          "const mid = await tools.read_tool_result({ handle: " +
+          JSON.stringify(canonicalHandle.replace(/\.txt$/, "")) +
+          ", start_byte: " + midStart + ", byte_count: " + midCount +
+          " });\n" +
+          "text(mid);\n" +
+          "1;";
+        return fakeGatewayToolCall("nested-read-1", "codemode", { script: nested });
+      }
+      case 2: {
+        const output = toolResultOutput(body, "nested-read-1");
+        expect(output).toContain(MID_SENTINEL);
+        // Negative: a traversal handle must come back as a readable store
+        // failure inside the script, never a read of another directory.
+        const negative =
+          "let seen = \"\";" + "\n" +
+          "try { seen = String(await tools.read_tool_result({ handle: \"../escape\", start_byte: 1, byte_count: 16 })); }" + "\n" +
+          "catch (err) { seen = \"ERR:\" + (err && err.message ? err.message : String(err)); }" + "\n" +
+          "text(seen);" + "\n" +
+          "1;";
+        return fakeGatewayToolCall("nested-traverse-1", "codemode", { script: negative });
+      }
+      case 3: {
+        const output = toolResultOutput(body, "nested-traverse-1");
+        expect(output).toContain("InvalidHandle");
+        return fakeGatewayFinalText("SANDBOX_REREAD_DONE");
+      }
+      default:
+        return new Response("unexpected request", { status: 500 });
+    }
+  });
+  gateways.push(gateway);
+  try {
+    const result = await runFx(
+      ["ask", "--quiet", "--json", "run the sandbox reread test"],
+      { cwd: root.workspace, env: gatewayEnv(root, gateway), timeoutMs: TIMEOUT },
+    );
+    expect(result.code, "stderr: " + result.stderr.slice(0, 400)).toBe(0);
+    expect(result.stdout).toContain("SANDBOX_REREAD_DONE");
+  } finally {
+    rmSync(root.workspace, { recursive: true, force: true });
+  }
+}, 90000);
 test("a large return value is stored and readable the same way", async () => {
   const root = createIsolatedRoot();
   // A bare trailing expression: the completion value rides out even

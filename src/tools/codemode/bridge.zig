@@ -1423,7 +1423,7 @@ fn registeredName(script_name: []const u8) []const u8 {
 /// compile time from the registry, so the runtime gate only selects a static
 /// slice and nothing is concatenated per call.
 ///
-/// The shipped face is the four names below. The derived face is every tool
+/// The shipped face is the five names below. The derived face is every tool
 /// the registry marks `sandbox_reachable`, in registry order, plus run_command: the
 /// registry carries the shell tool, and run_command is its script-facing name
 /// (see registeredName). Both faces only decide which names a script may

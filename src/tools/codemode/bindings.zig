@@ -17,13 +17,14 @@ pub const ToolSchema = struct {
     schema_json: [:0]const u8,
 };
 
-/// Three read-only tools first, then run_command, which is not read-only:
+/// Four read-only tools first, then run_command, which is not read-only:
 /// its admission and permission review are wired in 3.3. The registry only
 /// decides which names the sandbox may forward to the injected Backend.
 pub const tools = [_]Tool{
     .{ .name = "glob_files" },
     .{ .name = "grep_files" },
     .{ .name = "read_file" },
+    .{ .name = "read_tool_result" },
     .{ .name = "run_command" },
 };
 

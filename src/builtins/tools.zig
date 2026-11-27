@@ -717,6 +717,7 @@ const read_tool_result_properties = [_]model_tool_schema.Property{
 pub const read_tool_result = ToolSpec{
     .name = "read_tool_result",
     .internal = true,
+    .sandbox_reachable = true,
     .description = read_tool_result_description,
     .model_schema = .{
         .name = "read_tool_result",
